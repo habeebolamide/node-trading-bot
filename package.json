@@ -1,0 +1,45 @@
+{
+  "name": "trading-bot",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.ts",
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch index.ts",
+    "start": "tsx index.ts",
+    "generate": "prisma generate",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/habeebolamide/node-trading-bot.git"
+  },
+  "author": "ME",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/habeebolamide/node-trading-bot/issues"
+  },
+  "homepage": "https://github.com/habeebolamide/node-trading-bot#readme",
+  "devDependencies": {
+    "@types/node": "^25.5.2",
+    "@types/node-telegram-bot-api": "^0.64.14",
+    "@types/pg": "^8.20.0",
+    "@types/ws": "^8.18.1",
+    "prisma": "^7.7.0",
+    "tsx": "^4.21.0",
+    "typescript": "^6.0.2"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.88.0",
+    "@google/generative-ai": "^0.24.1",
+    "@prisma/adapter-pg": "^7.7.0",
+    "@prisma/client": "^7.7.0",
+    "ccxt": "^4.5.48",
+    "dotenv": "^17.4.1",
+    "node-telegram-bot-api": "^0.67.0",
+    "pg": "^8.20.0",
+    "technicalindicators": "^3.1.0",
+    "winston": "^3.19.0",
+    "ws": "^8.20.0"
+  }
+}

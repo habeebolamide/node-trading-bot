@@ -1,0 +1,105 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Get a free hosted Postgres database in seconds: `npx create-db`
+
+generator client {
+  provider = "prisma-client"
+  output   = "../generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+
+model Agent {
+  id                String        @id @default(uuid())
+  name              String
+  pair              String
+  allocationPercent Float         @default(10.0)
+  riskPercent       Float         @default(1.0)
+  mode              String        // "paper" | "live"
+  tradingStyle      String
+  status            String        @default("active")
+
+  learnedRules      Json?
+
+  monthlyPnL        Float         @default(0)
+  totalTrades       Int           @default(0)
+  winRate           Float         @default(0)
+
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
+
+  // Relations
+  trades            Trade[]
+  lessons           TradeLesson[]  
+
+  @@map("agents")
+}
+
+model Trade {
+  id            String   @id @default(uuid())
+  agentId       String
+  pair          String
+  direction     String   // LONG | SHORT
+  entryPrice    Float
+  stopLoss      Float
+  takeProfit    Float?
+  size          Float
+  status        String   // open | closed | cancelled
+  exitPrice     Float?
+  realizedPnL   Float?
+  closeReason   String?
+  duration      Int?     // in seconds or minutes
+
+  openedAt      DateTime @default(now())
+  closedAt      DateTime?
+
+  agent         Agent    @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  trade_lesson TradeLesson[]
+
+  @@map("trades")
+}
+
+model TradeLesson {
+  id          String   @id @default(uuid())
+  tradeId     String?
+  agentId     String
+  rule        String   
+  tag         String   
+  description String
+
+  createdAt   DateTime @default(now())
+
+  agent       Agent    @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  trade       Trade?   @relation(fields: [tradeId], references: [id], onDelete: SetNull)
+
+  @@map("trade_lessons")
+}
+
+model Candle {
+  id        String   @id @default(uuid())
+  pair      String
+  timeframe String
+  timestamp BigInt
+  open      Float
+  high      Float
+  low       Float
+  close     Float
+  volume    Float
+
+  @@unique([pair, timeframe, timestamp])
+  @@map("candles")
+}
+
+model BacktestResult {
+  id        String   @id @default(uuid())
+  agentId   String
+  config    Json
+  result    Json
+  createdAt DateTime @default(now())
+
+  @@map("backtest_results")
+}

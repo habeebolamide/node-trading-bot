@@ -1,0 +1,36 @@
+{
+  "compilerOptions": {
+    /* Base Options */
+    "target": "ES2023",
+    "module": "ESNext",
+    "moduleResolution": "node", // Changed from 'bundler' for better Node compatibility
+    "lib": ["ES2023"],
+    "types": ["node"],
+    "skipLibCheck": true,
+
+    /* Naming & Layout */
+    "rootDir": "./", // Allows prisma.config.ts at root to be included
+    "outDir": "./dist",
+
+    /* Interop Constraints */
+    "esModuleInterop": true,
+    "forceConsistentCasingInFileNames": true,
+    "verbatimModuleSyntax": true, // Required for clean ESM imports
+    "isolatedModules": true,
+
+    /* Strictness */
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+
+    /* Output */
+    "sourceMap": true,
+    "declaration": true,
+    "declarationMap": true,
+
+    /* React Support (Keeping this for your React Dashboard compatibility) */
+    "jsx": "react-jsx"
+  },
+  "include": ["src/**/*", "prisma/**/*.ts", "prisma.config.ts"],
+  "exclude": ["node_modules"]
+}
