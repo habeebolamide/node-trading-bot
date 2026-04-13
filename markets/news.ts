@@ -139,7 +139,7 @@ async function fetchNews(): Promise<void> {
 
     const data = await res.json();
 
-    logger.info({ data: data.articles });
+    // logger.info({ data: data.articles });
 
     recentNews = (data.articles ?? []).map((item: any): NewsItem => ({
       id: Math.random().toString(),
@@ -153,7 +153,7 @@ async function fetchNews(): Promise<void> {
     }));
 
     lastFetchAt = new Date();
-    logger.info('News fetched', { news: recentNews });
+    // logger.info('News fetched', { news: recentNews });
 
   } catch (error) {
     logger.error('Failed to fetch news', { error });

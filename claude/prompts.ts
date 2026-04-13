@@ -1,75 +1,146 @@
 
 
 // ─────────────────────────────────────────────
-// System prompt — injected into every Claude call
-// This is cached — only charged once per session
-// Keep rules clear and unambiguous
+// System prompt
+// Establishes WHO the AI is — not what rules to follow
+// This gets cached — charged once per session
 // ─────────────────────────────────────────────
 
-import { formatRegimeForPrompt } from "../markets/regime";
-import { Agent, LearnedRule } from "../types/agent.types";
-import { MultiTimeframeData, RegimeAnalysis } from "../types/market.types";
+import { Agent } from "../types/agent.types";
+import { Candle, MultiTimeframeData, RegimeAnalysis } from "../types/market.types";
 import { PerformanceMode, RelevantLesson } from "../types/risk.types";
 import { ClosedTrade, OpenTrade } from "../types/trade.types";
 
-export function buildSystemPrompt(agent: any): string {
-  const learnedRulesText = agent.learnedRules.length > 0
+export function buildSystemPrompt(agent: Agent): string {
+
+  const styleIdentity = {
+    scalp: `
+      You specialise in short-term momentum trading.
+      You read order flow, volume, and price action at the micro level.
+      You enter fast, take profits quickly, and cut losses immediately.
+      You never hold a losing scalp hoping it recovers.
+      Your edge is precision — you wait for the exact right moment then strike.
+      You are comfortable sitting out for hours waiting for your setup.
+      A day with no trades is better than a day with bad trades.
+      When you scalp, your stops are tight and your execution is clean.
+      You understand that on short timeframes noise is your biggest enemy.
+    `.trim(),
+
+    swing: `
+      You specialise in swing trading — capturing multi-candle, multi-hour moves.
+      You read market structure, higher timeframe trends, and key levels with precision.
+      You are patient. You wait for price to come to your level, not the other way around.
+      You think in terms of risk/reward first, direction second.
+      You never chase entries. If you missed it, the next setup will come.
+      Your losses are controlled and your winners run as far as the market allows.
+      You understand that swing trading requires conviction — you hold through noise.
+    `.trim(),
+
+    auto: `
+      You are a versatile trader who adapts to whatever the market offers.
+      Some days you scalp. Some days you swing. Some days you do nothing at all.
+      You read the market first, then decide what kind of opportunity exists.
+      You never force a trade style onto market conditions that do not support it.
+      If the market is ranging — you range trade or stay out entirely.
+      If the market is trending — you ride the trend with patience.
+      If the market is chaotic and unpredictable — you stay out, capital preservation first.
+      Your greatest skill is recognising what the market is doing and adapting instantly.
+    `.trim(),
+  }[agent.style] ?? '';
+
+  console.log(`[Agent: ${agent.name}] Using Style: ${agent.style}`);
+  console.log(`[Agent: ${agent.name}] Identity Prompt:`, styleIdentity);
+  
+
+  const learnedMistakes = agent.learnedRules.length > 0
     ? `
-LEARNED RULES FROM PAST LOSSES (auto-generated — follow strictly):
-${agent.learnedRules.map((r: any, i: number) => `${i + 1}. [${r.patternTag}] ${r.rule}`).join('\n')}
-`
+PATTERNS FROM YOUR OWN LOSING TRADES:
+These are mistakes you have made before with real consequences.
+You have studied them deeply and you recognise them instantly when they form again.
+${agent.learnedRules.map((r, i) =>
+      `${i + 1}. [${r.patternTag}] ${r.rule}`
+    ).join('\n')}
+When you see any of these patterns forming — it weighs heavily on your decision.
+    `.trim()
     : '';
 
   return `
-You are an autonomous cryptocurrency trading agent.
-Your job is to analyse market data and make precise trading decisions.
+You are a professional cryptocurrency trader with 10 years of live market experience.
+You have traded through bull markets, bear markets, flash crashes, and euphoric tops.
+You have seen every pattern, every trap, every false breakout, every liquidity grab.
+You have blown accounts early in your career and rebuilt from nothing.
+Those painful lessons made you who you are — disciplined, patient, and ruthlessly honest with yourself.
+You do not trade for excitement. You trade to make money consistently.
 
-IDENTITY:
-- Agent name: ${agent.name}
-- Trading pair: ${agent.pair}
-- Trading style: ${agent.style}
-- Risk per trade: ${agent.riskPercent}% of allocated capital
+YOUR SPECIALISATION:
+${styleIdentity}
 
-CORE RULES — NON-NEGOTIABLE:
-1. Never trade against the dominant 4h/Daily trend under any circumstance
-2. Never enter a trade with confidence below 7 out of 10
-3. Never set a stop loss further than 3% from entry
-4. Never widen a stop loss once a trade is open — only tighten
-5. Always respond in valid JSON — no prose, no markdown, no explanation outside JSON
-6. If you are uncertain — return NO_TRADE. Patience is a position.
-7. Never chase a move — if the entry price has passed, skip the trade
+YOUR CURRENT ASSIGNMENT:
+Pair: ${agent.pair}
+Risk per trade: ${agent.riskPercent}% of your allocated capital
 
-TIMEFRAME SCORING GUIDE:
-Score each timeframe from -2 to +2:
-+2 = strongly bullish structure
-+1 = mildly bullish
- 0 = neutral / unclear
--1 = mildly bearish
--2 = strongly bearish
+HOW YOU READ A CHART:
+You look at price action first — before any indicator, before any oscillator.
+You identify market structure: is price making higher highs and higher lows?
+Lower highs and lower lows? Or is it grinding sideways without conviction?
+You identify key levels — where has price respected before?
+Where is liquidity likely resting above or below current price?
+You study volume — does the move have real participation behind it or is it weak?
+You study momentum — is it building, peaking, or exhausting?
+You read multiple timeframes not to seek confirmation of a bias
+but to understand the complete context of what price is actually doing right now.
+You are always asking yourself one question: what is the path of least resistance?
 
-Total score interpretation:
-+4 to +6  → Strong LONG signal
-+1 to +3  → Weak LONG — reduce size or skip
--1 to +1  → NO_TRADE — conflicting signals
--2 to -3  → Weak SHORT — reduce size or skip
--4 to -6  → Strong SHORT signal
+HOW YOU APPROACH RISK:
+You never risk more than your assigned percentage on any single trade.
+You place stops at logical market structure levels — swing highs, swing lows, key zones.
+Never at arbitrary percentages, never at round numbers where liquidity clusters.
+You never move a stop loss further away to avoid being stopped out.
+Your stop loss is your opinion invalidation point — if it gets hit, your analysis was wrong.
+You accept that and move on without hesitation or emotion.
+You only take trades where the potential reward clearly justifies the risk.
+If you cannot identify a clean structural level for your stop — you do not trade.
 
-STOP LOSS PLACEMENT:
-- Use ATR-based placement: SL = entry ± (ATR × 1.5)
-- Always place SL beyond a structural level (swing high/low)
-- Never place SL at a round number where liquidity clusters
+HOW YOU THINK ABOUT ENTRIES:
+You do not predict what price will do. You react to what price is doing.
+You wait for confirmation before entering — not before the signal, not after it fades.
+You understand deeply that missing a trade is not a loss.
+A bad entry is infinitely worse than no entry.
+You are not afraid of being wrong. Every trader is wrong regularly.
+You are afraid of being wrong and staying wrong — that is what destroys accounts.
 
-TAKE PROFIT PLACEMENT:
-- Target next significant resistance (LONG) or support (SHORT)
-- Minimum risk/reward ratio: 1.5 — if you cannot achieve 1.5 RR, skip the trade
-- In strong trends extend TP to next major level
+HOW YOU THINK ABOUT EXITS:
+You take profits at logical resistance or support levels visible on the chart.
+In strong trending conditions you trail your stop rather than closing prematurely.
+You do not let winners turn into losers without a structural reason to hold.
+You respect the market — when it tells you the move is over, you listen.
 
-${learnedRulesText}
-`.trim();
+WHEN YOU WILL NOT TRADE:
+You have the discipline to sit on your hands when conditions are not right.
+You will not trade when:
+- The higher timeframe trend is unclear or contradicting lower timeframes
+- Price is in the middle of a range with no directional conviction
+- Your analysis across timeframes is pointing in different directions
+- A major news event is imminent that could invalidate any technical setup
+- The spread is unusually wide indicating thin liquidity
+- You simply do not have strong conviction in a clear setup
+In these situations NO_TRADE is not a failure — it is the correct decision.
+
+${learnedMistakes}
+
+You will be given complete market data across multiple timeframes.
+Read it the way you would read a live chart — holistically, with experience.
+See the full picture. Identify what the market is telling you.
+If the setup is there — take it with conviction and precision.
+If it is not — say NO_TRADE without hesitation or second-guessing.
+Always respond in valid JSON only. No prose outside the JSON structure.
+  `.trim();
 }
 
 // ─────────────────────────────────────────────
-// Entry prompt — agent is IDLE, looking for trade
+// Entry prompt
+// Pure data — no rules, no instructions on HOW to analyse
+// Gemini reads this like a trader reads a chart
 // ─────────────────────────────────────────────
 
 export function buildEntryPrompt(
@@ -81,69 +152,82 @@ export function buildEntryPrompt(
   monthlyPnl: number,
   performanceMode: PerformanceMode,
 ): string {
-  const lessonsText = lessons.length > 0
+  const relevantLessons = lessons.length > 0
     ? `
-RELEVANT LESSONS FROM PAST LOSSES:
-${lessons.map((l, i) => `${i + 1}. [${l.patternTag}] ${l.ruleToAdd} (seen ${l.frequency}x)`).join('\n')}
-Check if current setup matches any of these before deciding.
-`
+RELEVANT PAST MISTAKES FOR THIS SETUP:
+${lessons.map((l, i) =>
+      `${i + 1}. [${l.patternTag}] ${l.ruleToAdd} — seen ${l.frequency} time${l.frequency > 1 ? 's' : ''}`
+    ).join('\n')}
+    `.trim()
     : '';
 
-  const performanceContext = buildPerformanceContext(monthlyPnl, performanceMode);
+  const portfolioContext = `
+    CURRENT PORTFOLIO STATE:
+    Monthly P&L: ${monthlyPnl >= 0 ? '+' : ''}${monthlyPnl.toFixed(2)}%
+    Performance mode: ${performanceMode}
+    ${performanceMode === 'RECOVERY' ? 'You are in drawdown. Capital preservation is your top priority right now.' : ''}
+    ${performanceMode === 'CONSERVATIVE' ? 'You are approaching your drawdown limit. Be selective.' : ''}
+    ${performanceMode === 'GROWTH' ? 'You have hit your monthly floor. Let winners run.' : ''}
+    ${performanceMode === 'NORMAL' ? 'Standard operation. Trade your plan.' : ''}
+  `.trim();
 
   return `
-${formatRegimeForPrompt(regime)}
+${portfolioContext}
 
-MULTI-TIMEFRAME ANALYSIS:
+MARKET DATA — ${agent.pair}:
 
-4H (trend / big picture):
+━━━━━━━━━━━━━━━━━━━━━━━
+4H CHART (last 50 candles):
 ${formatTimeframe(mtfData.tf4h)}
 
-1H (momentum / confirmation):
+━━━━━━━━━━━━━━━━━━━━━━━
+1H CHART (last 50 candles):
 ${formatTimeframe(mtfData.tf1h)}
 
-15M (entry timing):
+━━━━━━━━━━━━━━━━━━━━━━━
+15M CHART (last 50 candles):
 ${formatTimeframe(mtfData.tf15m)}
 
-5M (precise entry):
+━━━━━━━━━━━━━━━━━━━━━━━
+5M CHART (last 50 candles):
 ${formatTimeframe(mtfData.tf5m)}
 
-NEWS CONTEXT:
+━━━━━━━━━━━━━━━━━━━━━━━
+MARKET CONDITIONS:
+Detected regime: ${regime.regime} (confidence: ${(regime.confidence * 100).toFixed(0)}%)
+ADX: ${regime.adx} | BB width: ${regime.bbWidth} | EMA slope: ${regime.emaSlope}%
+Volume trend: ${regime.volumeTrend}
+
+━━━━━━━━━━━━━━━━━━━━━━━
+NEWS & SENTIMENT:
 ${newsContext}
 
-${lessonsText}
-${performanceContext}
+━━━━━━━━━━━━━━━━━━━━━━━
+AGENT STYLE: ${agent.style.toUpperCase()}
 
-Based on ALL timeframes, decide whether to enter a trade.
+${relevantLessons ? `━━━━━━━━━━━━━━━━━━━━━━━\n${relevantLessons}` : ''}
 
-Respond ONLY with this exact JSON structure:
+Analyse the complete picture and make your trading decision.
+
+Respond ONLY with this exact JSON:
 {
   "action": "LONG" | "SHORT" | "NO_TRADE",
   "entry": <number | null>,
   "tp": <number | null>,
   "sl": <number | null>,
   "confidence": <1-10>,
-  "timeframeScores": {
-    "tf4h": <-2 to 2>,
-    "tf1h": <-2 to 2>,
-    "tf15m": <-2 to 2>,
-    "tf5m": <-2 to 2>,
-    "total": <sum>
-  },
-  "regimeConfirmed": "TRENDING_BULL" | "TRENDING_BEAR" | "RANGING" | "VOLATILE" | "NEUTRAL",
-  "regimeOverride": <true | false>,
-  "regimeReasoning": "<one sentence>",
-  "primaryTimeframe": "<which TF drove the decision>",
-  "entryTrigger": "<what specific thing triggered this signal>",
-  "reasoning": "<2-3 sentences explaining the full setup>",
-  "lessonsApplied": ["<lesson tag if relevant>"]
+  "timeframe_used": "<which timeframe drove your decision>",
+  "trade_type": "scalp" | "swing" | "position",
+  "reasoning": "<your complete analysis in 3-5 sentences>",
+  "what_invalidates_this": "<what would tell you the trade is wrong>"
 }
-`.trim();
+  `.trim();
 }
 
 // ─────────────────────────────────────────────
-// Management prompt — agent is IN_TRADE
-// Called every significant candle
+// Management prompt
+// Show the AI the current state of the trade
+// and the current market — let it decide
 // ─────────────────────────────────────────────
 
 export function buildManagementPrompt(
@@ -153,58 +237,59 @@ export function buildManagementPrompt(
   newsContext: string,
 ): string {
   const pnlSign = trade.unrealisedPct >= 0 ? '+' : '';
-  const duration = getHoursSince(trade.openedAt);
+  const duration = getTimeSince(trade.openedAt);
+  const currentPrice = mtfData.tf5m.candles.at(-1)?.close ?? trade.entryPrice;
 
   return `
-You are managing an open ${trade.direction} trade on ${trade.pair}.
+You have an open ${trade.direction} trade on ${trade.pair}.
+Here is the complete current state.
 
-OPEN POSITION:
-- Direction: ${trade.direction}
-- Entry: ${trade.entryPrice}
-- Current price: ${mtfData.tf5m.candles.at(-1)?.close ?? 'unknown'}
-- Current TP: ${trade.currentTp}
-- Current SL: ${trade.currentSl}
-- Unrealised P&L: ${pnlSign}${trade.unrealisedPct}% (${pnlSign}$${trade.unrealisedPnl.toFixed(2)})
-- Time in trade: ${duration} hours
-- Original reasoning: "${trade.entryReasoning}"
+OPEN TRADE:
+Direction: ${trade.direction}
+Entry price: ${trade.entryPrice}
+Current price: ${currentPrice}
+Current TP: ${trade.currentTp}
+Current SL: ${trade.currentSl}
+Unrealised P&L: ${pnlSign}${trade.unrealisedPct.toFixed(2)}% (${pnlSign}$${trade.unrealisedPnl.toFixed(2)})
+Time in trade: ${duration}
+Your original reasoning: "${trade.entryReasoning}"
 
-CURRENT MARKET:
+CURRENT MARKET STATE:
 
-1H (primary management timeframe):
-${formatTimeframe(mtfData.tf1h)}
-
-15M (short term structure):
-${formatTimeframe(mtfData.tf15m)}
-
-4H (is the big trend still intact?):
+━━━━━━━━━━━━━━━━━━━━━━━
+4H (is the original thesis still intact?):
 ${formatTimeframe(mtfData.tf4h)}
 
+━━━━━━━━━━━━━━━━━━━━━━━
+1H (how is momentum developing?):
+${formatTimeframe(mtfData.tf1h)}
+
+━━━━━━━━━━━━━━━━━━━━━━━
+15M (what is price doing right now?):
+${formatTimeframe(mtfData.tf15m)}
+
+━━━━━━━━━━━━━━━━━━━━━━━
 NEWS:
 ${newsContext}
 
-MANAGEMENT RULES:
-- Never move SL further from entry — only tighten
-- If unrealised P&L > 1.5% — move SL to at least breakeven
-- If unrealised P&L > 3% — trail SL to lock in at least 1%
-- If original trend thesis is invalidated — close immediately
-- If high-impact negative news appeared — tighten SL or close
+Review the trade against current market conditions.
+Has anything changed that affects your original thesis?
 
-Decide what to do with this trade.
-
-Respond ONLY with this exact JSON structure:
+Respond ONLY with this exact JSON:
 {
   "action": "HOLD" | "ADJUST" | "CLOSE" | "PARTIAL_CLOSE",
   "newTp": <number | null>,
   "newSl": <number | null>,
   "closePercent": <0-100 | null>,
-  "reasoning": "<1-2 sentences>",
+  "reasoning": "<why you are making this decision>",
   "urgency": "low" | "medium" | "high"
 }
-`.trim();
+  `.trim();
 }
 
 // ─────────────────────────────────────────────
-// Post-mortem prompt — called after every loss
+// Post-mortem prompt
+// After every loss — understand what went wrong
 // ─────────────────────────────────────────────
 
 export function buildPostMortemPrompt(
@@ -215,55 +300,55 @@ export function buildPostMortemPrompt(
   volumeRatioAtEntry: number,
 ): string {
   return `
-A trade closed at a loss. Analyse it thoroughly.
+A trade closed at a loss. Analyse it with complete honesty.
 
-TRADE DETAILS:
-- Pair: ${trade.pair}
-- Direction: ${trade.direction}
-- Entry: ${trade.entryPrice} → Exit: ${trade.exitPrice}
-- Loss: ${trade.realisedPct.toFixed(2)}%
-- Duration: ${trade.durationHours.toFixed(1)} hours
-- Close reason: ${trade.closeReason}
-- Original reasoning: "${trade.entryReasoning}"
+TRADE:
+Pair: ${trade.pair}
+Direction: ${trade.direction}
+Entry: ${trade.entryPrice} → Exit: ${trade.exitPrice}
+Loss: ${trade.realisedPct.toFixed(2)}%
+Duration: ${trade.durationHours.toFixed(1)} hours
+Closed because: ${trade.closeReason}
+Original reasoning at entry: "${trade.entryReasoning}"
 
-CONDITIONS AT ENTRY:
-- Market regime: ${regimeAtEntry}
-- RSI at entry: ${rsiAtEntry}
-- Volume ratio: ${volumeRatioAtEntry}x average
-- News at entry: ${newsAtEntry}
+MARKET CONDITIONS AT ENTRY:
+Regime: ${regimeAtEntry}
+RSI: ${rsiAtEntry}
+Volume: ${volumeRatioAtEntry}x average
+News: ${newsAtEntry}
 
-Identify what went wrong.
+Be brutally honest. What went wrong?
 
-Respond ONLY with this exact JSON structure:
+Respond ONLY with this exact JSON:
 {
-  "primaryReason": "<one clear sentence — the main cause of loss>",
-  "warningSigns": ["<sign 1>", "<sign 2>", "<sign 3>"],
-  "patternTag": "<SCREAMING_SNAKE_CASE tag e.g. COUNTER_TREND_ENTRY>",
-  "ruleToAdd": "<specific, actionable rule to avoid this in future>",
+  "primaryReason": "<one clear sentence — the real cause>",
+  "warningSigns": ["<sign that was present but ignored>", "..."],
+  "patternTag": "<SCREAMING_SNAKE_CASE — e.g. COUNTER_TREND_ENTRY>",
+  "ruleToAdd": "<one specific actionable rule to avoid this next time>",
   "verdict": "bad_trade" | "bad_luck" | "bad_management",
-  "marketRegime": "<regime at time of loss>",
   "avoidable": <true | false>
 }
-`.trim();
+  `.trim();
 }
 
 // ─────────────────────────────────────────────
-// Lesson synthesis prompt
-// Run weekly to compress lessons into rules
+// Synthesis prompt — weekly job
+// Compress all lessons into top patterns
 // ─────────────────────────────────────────────
 
 export function buildSynthesisPrompt(lessons: any[]): string {
   return `
-You have accumulated ${lessons.length} trading lessons from past losses.
-Synthesise them into the top 5 most impactful recurring patterns.
+You have accumulated ${lessons.length} lessons from losing trades.
+Study them carefully and identify the most damaging recurring patterns.
 
 LESSONS:
 ${JSON.stringify(lessons, null, 2)}
 
-For each pattern write one clear, specific, actionable avoidance rule.
-Vague rules are useless. Be precise.
+Find the top 5 patterns that are costing the most money.
+Write one precise, actionable rule for each.
+Vague rules are worthless. Be specific.
 
-Respond ONLY with this exact JSON structure:
+Respond ONLY with this exact JSON:
 {
   "rules": [
     {
@@ -273,58 +358,165 @@ Respond ONLY with this exact JSON structure:
     }
   ]
 }
-`.trim();
+  `.trim();
 }
 
 // ─────────────────────────────────────────────
-// Helpers
+// Format timeframe data for the prompt
+// Gives the AI what a trader sees on a chart —
+// price action, structure, momentum, volume
+// Not raw OHLCV — a readable market narrative
 // ─────────────────────────────────────────────
 
 function formatTimeframe(tf: MultiTimeframeData['tf4h']): string {
-  const latest = tf.candles.at(-1);
-  const prev = tf.candles.at(-2);
+  if (!tf || tf.candles.length === 0) return 'Insufficient data';
+
+  const candles = tf.candles;
   const ind = tf.indicators;
+  const latest = candles.at(-1)!;
+  const prev = candles.at(-2);
+  const oldest = candles[0];
 
-  if (!latest || !ind) return 'Insufficient data';
-
-  const priceVsEma20 = latest.close > ind.ema20 ? 'above' : 'below';
-  const priceVsEma50 = latest.close > ind.ema50 ? 'above' : 'below';
+  // Price direction
   const candleDir = latest.close >= (prev?.close ?? latest.close) ? '▲' : '▼';
 
+  // Price vs key MAs
+  const vsEma20 = latest.close > ind.ema20
+    ? `above EMA20 (${ind.ema20})`
+    : `below EMA20 (${ind.ema20})`;
+  const vsEma50 = latest.close > ind.ema50
+    ? `above EMA50 (${ind.ema50})`
+    : `below EMA50 (${ind.ema50})`;
+
+  // Overall range context
+  const rangeHigh = Math.max(...candles.map(c => c.high));
+  const rangeLow = Math.min(...candles.map(c => c.low));
+  const rangePct = ((latest.close - rangeLow) / (rangeHigh - rangeLow) * 100).toFixed(0);
+
+  // Recent structure — last 10 candles
+  const recent = candles.slice(-10);
+  const recentHighs = recent.map(c => c.high);
+  const recentLows = recent.map(c => c.low);
+  const structure = detectStructure(candles);
+
+  // Momentum
+  const macdBias = ind.macd.histogram > 0 ? 'bullish' : 'bearish';
+  const macdStrength = Math.abs(ind.macd.histogram) > Math.abs(ind.macd.signal) * 0.5
+    ? 'strong'
+    : 'weak';
+
+  // Volume context
+  const volContext = ind.volume.ratio > 1.5
+    ? `ELEVATED (${ind.volume.ratio.toFixed(1)}x average)`
+    : ind.volume.ratio < 0.7
+      ? `LOW (${ind.volume.ratio.toFixed(1)}x average)`
+      : `Normal (${ind.volume.ratio.toFixed(1)}x average)`;
+
+  // Candle pattern on latest
+  const candlePattern = describeCandlePattern(latest, prev);
+
   return `
-- Price: ${latest.close} ${candleDir}
-- vs EMA20: ${priceVsEma20} (${ind.ema20}) | vs EMA50: ${priceVsEma50} (${ind.ema50})
-- RSI: ${ind.rsi} | MACD histogram: ${ind.macd.histogram}
-- Volume: ${ind.volume.ratio}x avg (${ind.volume.trend})
-- BB width: ${ind.bollinger.width} | ATR: ${ind.atr}
-`.trim();
+Price: ${latest.close} ${candleDir} | Range position: ${rangePct}% of last ${candles.length} candles
+Structure: ${structure}
+vs EMA20: ${vsEma20} | vs EMA50: ${vsEma50} | EMA200: ${ind.ema200}
+RSI(14): ${ind.rsi} ${ind.rsi > 70 ? '— overbought territory' : ind.rsi < 30 ? '— oversold territory' : ''}
+MACD: ${macdBias} momentum (${macdStrength}) | Histogram: ${ind.macd.histogram}
+Bollinger: width ${ind.bollinger.width} | Upper: ${ind.bollinger.upper} | Lower: ${ind.bollinger.lower}
+ADX: ${ind.adx} ${ind.adx > 25 ? '— trending' : '— no clear trend'}
+ATR: ${ind.atr} (current volatility measure)
+Volume: ${volContext}
+Latest candle: ${candlePattern}
+Recent high: ${Math.max(...recentHighs)} | Recent low: ${Math.min(...recentLows)}
+  `.trim();
 }
 
-function buildPerformanceContext(
-  monthlyPnl: number,
-  performanceMode: PerformanceMode,
-): string {
-  const sign = monthlyPnl >= 0 ? '+' : '';
+// ─────────────────────────────────────────────
+// Detect price structure from candle series
+// ─────────────────────────────────────────────
 
-  const modeInstructions: Record<PerformanceMode, string> = {
-    NORMAL: 'Standard operation — target 5% floor.',
-    GROWTH: 'Floor achieved. Prioritise trailing stops and letting winners run. No need to chase new setups aggressively.',
-    CONSERVATIVE: 'Approaching drawdown cap. Only take setups with confidence 8+. Reduce aggression.',
-    RECOVERY: 'In drawdown. Capital preservation is the priority. Only A+ setups. Confidence must be 9+ to enter.',
-  };
+function detectStructure(candles: Candle[]): string {
+  if (candles.length < 10) return 'Insufficient data';
 
-  return `
-MONTHLY PERFORMANCE:
-- Month P&L so far: ${sign}${monthlyPnl.toFixed(2)}%
-- Current mode: ${performanceMode}
-- Instruction: ${modeInstructions[performanceMode]}
-`.trim();
+  const recent = candles.slice(-20);
+  const highs = recent.map(c => c.high);
+  const lows = recent.map(c => c.low);
+
+  const firstHalf = recent.slice(0, 10);
+  const secondHalf = recent.slice(10);
+
+  const firstHigh = Math.max(...firstHalf.map(c => c.high));
+  const secondHigh = Math.max(...secondHalf.map(c => c.high));
+  const firstLow = Math.min(...firstHalf.map(c => c.low));
+  const secondLow = Math.min(...secondHalf.map(c => c.low));
+
+  const higherHighs = secondHigh > firstHigh;
+  const higherLows = secondLow > firstLow;
+  const lowerHighs = secondHigh < firstHigh;
+  const lowerLows = secondLow < firstLow;
+
+  if (higherHighs && higherLows) return 'Uptrend — higher highs and higher lows';
+  if (lowerHighs && lowerLows) return 'Downtrend — lower highs and lower lows';
+  if (higherHighs && lowerLows) return 'Expanding range — increasing volatility';
+  if (lowerHighs && higherLows) return 'Contracting range — compression, breakout likely';
+  return 'Ranging — no clear directional structure';
 }
 
-function getHoursSince(date: Date): string {
+// ─────────────────────────────────────────────
+// Describe the most recent candle pattern
+// ─────────────────────────────────────────────
+
+function describeCandlePattern(candle: Candle, prev?: Candle): string {
+  const body = Math.abs(candle.close - candle.open);
+  const range = candle.high - candle.low;
+  const upperWick = candle.high - Math.max(candle.open, candle.close);
+  const lowerWick = Math.min(candle.open, candle.close) - candle.low;
+  const isBull = candle.close > candle.open;
+
+  if (range === 0) return 'Doji — indecision';
+
+  const bodyRatio = body / range;
+  const upperRatio = upperWick / range;
+  const lowerRatio = lowerWick / range;
+
+  if (bodyRatio > 0.7) {
+    return isBull
+      ? `Strong bullish candle (${(bodyRatio * 100).toFixed(0)}% body)`
+      : `Strong bearish candle (${(bodyRatio * 100).toFixed(0)}% body)`;
+  }
+
+  if (upperRatio > 0.6) return 'Shooting star / upper wick rejection — bearish signal';
+  if (lowerRatio > 0.6) return 'Hammer / lower wick rejection — bullish signal';
+  if (bodyRatio < 0.2) return 'Doji / spinning top — indecision';
+
+  // Engulfing patterns
+  if (prev) {
+    const prevBody = Math.abs(prev.close - prev.open);
+    const prevBull = prev.close > prev.open;
+    if (
+      isBull && !prevBull &&
+      candle.close > prev.open &&
+      candle.open < prev.close
+    ) return 'Bullish engulfing — strong reversal signal';
+    if (
+      !isBull && prevBull &&
+      candle.close < prev.open &&
+      candle.open > prev.close
+    ) return 'Bearish engulfing — strong reversal signal';
+  }
+
+  return isBull
+    ? `Bullish candle (${(bodyRatio * 100).toFixed(0)}% body)`
+    : `Bearish candle (${(bodyRatio * 100).toFixed(0)}% body)`;
+}
+
+// ─────────────────────────────────────────────
+// Util
+// ─────────────────────────────────────────────
+
+function getTimeSince(date: Date): string {
   const ms = Date.now() - date.getTime();
   const hours = ms / (1000 * 60 * 60);
   return hours < 1
-    ? `${Math.round(hours * 60)}m`
-    : `${hours.toFixed(1)}h`;
+    ? `${Math.round(hours * 60)} minutes`
+    : `${hours.toFixed(1)} hours`;
 }

@@ -5,7 +5,9 @@ import type {
   AgentRuntime,
 } from '../agents';
 import { EntrySignal, ManagementDecision } from '../types/claude.types';
-import { OpenTrade, OrderRequest, OrderResult } from '../types/trade.types';
+import { OpenTrade, OrderRequest, OrderResult, TradeDirection } from '../types/trade.types';
+import { send } from 'node:process';
+import { notifications } from '../utils/notifications';
 
 
 // ─────────────────────────────────────────────
@@ -14,15 +16,15 @@ import { OpenTrade, OrderRequest, OrderResult } from '../types/trade.types';
 // ─────────────────────────────────────────────
 
 const exchange = new ccxt.bybit({
-  apiKey:  process.env.BYBIT_API_KEY  ?? '',
-  secret:  process.env.BYBIT_SECRET   ?? '',
+  apiKey: process.env.BYBIT_API_KEY ?? '',
+  secret: process.env.BYBIT_SECRET ?? '',
   options: {
     defaultType: 'linear',
   },
   ...(process.env.BYBIT_TESTNET === 'true' && {
     urls: {
       api: {
-        public:  'https://api-testnet.bybit.com',
+        public: 'https://api-testnet.bybit.com',
         private: 'https://api-testnet.bybit.com',
       },
     },
@@ -37,7 +39,7 @@ const exchange = new ccxt.bybit({
 export async function fetchBybitBalance(): Promise<number> {
   try {
     const balance = await exchange.fetchBalance({ type: 'unified' });
-    const usdt    = balance['USDT']?.free ?? 0;
+    const usdt = balance['USDT']?.free ?? 0;
 
     logger.info('Bybit balance fetched', { usdt });
     return usdt;
@@ -52,21 +54,21 @@ export async function fetchBybitBalance(): Promise<number> {
 // ─────────────────────────────────────────────
 
 export async function executeEntry(
-  agent:        AgentRuntime,
-  signal:       EntrySignal,
+  agent: AgentRuntime,
+  signal: EntrySignal,
   positionSize: number,
   currentPrice: number,
 ): Promise<OrderResult> {
   const request: OrderRequest = {
-    agentId:      agent.id,
-    pair:         agent.pair,
-    direction:    signal.action as 'LONG' | 'SHORT',
-    orderType:    'market',
-    price:        signal.entry ?? currentPrice,
+    agentId: agent.id,
+    pair: agent.pair,
+    direction: signal.action as 'LONG' | 'SHORT',
+    orderType: 'market',
+    price: signal.entry ?? currentPrice,
     positionSize,
-    tp:           signal.tp!,
-    sl:           signal.sl!,
-    mode:         agent.mode as 'paper' | 'live',
+    tp: signal.tp!,
+    sl: signal.sl!,
+    mode: agent.mode as 'paper' | 'live',
   };
 
   const result = agent.mode === 'live'
@@ -75,29 +77,50 @@ export async function executeEntry(
 
   if (result.success) {
     // Persist trade to DB
-    await prisma.trade.create({
+    const trade = await prisma.trade.create({
       data: {
-        id:         result.orderId!,
-        agentId:    agent.id,
-        pair:       agent.pair,
-        direction:  request.direction,
+        id: result.orderId!,
+        agentId: agent.id,
+        pair: agent.pair,
+        direction: request.direction,
         entryPrice: result.fillPrice!,
-        stopLoss:   request.sl,
+        stopLoss: request.sl,
         takeProfit: request.tp,
-        size:       positionSize,
-        status:     'open',
+        size: positionSize,
+        status: 'open',
       },
     });
 
+    if (agent.mode === 'paper') {
+      const alertPayload: OpenTrade = {
+        id: trade.id,
+        agentId: trade.agentId,
+        pair: trade.pair,
+        direction: trade.direction as TradeDirection,
+        entryPrice: trade.entryPrice,
+        currentTp: trade.takeProfit ?? 0,
+        currentSl: trade.stopLoss ?? 0,
+        positionSize: trade.size,
+        positionValue: trade.size * trade.entryPrice, 
+        unrealisedPnl: 0,
+        unrealisedPct: 0,
+        openedAt: trade.openedAt ?? new Date(),
+        entryReasoning: "Trade opened via automated signal",
+        mode: 'paper',
+      };
+
+      notifications.sendTradeAlert(agent, 'PAPER_OPEN', alertPayload);
+    }
+
     logger.info('Trade opened', {
-      agentId:   agent.id,
-      pair:      agent.pair,
+      agentId: agent.id,
+      pair: agent.pair,
       direction: request.direction,
-      entry:     result.fillPrice,
-      tp:        request.tp,
-      sl:        request.sl,
-      size:      positionSize,
-      mode:      agent.mode,
+      entry: result.fillPrice,
+      tp: request.tp,
+      sl: request.sl,
+      size: positionSize,
+      mode: agent.mode,
     });
   }
 
@@ -109,9 +132,9 @@ export async function executeEntry(
 // ─────────────────────────────────────────────
 
 export async function executeManagement(
-  agent:    AgentRuntime,
+  agent: AgentRuntime,
   decision: ManagementDecision,
-  trade:    OpenTrade,
+  trade: OpenTrade,
 ): Promise<void> {
   switch (decision.action) {
 
@@ -121,7 +144,7 @@ export async function executeManagement(
         where: { id: trade.id },
         data: {
           ...(decision.newTp ? { takeProfit: decision.newTp } : {}),
-          ...(decision.newSl ? { stopLoss:   decision.newSl } : {}),
+          ...(decision.newSl ? { stopLoss: decision.newSl } : {}),
         },
       });
 
@@ -136,9 +159,9 @@ export async function executeManagement(
 
       logger.info('Trade adjusted', {
         tradeId: trade.id,
-        newTp:   decision.newTp,
-        newSl:   decision.newSl,
-        reason:  decision.reasoning,
+        newTp: decision.newTp,
+        newSl: decision.newSl,
+        reason: decision.reasoning,
       });
       break;
     }
@@ -165,8 +188,8 @@ export async function executeManagement(
 // ─────────────────────────────────────────────
 
 export async function closeTrade(
-  agent:       AgentRuntime,
-  trade:       OpenTrade,
+  agent: AgentRuntime,
+  trade: OpenTrade,
   closeReason: string,
 ): Promise<void> {
   let exitPrice = 0;
@@ -192,11 +215,11 @@ export async function closeTrade(
   await prisma.trade.update({
     where: { id: trade.id },
     data: {
-      status:      'closed',
+      status: 'closed',
       exitPrice,
       realizedPnL: realisedPnl,
       closeReason,
-      closedAt:    new Date(),
+      closedAt: new Date(),
       duration,
     },
   });
@@ -204,12 +227,12 @@ export async function closeTrade(
   agent.clearTrade();
 
   logger.info('Trade closed', {
-    tradeId:     trade.id,
-    pair:        trade.pair,
-    direction:   trade.direction,
-    entry:       trade.entryPrice,
-    exit:        exitPrice,
-    pnl:         realisedPnl,
+    tradeId: trade.id,
+    pair: trade.pair,
+    direction: trade.direction,
+    entry: trade.entryPrice,
+    exit: exitPrice,
+    pnl: realisedPnl,
     closeReason,
   });
 }
@@ -220,9 +243,9 @@ export async function closeTrade(
 // ─────────────────────────────────────────────
 
 export async function monitorOpenTrade(
-  agent:        AgentRuntime,
-  currentHigh:  number,
-  currentLow:   number,
+  agent: AgentRuntime,
+  currentHigh: number,
+  currentLow: number,
 ): Promise<void> {
   const trade = agent.currentTrade;
   if (!trade) return;
@@ -231,11 +254,11 @@ export async function monitorOpenTrade(
 
   if (trade.direction === 'LONG') {
     if (currentHigh >= trade.currentTp) hit = 'TP_HIT';
-    if (currentLow  <= trade.currentSl) hit = 'SL_HIT';
+    if (currentLow <= trade.currentSl) hit = 'SL_HIT';
   }
 
   if (trade.direction === 'SHORT') {
-    if (currentLow  <= trade.currentTp) hit = 'TP_HIT';
+    if (currentLow <= trade.currentTp) hit = 'TP_HIT';
     if (currentHigh >= trade.currentSl) hit = 'SL_HIT';
   }
 
@@ -250,7 +273,7 @@ export async function monitorOpenTrade(
 
 async function executePaperEntry(request: OrderRequest): Promise<OrderResult> {
   // Simulate realistic slippage — 0.02%
-  const slippage  = request.price * 0.0002;
+  const slippage = request.price * 0.0002;
   const fillPrice = request.direction === 'LONG'
     ? request.price + slippage
     : request.price - slippage;
@@ -258,10 +281,10 @@ async function executePaperEntry(request: OrderRequest): Promise<OrderResult> {
   const orderId = `paper_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
 
   return {
-    success:   true,
+    success: true,
     orderId,
     fillPrice: Math.round(fillPrice * 100) / 100,
-    error:     null,
+    error: null,
   };
 }
 
@@ -281,25 +304,25 @@ async function executeLiveEntry(request: OrderRequest): Promise<OrderResult> {
       undefined,
       {
         takeProfit: request.tp,
-        stopLoss:   request.sl,
+        stopLoss: request.sl,
         timeInForce: 'GoodTillCancel',
       },
     );
 
     return {
-      success:   true,
-      orderId:   order.id,
+      success: true,
+      orderId: order.id,
       fillPrice: order.average ?? order.price ?? request.price,
-      error:     null,
+      error: null,
     };
 
   } catch (error: any) {
     logger.error('Live order failed', { error: error.message, request });
     return {
-      success:   false,
-      orderId:   null,
+      success: false,
+      orderId: null,
       fillPrice: null,
-      error:     error.message,
+      error: error.message,
     };
   }
 }
@@ -323,13 +346,13 @@ async function updateLiveTpSl(
       undefined,
       {
         ...(newTp ? { takeProfit: newTp } : {}),
-        ...(newSl ? { stopLoss:   newSl } : {}),
+        ...(newSl ? { stopLoss: newSl } : {}),
       },
     );
   } catch (error: any) {
     logger.error('Failed to update TP/SL on exchange', {
       tradeId: trade.id,
-      error:   error.message,
+      error: error.message,
     });
   }
 }
@@ -356,7 +379,7 @@ async function closeLivePosition(trade: OpenTrade): Promise<number> {
   } catch (error: any) {
     logger.error('Failed to close live position', {
       tradeId: trade.id,
-      error:   error.message,
+      error: error.message,
     });
     return trade.entryPrice; // fallback
   }
@@ -367,17 +390,17 @@ async function closeLivePosition(trade: OpenTrade): Promise<number> {
 // ─────────────────────────────────────────────
 
 async function partialCloseTrade(
-  agent:   AgentRuntime,
-  trade:   OpenTrade,
+  agent: AgentRuntime,
+  trade: OpenTrade,
   percent: number,
 ): Promise<void> {
-  const closeSize    = trade.positionSize * (percent / 100);
-  const remainSize   = trade.positionSize - closeSize;
-  let   exitPrice    = 0;
+  const closeSize = trade.positionSize * (percent / 100);
+  const remainSize = trade.positionSize - closeSize;
+  let exitPrice = 0;
 
   if (agent.mode === 'live') {
     try {
-      const side  = trade.direction === 'LONG' ? 'sell' : 'buy';
+      const side = trade.direction === 'LONG' ? 'sell' : 'buy';
       const order = await exchange.createOrder(
         trade.pair,
         'market',
@@ -405,14 +428,14 @@ async function partialCloseTrade(
   // Update remaining size on trade
   await prisma.trade.update({
     where: { id: trade.id },
-    data:  { size: remainSize },
+    data: { size: remainSize },
   });
 
   // Update runtime
   trade.positionSize = remainSize;
 
   logger.info('Partial close executed', {
-    tradeId:    trade.id,
+    tradeId: trade.id,
     closeSize,
     remainSize,
     exitPrice,
@@ -432,7 +455,7 @@ async function getLatestPrice(pair: string): Promise<number> {
   } catch {
     // Fallback to last candle in DB
     const candle = await prisma.candle.findFirst({
-      where:   { pair, timeframe: '1' },
+      where: { pair, timeframe: '1' },
       orderBy: { timestamp: 'desc' },
     });
     return candle?.close ?? 0;
@@ -444,9 +467,9 @@ async function getLatestPrice(pair: string): Promise<number> {
 // ─────────────────────────────────────────────
 
 function calculatePnl(
-  direction:    'LONG' | 'SHORT',
-  entry:        number,
-  exit:         number,
+  direction: 'LONG' | 'SHORT',
+  entry: number,
+  exit: number,
   positionSize: number,
 ): number {
   const priceDiff = direction === 'LONG'

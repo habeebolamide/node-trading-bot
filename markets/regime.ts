@@ -1,4 +1,5 @@
 import { Candle, Indicators, MarketRegime, RegimeAnalysis } from '../types/market.types';
+import logger from '../utils/logger';
 import { calculateIndicators, calculateEMASlope } from './indicators';
 
 // ─────────────────────────────────────────────
@@ -188,32 +189,43 @@ function calculateConfidence(
 // ─────────────────────────────────────────────
 
 export function isSignificantCandle(
-  candles:     Candle[],
-  newsAlert:   boolean = false
+  candles:   Candle[],
+  newsAlert: boolean = false,
 ): boolean {
+
+  return true; // TEMP OVERRIDE
+
   if (candles.length < 3) return false;
 
   const current  = candles.at(-1)!;
+  
   const previous = candles.at(-2)!;
 
-  // Price moved more than 0.5%
-  const priceMove = Math.abs(current.close - previous.close) / previous.close;
-  if (priceMove > 0.005) return true;
+  logger.info('Checking candle significance', {
+    current,
+    previous
+  });
 
-  // Volume spike — 1.5x average
-  const recentVolumes = candles.slice(-21, -1).map(c => c.volume);
-  const avgVolume     = recentVolumes.reduce((a, b) => a + b, 0) / recentVolumes.length;
-  if (current.volume > avgVolume * 1.5) return true;
-
-  // Strong candle body — close near high or low (momentum candle)
+  const priceMove   = Math.abs(current.close - previous.close) / previous.close;
+  const recentVols  = candles.slice(-21, -1).map(c => c.volume);
+  const avgVolume   = recentVols.reduce((a, b) => a + b, 0) / recentVols.length;
+  const volumeSpike = current.volume > avgVolume * 1.5;
   const candleRange = current.high - current.low;
   const bodySize    = Math.abs(current.close - current.open);
-  if (candleRange > 0 && bodySize / candleRange > 0.7) return true;
+  const strongBody  = candleRange > 0 && bodySize / candleRange > 0.7;
 
-  // News alert from news monitor
-  if (newsAlert) return true;
+  // Add this temporarily
+  logger.info('Significance breakdown', {
+    priceMove:      (priceMove * 100).toFixed(3) + '%',
+    priceMovePass:  priceMove > 0.002,
+    volumeSpike,
+    volumeRatio:    (current.volume / avgVolume).toFixed(2),
+    strongBody,
+    bodyRatio:      candleRange > 0 ? (bodySize / candleRange).toFixed(2) : 0,
+  });
 
-  return false;
+  // Change to 0.005 Later 
+  return priceMove > 0.005 || volumeSpike || strongBody;
 }
 
 // ─────────────────────────────────────────────

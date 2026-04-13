@@ -14,9 +14,11 @@ export async function seedCandleBuffers(pairs: string[]): Promise<void> {
   logger.info('Seeding candle buffers', { pairs });
 
   const timeframes = ['5', '15', '60', '240'];
-  const BASE_URL = process.env.BYBIT_TESTNET === 'true'
-    ? 'https://api-testnet.bybit.com'
-    : 'https://api.bybit.com';
+  // const BASE_URL = process.env.BYBIT_TESTNET === 'true'
+  //   ? 'https://api-testnet.bybit.com'
+  //   : 'https://api.bybit.com';
+
+  const BASE_URL = 'https://api.bybit.com';
 
   for (const pair of pairs) {
     if (!candleBuffers[pair]) candleBuffers[pair] = {};
@@ -26,6 +28,7 @@ export async function seedCandleBuffers(pairs: string[]): Promise<void> {
         const url = `${BASE_URL}/v5/market/kline?symbol=${pair}&interval=${tf}&limit=200`;
         const res = await fetch(url);
         const data = await res.json() as any;
+
 
         if (data.retCode !== 0) {
           logger.warn('Failed to fetch candles', { pair, tf, msg: data.retMsg });
@@ -47,9 +50,9 @@ export async function seedCandleBuffers(pairs: string[]): Promise<void> {
           closeTime: Number(row[0]),
         }));
 
-        logger.info('Buffer seeded', {
-          candleBuffers
-        });
+        // logger.info('Buffer seeded', {
+        //   candleBuffers
+        // });
 
       } catch (error: any) {
         logger.error('Seed error', { pair, tf, error: error.message });
@@ -66,11 +69,7 @@ export function initBuffer(pair: string, tf: string): void {
 }
 
 export function getCandleBuffer(pair: string, tf: string): any[] {
-
-  logger.info({
-    bufferExists: candleBuffers
-  })
-
+  
   if (!candleBuffers[pair]) candleBuffers[pair] = {};
   if (!candleBuffers[pair][tf]) candleBuffers[pair][tf] = [];
   return candleBuffers[pair][tf];
@@ -94,9 +93,11 @@ export class BybitWebSocket {
   private readonly MAX_RECONNECT = 10;
 
   public async connectWebSocket(): Promise<void> {
-    const url = process.env.BYBIT_TESTNET === 'true'
-      ? 'wss://stream-testnet.bybit.com/v5/public/linear'
-      : 'wss://stream.bybit.com/v5/public/linear';
+    // const url = process.env.BYBIT_TESTNET === 'true'
+    //   ? 'wss://stream-testnet.bybit.com/v5/public/linear'
+    //   : 'wss://stream.bybit.com/v5/public/linear';
+
+    const url = 'wss://stream.bybit.com/v5/public/linear';
 
     this.ws = new WebSocket(url, { handshakeTimeout: 10_000 });
 

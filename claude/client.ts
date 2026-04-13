@@ -7,10 +7,12 @@ import { ClaudeCallOptions, ClaudeCallResult, ClaudeModel, EntrySignal, Manageme
 // Config
 // ─────────────────────────────────────────────
 
-const MODEL_PRO   = 'gemini-2.5-pro';
+// const MODEL_PRO   = 'gemini-2.5-pro';
+const MODEL_PRO   = 'gemini-3.1-flash-lite-preview';
 const MODEL_FLASH = 'gemini-2.5-flash';
+const MODEL_FALLBACK = 'gemini-3.1-flash-lite-preview'; 
 const MAX_RETRIES    = 3;
-const RETRY_DELAY_MS = 2000;
+const RETRY_DELAY_MS = 5000;
 
 // ─────────────────────────────────────────────
 // Gemini client singleton
@@ -125,16 +127,17 @@ async function callGemini<T>({
   agentId:      string;
 }): Promise<ClaudeCallResult<T>> {
   const startedAt = Date.now();
-  let   lastError: string | null = null;
+  let lastError: string | null = null;
+  let currentModel = model; // Track current model for failover
 
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
     try {
       const geminiModel: GenerativeModel = genAI.getGenerativeModel({
-        model,
+        model: currentModel,
         systemInstruction: systemPrompt,
         generationConfig: {
-          responseMimeType: 'application/json', // forces clean JSON output
-          temperature:      0.2,                // low = consistent, less hallucination
+          responseMimeType: 'application/json',
+          temperature:      0.2,
         },
       });
 
@@ -142,83 +145,49 @@ async function callGemini<T>({
       const rawText = result.response.text();
       const usage   = result.response.usageMetadata;
 
+      logger.info('Usage metadata', {usage });
+
       const tokenUsage: TokenUsage = {
         inputTokens:  usage?.promptTokenCount     ?? 0,
         outputTokens: usage?.candidatesTokenCount ?? 0,
         cacheHits:    0,
-        totalCost:    0, // free tier — no cost tracking needed yet
+        totalCost:    0,
       };
 
-      logger.info('Gemini call completed', {
-        agentId,
-        promptType,
-        model,
-        tokens:     tokenUsage,
-        durationMs: Date.now() - startedAt,
-      });
-
       const parsed = parseJSON<T>(rawText);
+      if (!parsed.success) throw new Error(`JSON parse failed: ${parsed.error}`);
 
-      if (!parsed.success) {
-        logger.warn('Gemini returned invalid JSON', {
-          agentId,
-          promptType,
-          raw: rawText.slice(0, 200),
-        });
-
-        lastError = `JSON parse failed: ${parsed.error}`;
-
-        if (attempt < MAX_RETRIES) {
-          await sleep(RETRY_DELAY_MS * attempt);
-          continue;
-        }
-      }
+      logger.info('Gemini response details', { agentId, promptType, model: currentModel, rawResponse: parsed, tokenUsage });
 
       return {
-        success:     parsed.success,
+        success:     true,
         data:        parsed.data,
         rawResponse: rawText,
         tokensUsed:  tokenUsage,
-        error:       parsed.error,
+        error:       null,
         durationMs:  Date.now() - startedAt,
       };
 
     } catch (error: any) {
       lastError = error?.message ?? 'Unknown error';
 
-      logger.warn(`Gemini attempt ${attempt} failed`, {
-        agentId,
-        promptType,
-        error: lastError,
-      });
-
-      // Rate limit hit — wait longer
-      if (error?.status === 429) {
-        logger.warn('Rate limit hit — waiting 10s', { agentId });
-        await sleep(10_000);
+      // --- AUTOMATED FAILOVER ---
+      // Switch to Lite model if service is overloaded (503) or rate limited (429)
+      if ((error?.status === 503 || error?.status === 429) && currentModel !== MODEL_FALLBACK) {
+        logger.warn(`Model ${currentModel} failed (${error.status}). Failing over to ${MODEL_FALLBACK}`, { agentId });
+        currentModel = MODEL_FALLBACK;
+        await sleep(2000); // Wait briefly before trying fallback
         continue;
       }
+      // --------------------------
 
-      if (attempt < MAX_RETRIES) {
-        await sleep(RETRY_DELAY_MS * attempt);
-      }
+      logger.warn(`Gemini attempt ${attempt} failed`, { agentId, promptType, error: lastError });
+      if (attempt < MAX_RETRIES) await sleep(RETRY_DELAY_MS * attempt);
     }
   }
 
-  logger.error('Gemini call failed after all retries', {
-    agentId,
-    promptType,
-    error: lastError,
-  });
-
-  return {
-    success:     false,
-    data:        null,
-    rawResponse: '',
-    tokensUsed:  { inputTokens: 0, outputTokens: 0, cacheHits: 0, totalCost: 0 },
-    error:       lastError,
-    durationMs:  Date.now() - startedAt,
-  };
+  logger.error('Gemini call failed after all retries', { agentId, promptType, error: lastError });
+  return { success: false, data: null, rawResponse: '', tokensUsed: { inputTokens: 0, outputTokens: 0, cacheHits: 0, totalCost: 0 }, error: lastError, durationMs: Date.now() - startedAt };
 }
 
 // ─────────────────────────────────────────────

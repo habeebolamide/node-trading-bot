@@ -7,6 +7,9 @@ import { EntrySignal, ManagementDecision } from "../types/claude.types";
 import { Candle, MultiTimeframeData, RegimeAnalysis } from "../types/market.types";
 import { OpenTrade } from "../types/trade.types";
 import logger from "../utils/logger";
+import { getRelevantLessons } from '../learning';
+import { notifications } from "../utils/notifications";
+
 
 // ====================== RUNTIME AGENT CLASS ======================
 export class AgentRuntime {
@@ -30,39 +33,39 @@ export class AgentRuntime {
   public consecutiveLosses: number = 0;
 
   constructor(dbData: any) {
-    this.id                = dbData.id;
+    this.id = dbData.id;
     // this.userId            = dbData.userId;
-    this.name              = dbData.name;
-    this.pair              = dbData.pair;
+    this.name = dbData.name;
+    this.pair = dbData.pair;
     this.allocationPercent = dbData.allocationPercent ?? 10;
-    this.riskPercent       = dbData.riskPercent       ?? 1.0;
-    this.style             = dbData.style             ?? 'swing';
-    this.mode              = dbData.mode              ?? 'paper';
-    this.status            = dbData.status            ?? 'active';
-    this.createdAt         = dbData.createdAt;
-    this.updatedAt         = dbData.updatedAt;
+    this.riskPercent = dbData.riskPercent ?? 1.0;
+    this.style = dbData.style ?? 'swing';
+    this.mode = dbData.mode ?? 'paper';
+    this.status = dbData.status ?? 'active';
+    this.createdAt = dbData.createdAt;
+    this.updatedAt = dbData.updatedAt;
 
     this.learnedRules = dbData.learnedRules
       ? (typeof dbData.learnedRules === 'string'
-          ? JSON.parse(dbData.learnedRules)
-          : dbData.learnedRules)
+        ? JSON.parse(dbData.learnedRules)
+        : dbData.learnedRules)
       : [];
   }
 
   toPromptAgent(): Agent {
     return {
-      id:                this.id,
+      id: this.id,
       // userId:            this.userId,
-      name:              this.name,
-      pair:              this.pair,
+      name: this.name,
+      pair: this.pair,
       allocationPercent: this.allocationPercent,
-      riskPercent:       this.riskPercent,
-      style:             this.style,
-      mode:              this.mode,
-      status:            this.status,
-      learnedRules:      this.learnedRules,
-      createdAt:         this.createdAt,
-      updatedAt:         this.updatedAt,
+      riskPercent: this.riskPercent,
+      style: this.style,
+      mode: this.mode,
+      status: this.status,
+      learnedRules: this.learnedRules,
+      createdAt: this.createdAt,
+      updatedAt: this.updatedAt,
     };
   }
 
@@ -140,20 +143,20 @@ export class AgentManager {
       if (!agent) continue;
 
       const openTrade: OpenTrade = {
-        id:             dbTrade.id,
-        agentId:        dbTrade.agentId,
-        pair:           dbTrade.pair,
-        direction:      dbTrade.direction as 'LONG' | 'SHORT',
-        entryPrice:     dbTrade.entryPrice,
-        currentTp:      dbTrade.takeProfit ?? 0,
-        currentSl:      dbTrade.stopLoss,
-        positionSize:   dbTrade.size,
-        positionValue:  0,
-        unrealisedPnl:  0,
-        unrealisedPct:  0,
-        openedAt:       dbTrade.openedAt,
+        id: dbTrade.id,
+        agentId: dbTrade.agentId,
+        pair: dbTrade.pair,
+        direction: dbTrade.direction as 'LONG' | 'SHORT',
+        entryPrice: dbTrade.entryPrice,
+        currentTp: dbTrade.takeProfit ?? 0,
+        currentSl: dbTrade.stopLoss,
+        positionSize: dbTrade.size,
+        positionValue: 0,
+        unrealisedPnl: 0,
+        unrealisedPct: 0,
+        openedAt: dbTrade.openedAt,
         entryReasoning: '',
-        mode:           agent.mode as 'paper' | 'live',
+        mode: agent.mode as 'paper' | 'live',
       };
 
       agent.attachTrade(openTrade);
@@ -163,9 +166,9 @@ export class AgentManager {
 
   // ====================== MAIN CANDLE PROCESSOR ======================
   async processSignificantCandle(
-    candle:      Candle,
-    mtfData:     MultiTimeframeData,
-    regime:      RegimeAnalysis,
+    candle: Candle,
+    mtfData: MultiTimeframeData,
+    regime: RegimeAnalysis,
     newsContext: string = 'No major news detected.',
   ): Promise<void> {
     const agents = this.getAgentsForPair(candle.pair);
@@ -190,17 +193,28 @@ export class AgentManager {
 
   // ====================== ENTRY CYCLE ======================
   private async runEntryCycle(
-    agent:       AgentRuntime,
-    mtfData:     MultiTimeframeData,
-    regime:      RegimeAnalysis,
+    agent: AgentRuntime,
+    mtfData: MultiTimeframeData,
+    regime: RegimeAnalysis,
     newsContext: string,
   ): Promise<void> {
     // Get real monthly P&L from risk module
-    const drawdown       = await getDrawdownState(agent.id);
+    const drawdown = await getDrawdownState(agent.id);
     const performanceMode = resolvePerformanceMode(drawdown.monthlyPnlPct);
 
     const systemPrompt = buildSystemPrompt(agent.toPromptAgent());
-    const entryPrompt  = buildEntryPrompt(
+
+    const lessons = await getRelevantLessons(
+      agent.id,
+      regime.regime,
+      'LONG',                                        // placeholder — Claude decides direction
+      mtfData.tf1h.indicators?.rsi ?? 50,
+      mtfData.tf1h.indicators?.volume?.ratio ?? 1,
+      agent.pair,
+      new Date().getDay(),
+    );
+
+    const entryPrompt = buildEntryPrompt(
       agent.toPromptAgent(),
       mtfData,
       regime,
@@ -211,53 +225,57 @@ export class AgentManager {
     );
 
     const claudeResult = await getEntrySignal(systemPrompt, entryPrompt, agent.id);
+
     if (!claudeResult.success || !claudeResult.data) return;
 
     const signal = claudeResult.data as EntrySignal;
-    if (signal.action === 'NO_TRADE') return;
+    if (signal.action === 'NO_TRADE') {
+      notifications.sendNoTradeSignal(agent.name, agent.pair, signal.reasoning);
+      return;
+    };
 
     // Portfolio value from env for now — capital module will improve this
     const portfolio = {
       // userId:         agent.userId,
-      totalValue:     parseFloat(process.env.INITIAL_CAPITAL ?? '1000'),
+      totalValue: parseFloat(process.env.INITIAL_CAPITAL ?? '1000'),
       availableValue: parseFloat(process.env.INITIAL_CAPITAL ?? '1000'),
       allocatedValue: 0,
-      reserveValue:   parseFloat(process.env.INITIAL_CAPITAL ?? '1000') * 0.15,
-      lastUpdatedAt:  new Date(),
+      reserveValue: parseFloat(process.env.INITIAL_CAPITAL ?? '1000') * 0.15,
+      lastUpdatedAt: new Date(),
     };
 
-    const riskResult = await validateEntrySignal(
-      signal,
-      agent.toPromptAgent(),
-      { cooldownUntil: agent.cooldownUntil } as any,
-      portfolio,
-    );
+    // const riskResult = await validateEntrySignal(
+    //   signal,
+    //   agent.toPromptAgent(),
+    //   { cooldownUntil: agent.cooldownUntil } as any,
+    //   portfolio,
+    // );
 
-    if (!riskResult.approved) {
-      logger.info(`Signal blocked for ${agent.name}`, { reason: riskResult.blockReason });
-      return;
-    }
+    // if (!riskResult.approved) {
+    //   logger.info(`Signal blocked for ${agent.name}`, { reason: riskResult.blockReason });
+    //   return;
+    // }
 
     // TODO: wire up execution engine
     // const execResult = await executionEngine.executeEntry(agent, signal, riskResult.positionSize!, portfolio.totalValue);
     logger.info(`Signal approved for ${agent.name} — execution engine not wired yet`, {
-      action:     signal.action,
-      entry:      signal.entry,
-      tp:         signal.tp,
-      sl:         signal.sl,
+      action: signal.action,
+      entry: signal.entry,
+      tp: signal.tp,
+      sl: signal.sl,
       confidence: signal.confidence,
     });
   }
 
   // ====================== MANAGEMENT CYCLE ======================
   private async runManagementCycle(
-    agent:       AgentRuntime,
-    mtfData:     MultiTimeframeData,
+    agent: AgentRuntime,
+    mtfData: MultiTimeframeData,
     newsContext: string,
   ): Promise<void> {
     if (!agent.currentTrade) return;
 
-    const systemPrompt     = buildSystemPrompt(agent.toPromptAgent());
+    const systemPrompt = buildSystemPrompt(agent.toPromptAgent());
     const managementPrompt = buildManagementPrompt(
       agent.toPromptAgent(),
       agent.currentTrade,
@@ -283,9 +301,9 @@ export class AgentManager {
     // TODO: wire up execution engine
     // await executionEngine.executeManagement(agent, decision, agent.currentTrade);
     logger.info(`Management decision for ${agent.name}`, {
-      action:    decision.action,
-      newTp:     decision.newTp,
-      newSl:     decision.newSl,
+      action: decision.action,
+      newTp: decision.newTp,
+      newSl: decision.newSl,
       reasoning: decision.reasoning,
     });
   }

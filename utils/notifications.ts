@@ -59,6 +59,17 @@ export const notifications = {
     }
   },
 
+  async sendNoTradeSignal(agentName: string, pair: string, reason:string): Promise<void> {
+    const message = `⚠️ No trade signal from ${agentName} for ${pair} at this time.\n\n` +
+                    `Reason: <b>${reason}</b>`;
+    try {
+      await bot.sendMessage(CHAT_ID, message, { parse_mode: 'HTML' });
+      console.log('📨 Telegram no-signal alert sent');
+    } catch (error) {
+      console.error('Failed to send Telegram message:', error);
+    }
+  },
+
   // Extra helper methods
   async sendError(message: string): Promise<void> {
     await bot.sendMessage(CHAT_ID, `❌ ERROR: ${message}`);

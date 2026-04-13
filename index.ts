@@ -86,20 +86,9 @@ async function handleCandle(candle: Candle): Promise<void> {
     // 1. Significance check — free, no API call
     const pair = candle.pair;
     const buffer = getCandleBuffer(pair, candle.interval);
-    const newsAlert = hasRecentHighImpactNews(pair);
-    const significant = isSignificantCandle(buffer, newsAlert);
+    // const newsAlert = hasRecentHighImpactNews(pair);
+    const significant = isSignificantCandle(buffer);
 
-
-
-    // Add this temporarily
-
-    logger.info('Significance check result', {
-      pair,
-      tf: candle.interval,
-      close: candle.close,
-      significant,
-      bufferSize: buffer.length,
-    });
 
     if (!significant) {
       logger.info('Candle not significant — skipping', { pair });
