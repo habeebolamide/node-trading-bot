@@ -9,6 +9,7 @@ import { OpenTrade } from "../types/trade.types";
 import logger from "../utils/logger";
 import { getRelevantLessons } from '../learning';
 import { notifications } from "../utils/notifications";
+import { executionEngine } from "../execution";
 
 
 // ====================== RUNTIME AGENT CLASS ======================
@@ -19,7 +20,7 @@ export class AgentRuntime {
   public pair: string;
   public allocationPercent: number;
   public riskPercent: number;
-  public style: 'scalp' | 'swing' | 'auto';
+  public tradingStyle: 'scalp' | 'swing' | 'auto';
   public mode: 'backtest' | 'paper' | 'live';
   public status: 'active' | 'paused' | 'stopped';
   public learnedRules: LearnedRule[] = [];
@@ -39,7 +40,7 @@ export class AgentRuntime {
     this.pair = dbData.pair;
     this.allocationPercent = dbData.allocationPercent ?? 10;
     this.riskPercent = dbData.riskPercent ?? 1.0;
-    this.style = dbData.style ?? 'swing';
+    this.tradingStyle = dbData.tradingStyle ?? 'swing';
     this.mode = dbData.mode ?? 'paper';
     this.status = dbData.status ?? 'active';
     this.createdAt = dbData.createdAt;
@@ -60,7 +61,7 @@ export class AgentRuntime {
       pair: this.pair,
       allocationPercent: this.allocationPercent,
       riskPercent: this.riskPercent,
-      style: this.style,
+      tradingStyle: this.tradingStyle,
       mode: this.mode,
       status: this.status,
       learnedRules: this.learnedRules,
@@ -219,7 +220,7 @@ export class AgentManager {
       mtfData,
       regime,
       newsContext,
-      [],             // TODO: wire up lesson retriever in learning module
+      lessons,            // TODO: wire up lesson retriever in learning module
       drawdown.monthlyPnlPct * 100,
       performanceMode,
     );
@@ -229,6 +230,7 @@ export class AgentManager {
     if (!claudeResult.success || !claudeResult.data) return;
 
     const signal = claudeResult.data as EntrySignal;
+
     if (signal.action === 'NO_TRADE') {
       notifications.sendNoTradeSignal(agent.name, agent.pair, signal.reasoning);
       return;
@@ -244,20 +246,21 @@ export class AgentManager {
       lastUpdatedAt: new Date(),
     };
 
-    // const riskResult = await validateEntrySignal(
-    //   signal,
-    //   agent.toPromptAgent(),
-    //   { cooldownUntil: agent.cooldownUntil } as any,
-    //   portfolio,
-    // );
+    const riskResult = await validateEntrySignal(
+      signal,
+      agent.toPromptAgent(),
+      { cooldownUntil: agent.cooldownUntil } as any,
+      portfolio,
+    );
 
-    // if (!riskResult.approved) {
-    //   logger.info(`Signal blocked for ${agent.name}`, { reason: riskResult.blockReason });
-    //   return;
-    // }
+    if (!riskResult.approved) {
+      logger.info(`Signal blocked for ${agent.name}`, { reason: riskResult.blockReason });
+      return;
+    }
 
     // TODO: wire up execution engine
-    // const execResult = await executionEngine.executeEntry(agent, signal, riskResult.positionSize!, portfolio.totalValue);
+    const execResult = await executionEngine.executeEntry(agent, signal, riskResult.positionSize!, portfolio.totalValue);
+
     logger.info(`Signal approved for ${agent.name} — execution engine not wired yet`, {
       action: signal.action,
       entry: signal.entry,
@@ -299,7 +302,7 @@ export class AgentManager {
     if (!validation.approved) return;
 
     // TODO: wire up execution engine
-    // await executionEngine.executeManagement(agent, decision, agent.currentTrade);
+    await executionEngine.executeManagement(agent, decision, agent.currentTrade);
     logger.info(`Management decision for ${agent.name}`, {
       action: decision.action,
       newTp: decision.newTp,

@@ -27,7 +27,7 @@ Your job is to analyse market data and make precise trading decisions.
 IDENTITY:
 - Agent name: ${agent.name}
 - Trading pair: ${agent.pair}
-- Trading style: ${agent.style}
+- Trading tradingStyle: ${agent.tradingStyle}
 - Risk per trade: ${agent.riskPercent}% of allocated capital
 
 CORE RULES — NON-NEGOTIABLE:

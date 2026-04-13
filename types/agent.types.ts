@@ -16,7 +16,7 @@ export interface Agent {
   pair:              string;          // e.g. BTCUSDT
   allocationPercent: number;          // % of total portfolio e.g. 30
   riskPercent:       number;          // % of agent capital per trade e.g. 2
-  style:             TradingStyle;
+  tradingStyle:      TradingStyle;
   mode:              AgentMode;
   status:            AgentStatus;
   learnedRules:      LearnedRule[];   // synthesised from past losses

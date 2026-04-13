@@ -50,13 +50,13 @@ async function main(): Promise<void> {
 
   await seedCandleBuffers(uniquePairs);
 
-  const keys = Object.keys(candleBuffers);
-  keys.forEach(pair => {
-    const tfs = Object.keys(candleBuffers[pair]);
-    tfs.forEach(tf => {
-      console.log(`candleBuffers[${pair}][${tf}] = ${candleBuffers[pair][tf].length} candles`);
-    });
-  });
+  // const keys = Object.keys(candleBuffers);
+  // keys.forEach(pair => {
+  //   const tfs = Object.keys(candleBuffers[pair]);
+  //   tfs.forEach(tf => {
+  //     console.log(`candleBuffers[${pair}][${tf}] = ${candleBuffers[pair][tf].length} candles`);
+  //   });
+  // });
 
   uniquePairs.forEach(pair => {
     onCandle(pair, '5', (candle) => handleCandle(candle));
@@ -97,6 +97,7 @@ async function handleCandle(candle: Candle): Promise<void> {
 
     // 2. Build multi-timeframe snapshot
     const mtfData = buildMtfData(pair);
+    
     if (!mtfData) {
       logger.warn('Not enough candle history yet', { pair });
       return;
