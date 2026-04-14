@@ -1,4 +1,4 @@
-import Anthropic from '@anthropic-ai/sdk';
+import { GoogleGenerativeAI, GenerativeModel } from '@google/generative-ai';
 import logger from '../utils/logger';
 import { ClaudeCallOptions, ClaudeCallResult, ClaudeModel, EntrySignal, ManagementDecision, PostMortemResult, TokenUsage } from '../types/claude.types';
 
@@ -7,110 +7,89 @@ import { ClaudeCallOptions, ClaudeCallResult, ClaudeModel, EntrySignal, Manageme
 // Config
 // ─────────────────────────────────────────────
 
-const MODEL_SONNET: ClaudeModel = 'claude-sonnet-4-5';
-const MODEL_HAIKU: ClaudeModel = 'claude-haiku-4-5-20251001';
-const MAX_TOKENS = 1024;
-const MAX_RETRIES = 3;
-const RETRY_DELAY_MS = 2000;
-
-// Cost per token in USD (approximate)
-const COST = {
-    [MODEL_SONNET]: { input: 0.000003, output: 0.000015 },
-    [MODEL_HAIKU]: { input: 0.00000025, output: 0.00000125 },
-};
+// const MODEL_PRO   = 'gemini-2.5-pro';
+const MODEL_PRO   = 'gemini-2.5-pro';
+const MODEL_FLASH = 'gemini-2.5-flash';
+const MODEL_FALLBACK = 'gemini-3.1-flash-lite-preview'; 
+const MAX_RETRIES    = 3;
+const RETRY_DELAY_MS = 5000;
 
 // ─────────────────────────────────────────────
-// Anthropic client singleton
+// Gemini client singleton
 // ─────────────────────────────────────────────
 
-const anthropic = new Anthropic({
-    apiKey: process.env.ANTHROPIC_API_KEY,
-});
+const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY ?? '');
 
 // ─────────────────────────────────────────────
 // Public — entry signal
-// Uses Sonnet — needs strong reasoning
+// Uses Pro — needs strongest reasoning
 // ─────────────────────────────────────────────
 
 export async function getEntrySignal(
-    systemPrompt: string,
-    entryPrompt: string,
-    agentId: string,
+  systemPrompt: string,
+  entryPrompt:  string,
+  agentId:      string,
 ): Promise<ClaudeCallResult<EntrySignal>> {
-    return callClaude<EntrySignal>({
-        systemPrompt,
-        userPrompt: entryPrompt,
-        options: {
-            model: MODEL_SONNET,
-            promptType: 'entry',
-            agentId,
-            useCache: true,
-        },
-    });
+  return callGemini<EntrySignal>({
+    systemPrompt,
+    userPrompt: entryPrompt,
+    model:      MODEL_PRO,
+    promptType: 'entry',
+    agentId,
+  });
 }
 
 // ─────────────────────────────────────────────
 // Public — management decision
-// Uses Haiku for HOLD checks (cheap)
-// Escalates to Sonnet if adjustment needed
+// Flash for HOLD check, Pro if adjustment needed
 // ─────────────────────────────────────────────
 
 export async function getManagementDecision(
-    systemPrompt: string,
-    managementPrompt: string,
-    agentId: string,
+  systemPrompt:     string,
+  managementPrompt: string,
+  agentId:          string,
 ): Promise<ClaudeCallResult<ManagementDecision>> {
-    // First pass with Haiku — cheap check
-    const haikuResult = await callClaude<ManagementDecision>({
-        systemPrompt,
-        userPrompt: managementPrompt,
-        options: {
-            model: MODEL_HAIKU,
-            promptType: 'management',
-            agentId,
-            useCache: true,
-        },
-    });
+  // First pass with Flash — cheap
+  const flashResult = await callGemini<ManagementDecision>({
+    systemPrompt,
+    userPrompt: managementPrompt,
+    model:      MODEL_FLASH,
+    promptType: 'management',
+    agentId,
+  });
 
-    // If Haiku says HOLD — trust it, don't escalate
-    if (haikuResult.success && haikuResult.data?.action === 'HOLD') {
-        return haikuResult;
-    }
+  // If Flash says HOLD — trust it, no need to escalate
+  if (flashResult.success && flashResult.data?.action === 'HOLD') {
+    return flashResult;
+  }
 
-    // Haiku wants to adjust or close — escalate to Sonnet for better judgment
-    logger.info('Escalating management decision to Sonnet', { agentId });
+  // Flash wants to adjust or close — escalate to Pro
+  logger.info('Escalating management decision to Pro', { agentId });
 
-    return callClaude<ManagementDecision>({
-        systemPrompt,
-        userPrompt: managementPrompt,
-        options: {
-            model: MODEL_SONNET,
-            promptType: 'management',
-            agentId,
-            useCache: true,
-        },
-    });
+  return callGemini<ManagementDecision>({
+    systemPrompt,
+    userPrompt: managementPrompt,
+    model:      MODEL_PRO,
+    promptType: 'management',
+    agentId,
+  });
 }
 
 // ─────────────────────────────────────────────
 // Public — post-mortem analysis
-// Uses Sonnet — quality matters here
 // ─────────────────────────────────────────────
 
 export async function getPostMortem(
-    postMortemPrompt: string,
-    agentId: string,
+  postMortemPrompt: string,
+  agentId:          string,
 ): Promise<ClaudeCallResult<PostMortemResult>> {
-    return callClaude<PostMortemResult>({
-        systemPrompt: POST_MORTEM_SYSTEM,
-        userPrompt: postMortemPrompt,
-        options: {
-            model: MODEL_SONNET,
-            promptType: 'postmortem',
-            agentId,
-            useCache: false, // post-mortems are infrequent — not worth caching
-        },
-    });
+  return callGemini<PostMortemResult>({
+    systemPrompt: POST_MORTEM_SYSTEM,
+    userPrompt:   postMortemPrompt,
+    model:        MODEL_FLASH,
+    promptType:   'postmortem',
+    agentId,
+  });
 }
 
 // ─────────────────────────────────────────────
@@ -118,182 +97,125 @@ export async function getPostMortem(
 // ─────────────────────────────────────────────
 
 export async function getSynthesis(
-    synthesisPrompt: string,
-    agentId: string,
+  synthesisPrompt: string,
+  agentId:         string,
 ): Promise<ClaudeCallResult<{ rules: any[] }>> {
-    return callClaude<{ rules: any[] }>({
-        systemPrompt: POST_MORTEM_SYSTEM,
-        userPrompt: synthesisPrompt,
-        options: {
-            model: MODEL_SONNET,
-            promptType: 'synthesis',
-            agentId,
-            useCache: false,
-        },
-    });
+  return callGemini<{ rules: any[] }>({
+    systemPrompt: POST_MORTEM_SYSTEM,
+    userPrompt:   synthesisPrompt,
+    model:        MODEL_PRO,
+    promptType:   'synthesis',
+    agentId,
+  });
 }
 
 // ─────────────────────────────────────────────
 // Core caller — all public functions go through here
-// Handles retries, parsing, token tracking, errors
 // ─────────────────────────────────────────────
 
-async function callClaude<T>({
-    systemPrompt,
-    userPrompt,
-    options,
+async function callGemini<T>({
+  systemPrompt,
+  userPrompt,
+  model,
+  promptType,
+  agentId,
 }: {
-    systemPrompt: string;
-    userPrompt: string;
-    options: ClaudeCallOptions;
+  systemPrompt: string;
+  userPrompt:   string;
+  model:        string;
+  promptType:   string;
+  agentId:      string;
 }): Promise<ClaudeCallResult<T>> {
-    const startedAt = Date.now();
-    let lastError: string | null = null;
+  const startedAt = Date.now();
+  let lastError: string | null = null;
+  let currentModel = model; // Track current model for failover
 
-    for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
-        try {
-            const response = await anthropic.messages.create({
-                model: options.model,
-                max_tokens: MAX_TOKENS,
-                system: options.useCache
-                    ? [
-                        {
-                            type: 'text',
-                            text: systemPrompt,
-                            cache_control: { type: 'ephemeral' }, // 90% cheaper on repeat calls
-                        },
-                    ]
-                    : systemPrompt,
-                messages: [
-                    { role: 'user', content: userPrompt },
-                ],
-            });
-
-            const rawText = response.content
-                .filter(b => b.type === 'text')
-                .map(b => (b as any).text)
-                .join('');
-
-            const tokenUsage = calculateTokenUsage(options.model, response.usage);
-
-            logger.info('Claude call completed', {
-                agentId: options.agentId,
-                promptType: options.promptType,
-                model: options.model,
-                tokens: tokenUsage,
-                durationMs: Date.now() - startedAt,
-            });
-
-            // Parse JSON response
-            const parsed = parseJSON<T>(rawText);
-
-            if (!parsed.success) {
-                logger.warn('Claude returned invalid JSON', {
-                    agentId: options.agentId,
-                    promptType: options.promptType,
-                    raw: rawText.slice(0, 200),
-                });
-
-                // Retry on parse failure
-                lastError = `JSON parse failed: ${parsed.error}`;
-                if (attempt < MAX_RETRIES) {
-                    await sleep(RETRY_DELAY_MS * attempt);
-                    continue;
-                }
-            }
-
-            return {
-                success: parsed.success,
-                data: parsed.data,
-                rawResponse: rawText,
-                tokensUsed: tokenUsage,
-                error: parsed.error,
-                durationMs: Date.now() - startedAt,
-            };
-
-        } catch (error: any) {
-            lastError = error?.message ?? 'Unknown error';
-
-            logger.warn(`Claude API attempt ${attempt} failed`, {
-                agentId: options.agentId,
-                promptType: options.promptType,
-                error: lastError,
-            });
-
-            // Don't retry on auth errors — they won't fix themselves
-            if (error?.status === 401 || error?.status === 403) {
-                break;
-            }
-
-            if (attempt < MAX_RETRIES) {
-                await sleep(RETRY_DELAY_MS * attempt);
-            }
-        }
-    }
-
-    // All retries exhausted
-    logger.error('Claude call failed after all retries', {
-        agentId: options.agentId,
-        promptType: options.promptType,
-        error: lastError,
-    });
-
-    return {
-        success: false,
-        data: null,
-        rawResponse: '',
-        tokensUsed: { inputTokens: 0, outputTokens: 0, cacheHits: 0, totalCost: 0 },
-        error: lastError,
-        durationMs: Date.now() - startedAt,
-    };
-}
-
-// ─────────────────────────────────────────────
-// JSON parser — Claude sometimes wraps in ```json
-// This handles both clean JSON and wrapped versions
-// ─────────────────────────────────────────────
-
-function parseJSON<T>(raw: string): { success: boolean; data: T | null; error: string | null } {
+  for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
     try {
-        // Strip markdown code fences if present
-        const cleaned = raw
-            .replace(/^```json\s*/i, '')
-            .replace(/^```\s*/i, '')
-            .replace(/\s*```$/i, '')
-            .trim();
+      const geminiModel: GenerativeModel = genAI.getGenerativeModel({
+        model: currentModel,
+        systemInstruction: systemPrompt,
+        generationConfig: {
+          responseMimeType: 'application/json',
+          temperature:      0.2,
+        },
+      });
 
-        const data = JSON.parse(cleaned) as T;
-        return { success: true, data, error: null };
-    } catch (e: any) {
-        return { success: false, data: null, error: e.message };
+      const result  = await geminiModel.generateContent(userPrompt);
+      const rawText = result.response.text();
+      const usage   = result.response.usageMetadata;
+
+      logger.info('Usage metadata', {usage });
+
+      const tokenUsage: TokenUsage = {
+        inputTokens:  usage?.promptTokenCount     ?? 0,
+        outputTokens: usage?.candidatesTokenCount ?? 0,
+        cacheHits:    0,
+        totalCost:    0,
+      };
+
+      const parsed = parseJSON<T>(rawText);
+      if (!parsed.success) throw new Error(`JSON parse failed: ${parsed.error}`);
+
+      logger.info('Gemini response details', { agentId, promptType, model: currentModel, rawResponse: parsed, tokenUsage });
+
+      return {
+        success:     true,
+        data:        parsed.data,
+        rawResponse: rawText,
+        tokensUsed:  tokenUsage,
+        error:       null,
+        durationMs:  Date.now() - startedAt,
+      };
+
+    } catch (error: any) {
+      lastError = error?.message ?? 'Unknown error';
+
+      // --- AUTOMATED FAILOVER ---
+      // Switch to Lite model if service is overloaded (503) or rate limited (429)
+      if ((error?.status === 503 || error?.status === 429) && currentModel !== MODEL_FALLBACK) {
+        logger.warn(`Model ${currentModel} failed (${error.status}). Failing over to ${MODEL_FALLBACK}`, { agentId });
+        currentModel = MODEL_FALLBACK;
+        await sleep(2000); // Wait briefly before trying fallback
+        continue;
+      }
+      // --------------------------
+
+      logger.warn(`Gemini attempt ${attempt} failed`, { agentId, promptType, error: lastError });
+      if (attempt < MAX_RETRIES) await sleep(RETRY_DELAY_MS * attempt);
     }
+  }
+
+  logger.error('Gemini call failed after all retries', { agentId, promptType, error: lastError });
+  return { success: false, data: null, rawResponse: '', tokensUsed: { inputTokens: 0, outputTokens: 0, cacheHits: 0, totalCost: 0 }, error: lastError, durationMs: Date.now() - startedAt };
 }
 
 // ─────────────────────────────────────────────
-// Token cost calculator
+// JSON parser — handles both clean JSON and
+// markdown-wrapped responses
 // ─────────────────────────────────────────────
 
-function calculateTokenUsage(model: ClaudeModel, usage: any): TokenUsage {
-    const rates = COST[model];
-    const input = usage.input_tokens ?? 0;
-    const output = usage.output_tokens ?? 0;
-    const cacheHits = usage.cache_read_input_tokens ?? 0;
+function parseJSON<T>(raw: string): {
+  success: boolean;
+  data:    T | null;
+  error:   string | null;
+} {
+  try {
+    const cleaned = raw
+      .replace(/^```json\s*/i, '')
+      .replace(/^```\s*/i, '')
+      .replace(/\s*```$/i, '')
+      .trim();
 
-    // Cache hits cost 10% of normal input price
-    const inputCost = (input - cacheHits) * rates.input + cacheHits * rates.input * 0.1;
-    const outputCost = output * rates.output;
-
-    return {
-        inputTokens: input,
-        outputTokens: output,
-        cacheHits,
-        totalCost: Math.round((inputCost + outputCost) * 10_000) / 10_000,
-    };
+    const data = JSON.parse(cleaned) as T;
+    return { success: true, data, error: null };
+  } catch (e: any) {
+    return { success: false, data: null, error: e.message };
+  }
 }
 
 // ─────────────────────────────────────────────
 // Minimal system prompt for post-mortem calls
-// These don't need trading rules — just analysis
 // ─────────────────────────────────────────────
 
 const POST_MORTEM_SYSTEM = `
@@ -308,5 +230,5 @@ Be specific and actionable — vague analysis is useless.
 // ─────────────────────────────────────────────
 
 function sleep(ms: number): Promise<void> {
-    return new Promise(resolve => setTimeout(resolve, ms));
+  return new Promise(resolve => setTimeout(resolve, ms));
 }

@@ -111,18 +111,13 @@ export class AgentManager {
   }
 
   async loadActiveAgents(): Promise<AgentRuntime[]> {
-    const dbAgents = await prisma.agent.findMany({
-      where: { status: 'active' },
-    });
-
-    this.agents.clear();
+    const dbAgents = await prisma.agent.findMany({ where: { status: 'active' } });
 
     for (const data of dbAgents) {
-      const agent = new AgentRuntime(data);
-      this.agents.set(agent.id, agent);
+      if (!this.agents.has(data.id)) {
+        this.agents.set(data.id, new AgentRuntime(data));
+      }
     }
-
-    logger.info(`Loaded ${this.agents.size} active agents`);
     return Array.from(this.agents.values());
   }
 
@@ -135,13 +130,23 @@ export class AgentManager {
   }
 
   async resumeOpenTrades(): Promise<void> {
+
     const openTrades = await prisma.trade.findMany({
       where: { status: 'open' },
     });
 
+    logger.info(`Resuming ${openTrades.length} open trades from database`);
+
     for (const dbTrade of openTrades) {
+
+      await this.loadAgents();
+
       const agent = this.agents.get(dbTrade.agentId);
-      if (!agent) continue;
+
+      if (!agent) {
+        logger.info(`No active agent found for open trade ${dbTrade.id} — skipping`);
+        continue;
+      };
 
       const openTrade: OpenTrade = {
         id: dbTrade.id,
@@ -175,6 +180,9 @@ export class AgentManager {
     const agents = this.getAgentsForPair(candle.pair);
 
     for (const agent of agents) {
+
+      logger.info(`Processing agent ${agent.name} in state ${agent.state}`);
+
       try {
         // Check if cooldown has expired
         agent.checkCooldown();

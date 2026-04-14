@@ -37,6 +37,7 @@
     "ccxt": "^4.5.48",
     "dotenv": "^17.4.1",
     "node-telegram-bot-api": "^0.67.0",
+    "openai": "^6.34.0",
     "pg": "^8.20.0",
     "technicalindicators": "^3.1.0",
     "winston": "^3.19.0",

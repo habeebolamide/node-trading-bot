@@ -6,135 +6,50 @@
 // This gets cached — charged once per session
 // ─────────────────────────────────────────────
 
+import { findKeyLevels, formatKeyLevelsForPrompt } from "../markets/keys";
 import { Agent } from "../types/agent.types";
 import { Candle, MultiTimeframeData, RegimeAnalysis } from "../types/market.types";
 import { PerformanceMode, RelevantLesson } from "../types/risk.types";
 import { ClosedTrade, OpenTrade } from "../types/trade.types";
 
 export function buildSystemPrompt(agent: Agent): string {
+  const styleGuide = {
+    scalp: "You are a scalper. You hunt for quick, high-probability moves that last minutes to a few hours. You enter close to current price and use tight stops beyond immediate structure.",
+    swing: "You are a swing trader. You focus on higher-timeframe structure and pullbacks. You hold through noise but exit at clear resistance/support levels.",
+    auto: "You are a versatile trader. You first determine the market condition, then decide whether to scalp, swing, or stay out.",
+  }[agent.tradingStyle] || "You are a professional trader.";
 
-  const styleIdentity = {
-    scalp: `
-      You specialise in short-term momentum trading.
-      You read order flow, volume, and price action at the micro level.
-      You enter fast, take profits quickly, and cut losses immediately.
-      You never hold a losing scalp hoping it recovers.
-      Your edge is precision — you wait for the exact right moment then strike.
-      You are comfortable sitting out for hours waiting for your setup.
-      A day with no trades is better than a day with bad trades.
-      When you scalp, your stops are tight and your execution is clean.
-      You understand that on short timeframes noise is your biggest enemy.
-    `.trim(),
+  const learnedRules = agent.learnedRules.length > 0
+    ? `\nLESSONS FROM PAST LOSSES (Follow strictly):\n${agent.learnedRules
+      .map((r, i) => `${i + 1}. [${r.patternTag}] ${r.rule}`)
+      .join('\n')}`
+    : '';
 
-    swing: `
-      You specialise in swing trading — capturing multi-candle, multi-hour moves.
-      You read market structure, higher timeframe trends, and key levels with precision.
-      You are patient. You wait for price to come to your level, not the other way around.
-      You think in terms of risk/reward first, direction second.
-      You never chase entries. If you missed it, the next setup will come.
-      Your losses are controlled and your winners run as far as the market allows.
-      You understand that swing trading requires conviction — you hold through noise.
-    `.trim(),
+  return `
+    You are an experienced, disciplined crypto trader.
+    Your only goal is to find high-quality setups with good risk/reward.
 
-    auto: `
-      You are a versatile trader who adapts to whatever the market offers.
-      Some days you scalp. Some days you swing. Some days you do nothing at all.
-      You read the market first, then decide what kind of opportunity exists.
-      You never force a trade tradingStyle onto market conditions that do not support it.
-      If the market is ranging — you range trade or stay out entirely.
-      If the market is trending — you ride the trend with patience.
-      If the market is chaotic and unpredictable — you stay out, capital preservation first.
-      Your greatest skill is recognising what the market is doing and adapting instantly.
-    `.trim(),
-  }[agent.tradingStyle] ?? '';
+    YOUR PROFILE:
+    - Pair: ${agent.pair}
+    - Risk per trade: ${agent.riskPercent}%
+    - Style: ${agent.tradingStyle}
 
-  console.log("Agent trading style:" , agent.tradingStyle);
-  
+    ${styleGuide}
 
-  const learnedMistakes = agent.learnedRules.length > 0
-    ? `
-    PATTERNS FROM YOUR OWN LOSING TRADES:
-    These are mistakes you have made before with real consequences.
-    You have studied them deeply and you recognise them instantly when they form again.
-    ${agent.learnedRules.map((r, i) =>
-          `${i + 1}. [${r.patternTag}] ${r.rule}`
-        ).join('\n')}
-    When you see any of these patterns forming — it weighs heavily on your decision.
-        `.trim()
-        : '';
+    CORE RULES:
+    - Only trade when you have clear conviction.
+    - Never chase price. If the move already happened, skip it.
+    - Always place stop loss on the other side of a structural level.
+    - Minimum 1.5:1 reward-to-risk ratio. If you can't find it, return NO_TRADE.
+    - If timeframes conflict or structure is unclear → NO_TRADE.
+    - Never widen a stop loss. You may only tighten it.
+    - Confidence below 7/10 = NO_TRADE.
 
-      return `
-    You are a professional cryptocurrency trader with 10 years of live market experience.
-    You have traded through bull markets, bear markets, flash crashes, and euphoric tops.
-    You have seen every pattern, every trap, every false breakout, every liquidity grab.
-    You have blown accounts early in your career and rebuilt from nothing.
-    Those painful lessons made you who you are — disciplined, patient, and ruthlessly honest with yourself.
-    You do not trade for excitement. You trade to make money consistently.
+    You will be given clean multi-timeframe data, regime analysis, key levels, and news context.
+    Read it like a professional trader. Be decisive.
 
-    YOUR SPECIALISATION:
-    ${styleIdentity}
-
-    YOUR CURRENT ASSIGNMENT:
-    Pair: ${agent.pair}
-    Risk per trade: ${agent.riskPercent}% of your allocated capital
-
-    HOW YOU READ A CHART:
-    You look at price action first — before any indicator, before any oscillator.
-    You identify market structure: is price making higher highs and higher lows?
-    Lower highs and lower lows? Or is it grinding sideways without conviction?
-    You identify key levels — where has price respected before?
-    Where is liquidity likely resting above or below current price?
-    You study volume — does the move have real participation behind it or is it weak?
-    You study momentum — is it building, peaking, or exhausting?
-    You read multiple timeframes not to seek confirmation of a bias
-    but to understand the complete context of what price is actually doing right now.
-    You are always asking yourself one question: what is the path of least resistance?
-
-    HOW YOU APPROACH RISK:
-    You never risk more than your assigned percentage on any single trade.
-    You place stops at logical market structure levels — swing highs, swing lows, key zones.
-    Never at arbitrary percentages, never at round numbers where liquidity clusters.
-    You never move a stop loss further away to avoid being stopped out.
-    Your stop loss is your opinion invalidation point — if it gets hit, your analysis was wrong.
-    You accept that and move on without hesitation or emotion.
-    You only take trades where the potential reward clearly justifies the risk.
-    If you cannot identify a clean structural level for your stop — you do not trade.
-
-    HOW YOU THINK ABOUT ENTRIES:
-    You do not predict what price will do. You react to what price is doing.
-    You wait for confirmation before entering — not before the signal, not after it fades.
-    You understand deeply that missing a trade is not a loss.
-    A bad entry is infinitely worse than no entry.
-    You are not afraid of being wrong. Every trader is wrong regularly.
-    You are afraid of being wrong and staying wrong — that is what destroys accounts.
-
-    HOW YOU THINK ABOUT EXITS:
-    You take profits at logical resistance or support levels visible on the chart.
-    In strong trending conditions you trail your stop rather than closing prematurely.
-    You do not let winners turn into losers without a structural reason to hold.
-    You respect the market — when it tells you the move is over, you listen.
-
-    WHEN YOU WILL NOT TRADE:
-    You have the discipline to sit on your hands when conditions are not right.
-    You will not trade when:
-    - The higher timeframe trend is unclear or contradicting lower timeframes
-    - Price is in the middle of a range with no directional conviction
-    - Your analysis across timeframes is pointing in different directions
-    - A major news event is imminent that could invalidate any technical setup
-    - The spread is unusually wide indicating thin liquidity
-    - You simply do not have strong conviction in a clear setup
-    In these situations NO_TRADE is not a failure — it is the correct decision.
-
-    ${learnedMistakes}
-
-    You will be given complete market data across multiple timeframes.
-    Read it the way you would read a live chart — holistically, with experience.
-    See the full picture. Identify what the market is telling you.
-    If the setup is there — take it with conviction and precision.
-    If it is not — say NO_TRADE without hesitation or second-guessing.
-    Analyse the complete picture and make your trading decision.
-    Always respond in valid JSON only. No prose outside the JSON structure.
-  `.trim();
+    Always respond with valid JSON only. No explanations outside the JSON.
+    `.trim() + learnedRules;
 }
 
 // ─────────────────────────────────────────────
@@ -152,79 +67,61 @@ export function buildEntryPrompt(
   monthlyPnl: number,
   performanceMode: PerformanceMode,
 ): string {
+
+  const currentPrice = mtfData.tf5m.candles.at(-1)?.close ??
+    mtfData.tf15m.candles.at(-1)?.close ?? 0;
+
   const relevantLessons = lessons.length > 0
-    ? `
-RELEVANT PAST MISTAKES FOR THIS SETUP:
-${lessons.map((l, i) =>
-      `${i + 1}. [${l.patternTag}] ${l.ruleToAdd} — seen ${l.frequency} time${l.frequency > 1 ? 's' : ''}`
-    ).join('\n')}
-    `.trim()
+    ? `\nRELEVANT LESSONS:\n${lessons.map((l, i) => `${i + 1}. [${l.patternTag}] ${l.ruleToAdd}`).join('\n')}`
     : '';
 
-  const portfolioContext = `
-    CURRENT PORTFOLIO STATE:
-    Monthly P&L: ${monthlyPnl >= 0 ? '+' : ''}${monthlyPnl.toFixed(2)}%
-    Performance mode: ${performanceMode}
-    ${performanceMode === 'RECOVERY' ? 'You are in drawdown. Capital preservation is your top priority right now.' : ''}
-    ${performanceMode === 'CONSERVATIVE' ? 'You are approaching your drawdown limit. Be selective.' : ''}
-    ${performanceMode === 'GROWTH' ? 'You have hit your monthly floor. Let winners run.' : ''}
-    ${performanceMode === 'NORMAL' ? 'Standard operation. Trade your plan.' : ''}
-  `.trim();
-
   return `
-${portfolioContext}
+  CURRENT PRICE: ${currentPrice} | Pair: ${agent.pair}
 
-MARKET DATA — ${agent.pair}:
+  MARKET REGIME: ${regime.regime} (Confidence: ${(regime.confidence * 100).toFixed(0)}%)
 
-━━━━━━━━━━━━━━━━━━━━━━━
-4H CHART (last 50 candles):
-${formatTimeframe(mtfData.tf4h)}
+  MULTI-TIMEFRAME ANALYSIS:
 
-━━━━━━━━━━━━━━━━━━━━━━━
-1H CHART (last 50 candles):
-${formatTimeframe(mtfData.tf1h)}
+  4H:
+  ${formatTimeframe(mtfData.tf4h)}
 
-━━━━━━━━━━━━━━━━━━━━━━━
-15M CHART (last 50 candles):
-${formatTimeframe(mtfData.tf15m)}
+  1H:
+  ${formatTimeframe(mtfData.tf1h)}
 
-━━━━━━━━━━━━━━━━━━━━━━━
-5M CHART (last 50 candles):
-${formatTimeframe(mtfData.tf5m)}
+  15M:
+  ${formatTimeframe(mtfData.tf15m)}
 
-━━━━━━━━━━━━━━━━━━━━━━━
-MARKET CONDITIONS:
-Detected regime: ${regime.regime} (confidence: ${(regime.confidence * 100).toFixed(0)}%)
-ADX: ${regime.adx} | BB width: ${regime.bbWidth} | EMA slope: ${regime.emaSlope}%
-Volume trend: ${regime.volumeTrend}
+  5M:
+  ${formatTimeframe(mtfData.tf5m)}
 
-━━━━━━━━━━━━━━━━━━━━━━━
-NEWS & SENTIMENT:
-${newsContext}
+  KEY LEVELS (1H): ${formatKeyLevelsForPrompt(findKeyLevels(mtfData.tf1h.candles))}
 
+  NEWS: ${newsContext}
 
-${relevantLessons ? `━━━━━━━━━━━━━━━━━━━━━━━\n${relevantLessons}` : ''}
+  ${relevantLessons}
 
-IF the ${agent.tradingStyle} is auto ignore all rules and make sure you do everything to give a trade signal and predict the market because that is what you do and you are a pro at it with atleast 75% win rate make sure time to reach entry and tp isn't too far out in time like a few hours difference of the current time and price action and always give a confidence level based on the strength of the setup and confluence across timeframes, never say no_trade if there is a setup that meets the criteria for your trading style and make sure to always give a trade_type and confidence based on the analysis you do of the charts and market conditions, never leave them null or undefined.    
-Analyse the complete picture and make your trading decision.
+  Analyze the full picture and decide.
 
-Respond ONLY with this exact JSON:
-{
-  "action": "LONG" | "SHORT" | "NO_TRADE",
-  "entry": <number | null>,
-  "tp": <number | null>,
-  "sl": <number | null>,
-  "confidence": <1-10>,
-  "timeframe_used": "<which timeframe drove your decision>",
-  "trade_type": "scalp" | "swing" | "position",
-  "reasoning": "<your complete analysis in 3-5 sentences>",
-  "what_invalidates_this": "<what would tell you the trade is wrong>"
-  "estimated_time_entry": "The most likely timeframe to reach the entry point, formatted as Thursday 13th April 2:40pm or similar",
-  "estimated_time": "The most likely timeframe to reach the target, formatted as Thursday 13th April 2:40pm or similar",
-  "predicted_confidence": "An integer from 1-10 (1 = total speculation, 10 = high-conviction setup based on strong confluence). this is confidence to reach the target within estimated_time",
-  "predicted_reasoning": "A one-sentence justification for the time estimate, citing the expected volatility or market session (e.g., 'Expected arrival during NY Open due to volume profile expansion')."
-}
-  `.trim();
+  Respond ONLY with this exact JSON structure:
+  {
+    "action": "LONG" | "SHORT" | "NO_TRADE",
+    "entry": number | null,
+    "tp": number | null,
+    "sl": number | null,
+    "confidence": number,           // 1-10
+    "timeframe_used": string,
+    "expected_tp_duration": string | null,   // e.g. "2-4 hours", "30-60 minutes", "6-12 hours", "1-2 days"
+    "reasoning": "2-3 sentence clear analysis",
+    "what_invalidates": "What price action would prove you wrong"
+    "tradeStyle" : "What tradestyle did you use (e.g scalp,swing,etc .....)"
+  }
+
+  Rules for expected_tp_duration:
+  - Base it on the dominant timeframe and volatility.
+  - Use realistic timeframes: "30-60 minutes", "2-4 hours", "6-12 hours", "12-24 hours", "1-2 days".
+  - If it's a very fast scalp, use minutes.
+  - If NO_TRADE, return null for this field.
+`.trim();
 }
 
 // ─────────────────────────────────────────────
@@ -244,49 +141,49 @@ export function buildManagementPrompt(
   const currentPrice = mtfData.tf5m.candles.at(-1)?.close ?? trade.entryPrice;
 
   return `
-You have an open ${trade.direction} trade on ${trade.pair}.
-Here is the complete current state.
-
-OPEN TRADE:
-Direction: ${trade.direction}
-Entry price: ${trade.entryPrice}
-Current price: ${currentPrice}
-Current TP: ${trade.currentTp}
-Current SL: ${trade.currentSl}
-Unrealised P&L: ${pnlSign}${trade.unrealisedPct.toFixed(2)}% (${pnlSign}$${trade.unrealisedPnl.toFixed(2)})
-Time in trade: ${duration}
-Your original reasoning: "${trade.entryReasoning}"
-
-CURRENT MARKET STATE:
-
-━━━━━━━━━━━━━━━━━━━━━━━
-4H (is the original thesis still intact?):
-${formatTimeframe(mtfData.tf4h)}
-
-━━━━━━━━━━━━━━━━━━━━━━━
-1H (how is momentum developing?):
-${formatTimeframe(mtfData.tf1h)}
-
-━━━━━━━━━━━━━━━━━━━━━━━
-15M (what is price doing right now?):
-${formatTimeframe(mtfData.tf15m)}
-
-━━━━━━━━━━━━━━━━━━━━━━━
-NEWS:
-${newsContext}
-
-Review the trade against current market conditions.
-Has anything changed that affects your original thesis?
-
-Respond ONLY with this exact JSON:
-{
-  "action": "HOLD" | "ADJUST" | "CLOSE" | "PARTIAL_CLOSE",
-  "newTp": <number | null>,
-  "newSl": <number | null>,
-  "closePercent": <0-100 | null>,
-  "reasoning": "<why you are making this decision>",
-  "urgency": "low" | "medium" | "high"
-}
+    You have an open ${trade.direction} trade on ${trade.pair}.
+    Here is the complete current state.
+    
+    OPEN TRADE:
+    Direction: ${trade.direction}
+    Entry price: ${trade.entryPrice}
+    Current price: ${currentPrice}
+    Current TP: ${trade.currentTp}
+    Current SL: ${trade.currentSl}
+    Unrealised P&L: ${pnlSign}${trade.unrealisedPct.toFixed(2)}% (${pnlSign}$${trade.unrealisedPnl.toFixed(2)})
+    Time in trade: ${duration}
+    Your original reasoning: "${trade.entryReasoning}"
+    
+    CURRENT MARKET STATE:
+    
+    ━━━━━━━━━━━━━━━━━━━━━━━
+    4H (is the original thesis still intact?):
+    ${formatTimeframe(mtfData.tf4h)}
+    
+    ━━━━━━━━━━━━━━━━━━━━━━━
+    1H (how is momentum developing?):
+    ${formatTimeframe(mtfData.tf1h)}
+    
+    ━━━━━━━━━━━━━━━━━━━━━━━
+    15M (what is price doing right now?):
+    ${formatTimeframe(mtfData.tf15m)}
+    
+    ━━━━━━━━━━━━━━━━━━━━━━━
+    NEWS:
+    ${newsContext}
+    
+    Review the trade against current market conditions.
+    Has anything changed that affects your original thesis?
+    
+    Respond ONLY with this exact JSON:
+    {
+      "action": "HOLD" | "ADJUST" | "CLOSE" | "PARTIAL_CLOSE",
+      "newTp": <number | null>,
+      "newSl": <number | null>,
+      "closePercent": <0-100 | null>,
+      "reasoning": "<why you are making this decision>",
+      "urgency": "low" | "medium" | "high"
+    }
   `.trim();
 }
 
@@ -304,7 +201,7 @@ export function buildPostMortemPrompt(
 ): string {
   return `
 A trade closed at a loss. Analyse it with complete honesty.
-
+ 
 TRADE:
 Pair: ${trade.pair}
 Direction: ${trade.direction}
@@ -313,15 +210,15 @@ Loss: ${trade.realisedPct.toFixed(2)}%
 Duration: ${trade.durationHours.toFixed(1)} hours
 Closed because: ${trade.closeReason}
 Original reasoning at entry: "${trade.entryReasoning}"
-
+ 
 MARKET CONDITIONS AT ENTRY:
 Regime: ${regimeAtEntry}
 RSI: ${rsiAtEntry}
 Volume: ${volumeRatioAtEntry}x average
 News: ${newsAtEntry}
-
+ 
 Be brutally honest. What went wrong?
-
+ 
 Respond ONLY with this exact JSON:
 {
   "primaryReason": "<one clear sentence — the real cause>",
@@ -343,14 +240,14 @@ export function buildSynthesisPrompt(lessons: any[]): string {
   return `
 You have accumulated ${lessons.length} lessons from losing trades.
 Study them carefully and identify the most damaging recurring patterns.
-
+ 
 LESSONS:
 ${JSON.stringify(lessons, null, 2)}
-
+ 
 Find the top 5 patterns that are costing the most money.
 Write one precise, actionable rule for each.
 Vague rules are worthless. Be specific.
-
+ 
 Respond ONLY with this exact JSON:
 {
   "rules": [
@@ -419,17 +316,17 @@ function formatTimeframe(tf: MultiTimeframeData['tf4h']): string {
   const candlePattern = describeCandlePattern(latest, prev);
 
   return `
-Price: ${latest.close} ${candleDir} | Range position: ${rangePct}% of last ${candles.length} candles
-Structure: ${structure}
-vs EMA20: ${vsEma20} | vs EMA50: ${vsEma50} | EMA200: ${ind.ema200}
-RSI(14): ${ind.rsi} ${ind.rsi > 70 ? '— overbought territory' : ind.rsi < 30 ? '— oversold territory' : ''}
-MACD: ${macdBias} momentum (${macdStrength}) | Histogram: ${ind.macd.histogram}
-Bollinger: width ${ind.bollinger.width} | Upper: ${ind.bollinger.upper} | Lower: ${ind.bollinger.lower}
-ADX: ${ind.adx} ${ind.adx > 25 ? '— trending' : '— no clear trend'}
-ATR: ${ind.atr} (current volatility measure)
-Volume: ${volContext}
-Latest candle: ${candlePattern}
-Recent high: ${Math.max(...recentHighs)} | Recent low: ${Math.min(...recentLows)}
+    Price: ${latest.close} ${candleDir} | Range position: ${rangePct}% of last ${candles.length} candles
+    Structure: ${structure}
+    vs EMA20: ${vsEma20} | vs EMA50: ${vsEma50} | EMA200: ${ind.ema200}
+    RSI(14): ${ind.rsi} ${ind.rsi > 70 ? '— overbought territory' : ind.rsi < 30 ? '— oversold territory' : ''}
+    MACD: ${macdBias} momentum (${macdStrength}) | Histogram: ${ind.macd.histogram}
+    Bollinger: width ${ind.bollinger.width} | Upper: ${ind.bollinger.upper} | Lower: ${ind.bollinger.lower}
+    ADX: ${ind.adx} ${ind.adx > 25 ? '— trending' : '— no clear trend'}
+    ATR: ${ind.atr} (current volatility measure)
+    Volume: ${volContext}
+    Latest candle: ${candlePattern}
+    Recent high: ${Math.max(...recentHighs)} | Recent low: ${Math.min(...recentLows)}
   `.trim();
 }
 

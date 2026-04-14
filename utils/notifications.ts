@@ -48,7 +48,9 @@ export const notifications = {
     else if (type === 'ADJUST') {
       message = `🔄 TP/SL ADJUSTED\n\n` +
                 `Agent: <b>${agent.name}</b>\n` +
-                `Pair: ${trade.pair}`;
+                `Pair: ${trade.pair} \n`+
+                `New SL: <b>${trade.currentSl}</b>\n` +
+                `New TP: <b>${trade.currentTp}</b>`;
     }
 
     try {

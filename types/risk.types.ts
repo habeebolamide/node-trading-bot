@@ -12,7 +12,8 @@ export type RiskBlockReason =
   | 'NEWS_BLACKOUT'
   | 'INSUFFICIENT_CAPITAL'
   | 'COOLDOWN_ACTIVE'
-  | 'RECOVERY_MODE_FILTER';
+  | 'RECOVERY_MODE_FILTER'
+  | 'INVALID_SIGNAL';
 
 export type PerformanceMode =
   | 'NORMAL'        // 0-5% monthly — standard operation

@@ -5,7 +5,7 @@ import type {
   AgentRuntime,
 } from '../agents';
 import { EntrySignal, ManagementDecision } from '../types/claude.types';
-import { OpenTrade, OrderRequest, OrderResult, TradeDirection } from '../types/trade.types';
+import { ClosedTrade, OpenTrade, OrderRequest, OrderResult, TradeDirection } from '../types/trade.types';
 import { send } from 'node:process';
 import { notifications } from '../utils/notifications';
 
@@ -83,7 +83,7 @@ export async function executeEntry(
         agentId: agent.id,
         pair: agent.pair,
         direction: request.direction,
-        entryPrice: result.fillPrice!,
+        entryPrice: signal.entry ?? currentPrice,
         stopLoss: request.sl,
         takeProfit: request.tp,
         size: positionSize,
@@ -137,7 +137,6 @@ export async function executeManagement(
   trade: OpenTrade,
 ): Promise<void> {
   switch (decision.action) {
-
     case 'ADJUST': {
       // Update TP/SL in DB
       await prisma.trade.update({
@@ -157,6 +156,9 @@ export async function executeManagement(
       if (decision.newTp) trade.currentTp = decision.newTp;
       if (decision.newSl) trade.currentSl = decision.newSl;
 
+      // Notify
+      await notifications.sendTradeAlert(agent, 'ADJUST', trade);
+
       logger.info('Trade adjusted', {
         tradeId: trade.id,
         newTp: decision.newTp,
@@ -167,18 +169,23 @@ export async function executeManagement(
     }
 
     case 'CLOSE': {
-      await closeTrade(agent, trade, 'CLAUDE_CLOSE');
+      const closedTrade = await closeTrade(agent, trade, 'CLAUDE_CLOSE');
+      // Notify (assuming closeTrade returns the ClosedTrade object)
+      await notifications.sendTradeAlert(agent, 'CLOSE', closedTrade);
       break;
     }
 
     case 'PARTIAL_CLOSE': {
       const percent = decision.closePercent ?? 50;
       await partialCloseTrade(agent, trade, percent);
+      // Notify
+      await notifications.sendTradeAlert(agent, 'PARTIAL_CLOSE', trade);
       break;
     }
 
     case 'HOLD':
     default:
+      // Optional: Notify if reasoning is important, otherwise leave empty
       break;
   }
 }
@@ -191,7 +198,7 @@ export async function closeTrade(
   agent: AgentRuntime,
   trade: OpenTrade,
   closeReason: string,
-): Promise<void> {
+): Promise<ClosedTrade> {
   let exitPrice = 0;
 
   if (agent.mode === 'live') {
@@ -212,7 +219,7 @@ export async function closeTrade(
     (Date.now() - trade.openedAt.getTime()) / 1000
   );
 
-  await prisma.trade.update({
+  const closedTrade = await prisma.trade.update({
     where: { id: trade.id },
     data: {
       status: 'closed',
@@ -235,6 +242,8 @@ export async function closeTrade(
     pnl: realisedPnl,
     closeReason,
   });
+
+  return closedTrade as unknown as ClosedTrade;
 }
 
 // ─────────────────────────────────────────────

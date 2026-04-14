@@ -11,17 +11,17 @@ import { prisma } from "../lib/prisma";
 // ─────────────────────────────────────────────
 
 const LIMITS = {
-  monthlyDrawdownCap:    0.10,  // 10% — all agents pause beyond this
-  dailyDrawdownCap:      0.05,  // 5%  — agent pauses for rest of day
-  maxCorrelatedTrades:   2,     // max agents in same direction same pair
-  minConfidence:         7,     // Claude confidence below this = blocked
-  maxSpreadPct:          0.005, // 0.5% spread — market too illiquid
-  maxPriceMove5m:        0.03,  // 3% move in 5 mins = circuit breaker
-  maxVolatilityRatio:    3.0,   // volume 3x average = circuit breaker
+  monthlyDrawdownCap: 0.10,  // 10% — all agents pause beyond this
+  dailyDrawdownCap: 0.05,  // 5%  — agent pauses for rest of day
+  maxCorrelatedTrades: 2,     // max agents in same direction same pair
+  minConfidence: 7,     // Claude confidence below this = blocked
+  maxSpreadPct: 0.005, // 0.5% spread — market too illiquid
+  maxPriceMove5m: 0.03,  // 3% move in 5 mins = circuit breaker
+  maxVolatilityRatio: 3.0,   // volume 3x average = circuit breaker
   recoveryModeThreshold: 0.05,  // -5% monthly triggers recovery mode
   conservativeThreshold: 0.07,  // -7% monthly triggers conservative mode
-  growthModeThreshold:   0.05,  // +5% monthly triggers growth mode
-  cooldownAfterLoss:     2,     // candles to wait after a loss
+  growthModeThreshold: 0.05,  // +5% monthly triggers growth mode
+  cooldownAfterLoss: 2,     // candles to wait after a loss
 };
 
 // ─────────────────────────────────────────────
@@ -29,13 +29,13 @@ const LIMITS = {
 // ─────────────────────────────────────────────
 
 let circuitBreaker: CircuitBreakerState = {
-  isTripped:    false,
-  tripReason:   null,
-  trippedAt:    null,
-  resumeAt:     null,
-  priceMove5m:  0,
-  spreadPct:    0,
-  volumeRatio:  1,
+  isTripped: false,
+  tripReason: null,
+  trippedAt: null,
+  resumeAt: null,
+  priceMove5m: 0,
+  spreadPct: 0,
+  volumeRatio: 1,
 };
 
 // ─────────────────────────────────────────────
@@ -45,9 +45,9 @@ let circuitBreaker: CircuitBreakerState = {
 // ─────────────────────────────────────────────
 
 export async function validateEntrySignal(
-  signal:    EntrySignal,
-  agent:     Agent,
-  runtime:   AgentRuntimeState,
+  signal: EntrySignal,
+  agent: Agent,
+  runtime: AgentRuntimeState,
   portfolio: Portfolio,
 ): Promise<ValidationResult> {
 
@@ -59,6 +59,18 @@ export async function validateEntrySignal(
   // ── 2. No trade signal ──
   if (signal.action === 'NO_TRADE') {
     return block('LOW_CONFIDENCE', 'Claude returned NO_TRADE');
+  }
+
+  if (signal.entry == null || signal.sl == null) {
+    return block('INVALID_SIGNAL', 'Missing entry or SL price — rejecting signal');
+  }
+
+  if (signal.action === 'LONG' && signal?.sl >= signal.entry) {
+    return block('INVALID_SIGNAL', 'Invalid SL placement — rejecting signal');
+  }
+
+  if (signal.action === 'SHORT' && signal.sl <= signal.entry) {
+    return block('INVALID_SIGNAL', 'Invalid SL placement — rejecting signal');
   }
 
   // ── 3. Confidence threshold ──
@@ -109,18 +121,18 @@ export async function validateEntrySignal(
   }
 
   logger.info('Signal approved', {
-    agentId:      agent.id,
-    pair:         agent.pair,
-    action:       signal.action,
-    confidence:   signal.confidence,
+    agentId: agent.id,
+    pair: agent.pair,
+    action: signal.action,
+    confidence: signal.confidence,
     positionSize,
   });
 
   return {
-    approved:     true,
-    blockReason:  null,
+    approved: true,
+    blockReason: null,
     positionSize,
-    message:      'Approved',
+    message: 'Approved',
   };
 }
 
@@ -132,34 +144,34 @@ export async function validateEntrySignal(
 export function validateManagementDecision(
   decision: ManagementDecision,
   currentSl: number,
-  newSl:     number | null,
+  newSl: number | null,
   direction: 'LONG' | 'SHORT',
 ): ValidationResult {
 
   // Never widen SL
   if (newSl !== null) {
     const isWidening =
-      direction === 'LONG'  ? newSl < currentSl :
-      direction === 'SHORT' ? newSl > currentSl :
-      false;
+      direction === 'LONG' ? newSl < currentSl :
+        direction === 'SHORT' ? newSl > currentSl :
+          false;
 
     if (isWidening) {
       logger.warn('Rejected SL widening attempt', { currentSl, newSl, direction });
       // Override — keep current SL, change action to HOLD
       return {
-        approved:     true,
-        blockReason:  null,
+        approved: true,
+        blockReason: null,
         positionSize: null,
-        message:      'SL widening rejected — holding current SL',
+        message: 'SL widening rejected — holding current SL',
       };
     }
   }
 
   return {
-    approved:     true,
-    blockReason:  null,
+    approved: true,
+    blockReason: null,
     positionSize: null,
-    message:      'Management decision approved',
+    message: 'Management decision approved',
   };
 }
 
@@ -170,9 +182,9 @@ export function validateManagementDecision(
 // ─────────────────────────────────────────────
 
 export function calculatePositionSize(
-  signal:          EntrySignal,
-  agent:           Agent,
-  portfolio:       Portfolio,
+  signal: EntrySignal,
+  agent: Agent,
+  portfolio: Portfolio,
   performanceMode: PerformanceMode,
 ): number {
   if (!signal.entry || !signal.sl) return 0;
@@ -182,10 +194,10 @@ export function calculatePositionSize(
 
   // Reduce size in conservative/recovery modes
   const sizeMultiplier: Record<PerformanceMode, number> = {
-    NORMAL:       1.0,
-    GROWTH:       1.0,
+    NORMAL: 1.0,
+    GROWTH: 1.0,
     CONSERVATIVE: 0.75,
-    RECOVERY:     0.5,
+    RECOVERY: 0.5,
   };
 
   const adjustedCapital = agentCapital * sizeMultiplier[performanceMode];
@@ -203,7 +215,7 @@ export function calculatePositionSize(
 
   // Hard cap — never use more than agent's full allocation
   const maxPositionValue = adjustedCapital;
-  const positionValue    = positionSize * signal.entry;
+  const positionValue = positionSize * signal.entry;
 
   if (positionValue > maxPositionValue) {
     return maxPositionValue / signal.entry;
@@ -219,7 +231,7 @@ export function calculatePositionSize(
 // ─────────────────────────────────────────────
 
 export async function getDrawdownState(agentId: string): Promise<DrawdownState> {
-  const now       = new Date();
+  const now = new Date();
   const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
   const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
 
@@ -228,7 +240,7 @@ export async function getDrawdownState(agentId: string): Promise<DrawdownState> 
     where: {
       agentId,
       closedAt: { gte: todayStart },
-      status:   'closed',
+      status: 'closed',
     },
     select: { realizedPnL: true },
   });
@@ -238,18 +250,18 @@ export async function getDrawdownState(agentId: string): Promise<DrawdownState> 
     where: {
       agentId,
       closedAt: { gte: monthStart },
-      status:   'closed',
+      status: 'closed',
     },
     select: { realizedPnL: true },
   });
 
-  const dailyPnl   = dailyTrades.reduce((sum, t)   => sum + (t.realizedPnL ?? 0), 0);
+  const dailyPnl = dailyTrades.reduce((sum, t) => sum + (t.realizedPnL ?? 0), 0);
   const monthlyPnl = monthlyTrades.reduce((sum, t) => sum + (t.realizedPnL ?? 0), 0);
 
   // Get portfolio value for % calculation
   const portfolio = await getPortfolioValue();
 
-  const dailyPnlPct   = portfolio > 0 ? dailyPnl   / portfolio : 0;
+  const dailyPnlPct = portfolio > 0 ? dailyPnl / portfolio : 0;
   const monthlyPnlPct = portfolio > 0 ? monthlyPnl / portfolio : 0;
 
   const performanceMode = resolvePerformanceMode(monthlyPnlPct);
@@ -259,8 +271,8 @@ export async function getDrawdownState(agentId: string): Promise<DrawdownState> 
     dailyPnlPct,
     monthlyPnlPct,
     peakPortfolioValue: portfolio, // simplified — could track peak separately
-    currentDrawdown:    Math.min(0, monthlyPnlPct),
-    maxDrawdownHit:     Math.min(0, monthlyPnlPct),
+    currentDrawdown: Math.min(0, monthlyPnlPct),
+    maxDrawdownHit: Math.min(0, monthlyPnlPct),
     performanceMode,
   };
 }
@@ -272,7 +284,7 @@ export async function getDrawdownState(agentId: string): Promise<DrawdownState> 
 export function resolvePerformanceMode(monthlyPnlPct: number): PerformanceMode {
   if (monthlyPnlPct <= -LIMITS.conservativeThreshold) return 'RECOVERY';
   if (monthlyPnlPct <= -LIMITS.recoveryModeThreshold) return 'CONSERVATIVE';
-  if (monthlyPnlPct >= LIMITS.growthModeThreshold)    return 'GROWTH';
+  if (monthlyPnlPct >= LIMITS.growthModeThreshold) return 'GROWTH';
   return 'NORMAL';
 }
 
@@ -282,12 +294,12 @@ export function resolvePerformanceMode(monthlyPnlPct: number): PerformanceMode {
 // ─────────────────────────────────────────────
 
 export function updateCircuitBreaker(
-  priceMove5m:  number,
-  spreadPct:    number,
-  volumeRatio:  number,
+  priceMove5m: number,
+  spreadPct: number,
+  volumeRatio: number,
 ): void {
   circuitBreaker.priceMove5m = priceMove5m;
-  circuitBreaker.spreadPct   = spreadPct;
+  circuitBreaker.spreadPct = spreadPct;
   circuitBreaker.volumeRatio = volumeRatio;
 
   // Already tripped — check if it should auto-resume
@@ -319,10 +331,10 @@ export function updateCircuitBreaker(
 function tripCircuitBreaker(reason: string, resumeInMinutes: number): void {
   circuitBreaker = {
     ...circuitBreaker,
-    isTripped:  true,
+    isTripped: true,
     tripReason: reason,
-    trippedAt:  new Date(),
-    resumeAt:   new Date(Date.now() + resumeInMinutes * 60_000),
+    trippedAt: new Date(),
+    resumeAt: new Date(Date.now() + resumeInMinutes * 60_000),
   };
 
   logger.warn('Circuit breaker tripped', { reason, resumeInMinutes });
@@ -330,13 +342,13 @@ function tripCircuitBreaker(reason: string, resumeInMinutes: number): void {
 
 function resetCircuitBreaker(): void {
   circuitBreaker = {
-    isTripped:    false,
-    tripReason:   null,
-    trippedAt:    null,
-    resumeAt:     null,
-    priceMove5m:  circuitBreaker.priceMove5m,
-    spreadPct:    circuitBreaker.spreadPct,
-    volumeRatio:  circuitBreaker.volumeRatio,
+    isTripped: false,
+    tripReason: null,
+    trippedAt: null,
+    resumeAt: null,
+    priceMove5m: circuitBreaker.priceMove5m,
+    spreadPct: circuitBreaker.spreadPct,
+    volumeRatio: circuitBreaker.volumeRatio,
   };
 }
 
@@ -355,7 +367,7 @@ export function manuallyResetCircuitBreaker(): void {
 // ─────────────────────────────────────────────
 
 async function getCorrelationSnapshot(
-  signal:  EntrySignal,
+  signal: EntrySignal,
   agentId: string,
 ): Promise<CorrelationSnapshot> {
   const direction = signal.action === 'LONG' ? 'LONG' : 'SHORT';
@@ -363,15 +375,15 @@ async function getCorrelationSnapshot(
   // Count other agents currently in this pair + direction
   const count = await prisma.trade.count({
     where: {
-      pair:      { contains: signal.action === 'LONG' ? 'USDT' : 'USDT' },
+      pair: { contains: signal.action === 'LONG' ? 'USDT' : 'USDT' },
       direction,
-      status:    'open',
-      agentId:   { not: agentId }, // exclude this agent
+      status: 'open',
+      agentId: { not: agentId }, // exclude this agent
     },
   });
 
   return {
-    pair:             signal.action,
+    pair: signal.action,
     direction,
     activeAgentCount: count,
   };
@@ -386,8 +398,8 @@ async function getPortfolioValue(): Promise<number> {
   const initialCapital = parseFloat(process.env.INITIAL_CAPITAL ?? '1000');
 
   const result = await prisma.trade.aggregate({
-    where:  { status: 'closed' },
-    _sum:   { realizedPnL: true },
+    where: { status: 'closed' },
+    _sum: { realizedPnL: true },
   });
 
   return initialCapital + (result._sum.realizedPnL ?? 0);
@@ -398,13 +410,13 @@ async function getPortfolioValue(): Promise<number> {
 // ─────────────────────────────────────────────
 
 function block(
-  reason:  ValidationResult['blockReason'],
+  reason: ValidationResult['blockReason'],
   message: string,
 ): ValidationResult {
   logger.info('Signal blocked', { reason, message });
   return {
-    approved:     false,
-    blockReason:  reason,
+    approved: false,
+    blockReason: reason,
     positionSize: null,
     message,
   };

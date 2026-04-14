@@ -1,205 +1,146 @@
-import { GoogleGenerativeAI, GenerativeModel } from '@google/generative-ai';
+// src/llm/client.ts
+import OpenAI from 'openai';
 import logger from '../utils/logger';
-import { ClaudeCallOptions, ClaudeCallResult, ClaudeModel, EntrySignal, ManagementDecision, PostMortemResult, TokenUsage } from '../types/claude.types';
+import { 
+  EntrySignal, 
+  ManagementDecision, 
+  PostMortemResult, 
+  ClaudeCallResult 
+} from '../types/claude.types';
 
+const openrouter = new OpenAI({
+  baseURL: "https://openrouter.ai/api/v1",
+  apiKey: process.env.OPENROUTER_API_KEY,
+});
 
-// ─────────────────────────────────────────────
-// Config
-// ─────────────────────────────────────────────
-
-// const MODEL_PRO   = 'gemini-2.5-pro';
-const MODEL_PRO   = 'gemini-3.1-flash-lite-preview';
-const MODEL_FLASH = 'gemini-2.5-flash';
-const MODEL_FALLBACK = 'gemini-3.1-flash-lite-preview'; 
-const MAX_RETRIES    = 3;
-const RETRY_DELAY_MS = 5000;
-
-// ─────────────────────────────────────────────
-// Gemini client singleton
-// ─────────────────────────────────────────────
-
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY ?? '');
-
-// ─────────────────────────────────────────────
-// Public — entry signal
-// Uses Pro — needs strongest reasoning
-// ─────────────────────────────────────────────
+// Model priority: Best reasoning → Fast → Backup
+const MODEL_PRIORITY = [
+  "anthropic/claude-opus-4-6",      // Primary: Best reasoning for entry logic
+  "anthropic/claude-sonnet-4-6",    // Secondary: Fast, reliable fallback
+  "google/gemini-2.5-flash",    // Backup: Extremely fast/low cost
+];
 
 export async function getEntrySignal(
   systemPrompt: string,
-  entryPrompt:  string,
-  agentId:      string,
+  entryPrompt: string,
+  agentId: string,
 ): Promise<ClaudeCallResult<EntrySignal>> {
-  return callGemini<EntrySignal>({
-    systemPrompt,
-    userPrompt: entryPrompt,
-    model:      MODEL_PRO,
-    promptType: 'entry',
-    agentId,
-  });
+  return callWithFallback<EntrySignal>(systemPrompt, entryPrompt, 'entry', agentId);
 }
-
-// ─────────────────────────────────────────────
-// Public — management decision
-// Flash for HOLD check, Pro if adjustment needed
-// ─────────────────────────────────────────────
 
 export async function getManagementDecision(
-  systemPrompt:     string,
+  systemPrompt: string,
   managementPrompt: string,
-  agentId:          string,
+  agentId: string,
 ): Promise<ClaudeCallResult<ManagementDecision>> {
-  // First pass with Flash — cheap
-  const flashResult = await callGemini<ManagementDecision>({
-    systemPrompt,
-    userPrompt: managementPrompt,
-    model:      MODEL_FLASH,
-    promptType: 'management',
-    agentId,
-  });
-
-  // If Flash says HOLD — trust it, no need to escalate
-  if (flashResult.success && flashResult.data?.action === 'HOLD') {
-    return flashResult;
-  }
-
-  // Flash wants to adjust or close — escalate to Pro
-  logger.info('Escalating management decision to Pro', { agentId });
-
-  return callGemini<ManagementDecision>({
-    systemPrompt,
-    userPrompt: managementPrompt,
-    model:      MODEL_PRO,
-    promptType: 'management',
-    agentId,
-  });
+  return callWithFallback<ManagementDecision>(systemPrompt, managementPrompt, 'management', agentId);
 }
-
-// ─────────────────────────────────────────────
-// Public — post-mortem analysis
-// ─────────────────────────────────────────────
 
 export async function getPostMortem(
   postMortemPrompt: string,
-  agentId:          string,
+  agentId: string,
 ): Promise<ClaudeCallResult<PostMortemResult>> {
-  return callGemini<PostMortemResult>({
-    systemPrompt: POST_MORTEM_SYSTEM,
-    userPrompt:   postMortemPrompt,
-    model:        MODEL_FLASH,
-    promptType:   'postmortem',
-    agentId,
-  });
+  return callWithFallback<PostMortemResult>(POST_MORTEM_SYSTEM, postMortemPrompt, 'postmortem', agentId);
 }
 
-// ─────────────────────────────────────────────
-// Public — lesson synthesis (weekly job)
-// ─────────────────────────────────────────────
-
+// ✅ Added back getSynthesis
 export async function getSynthesis(
   synthesisPrompt: string,
-  agentId:         string,
+  agentId: string,
 ): Promise<ClaudeCallResult<{ rules: any[] }>> {
-  return callGemini<{ rules: any[] }>({
-    systemPrompt: POST_MORTEM_SYSTEM,
-    userPrompt:   synthesisPrompt,
-    model:        MODEL_PRO,
-    promptType:   'synthesis',
-    agentId,
-  });
+  return callWithFallback<{ rules: any[] }>(
+    SYNTHESIS_SYSTEM, 
+    synthesisPrompt, 
+    'synthesis', 
+    agentId
+  );
 }
 
-// ─────────────────────────────────────────────
-// Core caller — all public functions go through here
-// ─────────────────────────────────────────────
+// Core function with smart fallback
+async function callWithFallback<T>(
+  systemPrompt: string,
+  userPrompt: string,
+  promptType: string,
+  agentId: string
+): Promise<ClaudeCallResult<T>> {
 
-async function callGemini<T>({
-  systemPrompt,
-  userPrompt,
-  model,
-  promptType,
-  agentId,
-}: {
-  systemPrompt: string;
-  userPrompt:   string;
-  model:        string;
-  promptType:   string;
-  agentId:      string;
-}): Promise<ClaudeCallResult<T>> {
   const startedAt = Date.now();
-  let lastError: string | null = null;
-  let currentModel = model; // Track current model for failover
+  let lastError = '';
 
-  for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
-    try {
-      const geminiModel: GenerativeModel = genAI.getGenerativeModel({
-        model: currentModel,
-        systemInstruction: systemPrompt,
-        generationConfig: {
-          responseMimeType: 'application/json',
-          temperature:      0.2,
-        },
-      });
+  for (const model of MODEL_PRIORITY) {
+    let attempt = 0;
+    const maxAttemptsPerModel = 2;
 
-      const result  = await geminiModel.generateContent(userPrompt);
-      const rawText = result.response.text();
-      const usage   = result.response.usageMetadata;
+    while (attempt < maxAttemptsPerModel) {
+      try {
+        const completion = await openrouter.chat.completions.create({
+          model: model,
+          messages: [
+            { role: "system", content: systemPrompt },
+            { role: "user", content: userPrompt },
+          ],
+          temperature: 0.2,
+          max_tokens: 1500,        // Increased a bit for synthesis
+        });
 
-      logger.info('Usage metadata', {usage });
+        const rawText = completion.choices[0]?.message?.content || '';
+        const usage = completion.usage;
 
-      const tokenUsage: TokenUsage = {
-        inputTokens:  usage?.promptTokenCount     ?? 0,
-        outputTokens: usage?.candidatesTokenCount ?? 0,
-        cacheHits:    0,
-        totalCost:    0,
-      };
+        const parsed = parseJSON<T>(rawText);
 
-      const parsed = parseJSON<T>(rawText);
-      if (!parsed.success) throw new Error(`JSON parse failed: ${parsed.error}`);
 
-      logger.info('Gemini response details', { agentId, promptType, model: currentModel, rawResponse: parsed, tokenUsage });
+        logger.info('OpenRouter response details', { agentId, promptType,rawResponse: parsed });
 
-      return {
-        success:     true,
-        data:        parsed.data,
-        rawResponse: rawText,
-        tokensUsed:  tokenUsage,
-        error:       null,
-        durationMs:  Date.now() - startedAt,
-      };
+        return {
+          success: parsed.success,
+          data: parsed.data,
+          rawResponse: rawText,
+          tokensUsed: {
+            inputTokens: usage?.prompt_tokens ?? 0,
+            outputTokens: usage?.completion_tokens ?? 0,
+            cacheHits: 0,
+            totalCost: 0,
+          },
+          error: parsed.error,
+          durationMs: Date.now() - startedAt,
+        };
 
-    } catch (error: any) {
-      lastError = error?.message ?? 'Unknown error';
+      } catch (error: any) {
+        lastError = error?.message || 'Unknown error';
+        attempt++;
 
-      // --- AUTOMATED FAILOVER ---
-      // Switch to Lite model if service is overloaded (503) or rate limited (429)
-      if ((error?.status === 503 || error?.status === 429) && currentModel !== MODEL_FALLBACK) {
-        logger.warn(`Model ${currentModel} failed (${error.status}). Failing over to ${MODEL_FALLBACK}`, { agentId });
-        currentModel = MODEL_FALLBACK;
-        await sleep(2000); // Wait briefly before trying fallback
-        continue;
+        logger.warn(`LLM attempt failed`, {
+          agentId,
+          promptType,
+          model,
+          attempt,
+          error: lastError.slice(0, 150),
+        });
+
+        if (error?.status === 429 || error?.status === 503) {
+          await sleep(4000 * attempt);
+          continue;
+        }
+
+        break;
       }
-      // --------------------------
-
-      logger.warn(`Gemini attempt ${attempt} failed`, { agentId, promptType, error: lastError });
-      if (attempt < MAX_RETRIES) await sleep(RETRY_DELAY_MS * attempt);
     }
   }
 
-  logger.error('Gemini call failed after all retries', { agentId, promptType, error: lastError });
-  return { success: false, data: null, rawResponse: '', tokensUsed: { inputTokens: 0, outputTokens: 0, cacheHits: 0, totalCost: 0 }, error: lastError, durationMs: Date.now() - startedAt };
+  logger.error('❌ All LLM models failed', { agentId, promptType, lastError });
+
+  return {
+    success: false,
+    data: null,
+    rawResponse: '',
+    tokensUsed: { inputTokens: 0, outputTokens: 0, cacheHits: 0, totalCost: 0 },
+    error: lastError || 'All fallback models failed',
+    durationMs: Date.now() - startedAt,
+  };
 }
 
-// ─────────────────────────────────────────────
-// JSON parser — handles both clean JSON and
-// markdown-wrapped responses
-// ─────────────────────────────────────────────
-
-function parseJSON<T>(raw: string): {
-  success: boolean;
-  data:    T | null;
-  error:   string | null;
-} {
+// JSON Parser
+function parseJSON<T>(raw: string): { success: boolean; data: T | null; error: string | null } {
   try {
     const cleaned = raw
       .replace(/^```json\s*/i, '')
@@ -214,20 +155,18 @@ function parseJSON<T>(raw: string): {
   }
 }
 
-// ─────────────────────────────────────────────
-// Minimal system prompt for post-mortem calls
-// ─────────────────────────────────────────────
-
+// System prompts
 const POST_MORTEM_SYSTEM = `
 You are a trading performance analyst.
-Your job is to objectively analyse losing trades and identify patterns.
-Always respond in valid JSON only — no prose, no markdown.
-Be specific and actionable — vague analysis is useless.
+Analyze losing trades objectively and identify clear patterns.
+Always respond in valid JSON only. Be specific and actionable.
 `.trim();
 
-// ─────────────────────────────────────────────
-// Util
-// ─────────────────────────────────────────────
+const SYNTHESIS_SYSTEM = `
+You are an expert at synthesizing trading lessons.
+Compress multiple lessons into the most important, actionable rules.
+Always respond in valid JSON only.
+`.trim();
 
 function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
