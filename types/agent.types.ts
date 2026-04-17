@@ -5,7 +5,7 @@ export type AgentStatus = 'active' | 'paused' | 'stopped';
 
 export type AgentMode = 'backtest' | 'paper' | 'live';
 
-export type AgentState = 'IDLE' | 'IN_TRADE' | 'BLOCKED' | 'COOLDOWN';
+export type AgentState = 'IDLE' | 'IN_TRADE' | 'BLOCKED' | 'COOLDOWN' | 'PENDING_ENTRY';
 
 export type TradingStyle = 'scalp' | 'swing' | 'auto';
 

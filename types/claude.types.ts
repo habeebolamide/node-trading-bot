@@ -42,6 +42,7 @@ export interface EntrySignal {
   entryTrigger:       string;             // e.g. "15m breakout above 67,400"
   reasoning:          string;             // full explanation
   lessonsApplied:     string[];           // which past lessons Claude used
+  entry_expiry:      string | null;     // ISO 8601 UTC timestamp (e.g. "2026-04-14T23:01:32Z")
 }
 
 // ─────────────────────────────────────────────

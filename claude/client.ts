@@ -1,62 +1,68 @@
-// src/llm/client.ts
-import OpenAI from 'openai';
 import logger from '../utils/logger';
-import { 
-  EntrySignal, 
-  ManagementDecision, 
-  PostMortemResult, 
-  ClaudeCallResult 
+import { GoogleGenerativeAI } from "@google/generative-ai";
+import {
+  EntrySignal,
+  ManagementDecision,
+  PostMortemResult,
+  ClaudeCallResult
 } from '../types/claude.types';
 
-const openrouter = new OpenAI({
-  baseURL: "https://openrouter.ai/api/v1",
-  apiKey: process.env.OPENROUTER_API_KEY,
-});
+// =======================
+// CONFIG
+// =======================
 
-// Model priority: Best reasoning → Fast → Backup
 const MODEL_PRIORITY = [
-  "anthropic/claude-opus-4-6",      // Primary: Best reasoning for entry logic
-  "anthropic/claude-sonnet-4-6",    // Secondary: Fast, reliable fallback
-  "google/gemini-2.5-flash",    // Backup: Extremely fast/low cost
+  "gemini-3.1-pro-preview",
+  "gemini-2.5-pro",
+  "gemini-2.5-flash",
 ];
 
-export async function getEntrySignal(
+const MAX_RETRIES = 2;
+
+// =======================
+// CLIENT
+// =======================
+
+const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || '');
+
+// =======================
+// PUBLIC API
+// =======================
+
+export function getEntrySignal(
   systemPrompt: string,
   entryPrompt: string,
   agentId: string,
 ): Promise<ClaudeCallResult<EntrySignal>> {
-  return callWithFallback<EntrySignal>(systemPrompt, entryPrompt, 'entry', agentId);
+  return callWithFallback(systemPrompt, entryPrompt, 'entry', agentId);
 }
 
-export async function getManagementDecision(
+export function getManagementDecision(
   systemPrompt: string,
   managementPrompt: string,
   agentId: string,
 ): Promise<ClaudeCallResult<ManagementDecision>> {
-  return callWithFallback<ManagementDecision>(systemPrompt, managementPrompt, 'management', agentId);
+  return callWithFallback(systemPrompt, managementPrompt, 'management', agentId);
 }
 
-export async function getPostMortem(
+export function getPostMortem(
   postMortemPrompt: string,
   agentId: string,
 ): Promise<ClaudeCallResult<PostMortemResult>> {
-  return callWithFallback<PostMortemResult>(POST_MORTEM_SYSTEM, postMortemPrompt, 'postmortem', agentId);
+  return callWithFallback(POST_MORTEM_SYSTEM, postMortemPrompt, 'postmortem', agentId);
 }
 
-// ✅ Added back getSynthesis
-export async function getSynthesis(
+export function getSynthesis(
   synthesisPrompt: string,
   agentId: string,
 ): Promise<ClaudeCallResult<{ rules: any[] }>> {
-  return callWithFallback<{ rules: any[] }>(
-    SYNTHESIS_SYSTEM, 
-    synthesisPrompt, 
-    'synthesis', 
-    agentId
-  );
+  return callWithFallback(SYNTHESIS_SYSTEM, synthesisPrompt, 'synthesis', agentId);
 }
 
-// Core function with smart fallback
+// =======================
+// CORE ENGINE
+// =======================
+
 async function callWithFallback<T>(
   systemPrompt: string,
   userPrompt: string,
@@ -67,107 +73,222 @@ async function callWithFallback<T>(
   const startedAt = Date.now();
   let lastError = '';
 
-  for (const model of MODEL_PRIORITY) {
-    let attempt = 0;
-    const maxAttemptsPerModel = 2;
+  const strictSystemPrompt = `
+    ${systemPrompt}
 
-    while (attempt < maxAttemptsPerModel) {
+    CRITICAL:
+    - Return ONLY valid JSON
+    - No markdown, no explanations, no backticks
+    - Output must be a single JSON object
+    `.trim();
+
+  for (const modelName of MODEL_PRIORITY) {
+
+    for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+
       try {
-        const completion = await openrouter.chat.completions.create({
-          model: model,
-          messages: [
-            { role: "system", content: systemPrompt },
-            { role: "user", content: userPrompt },
-          ],
-          temperature: 0.2,
-          max_tokens: 1500,        // Increased a bit for synthesis
+        const model = genAI.getGenerativeModel({
+          model: modelName,
+          systemInstruction: strictSystemPrompt,
         });
 
-        const rawText = completion.choices[0]?.message?.content || '';
-        const usage = completion.usage;
-
-        const parsed = parseJSON<T>(rawText);
-
-
-        logger.info('OpenRouter response details', { agentId, promptType,rawResponse: parsed });
-
-        return {
-          success: parsed.success,
-          data: parsed.data,
-          rawResponse: rawText,
-          tokensUsed: {
-            inputTokens: usage?.prompt_tokens ?? 0,
-            outputTokens: usage?.completion_tokens ?? 0,
-            cacheHits: 0,
-            totalCost: 0,
+        const result = await model.generateContent({
+          contents: [{ role: 'user', parts: [{ text: userPrompt }] }],
+          generationConfig: {
+            temperature: 0.2,
+            maxOutputTokens: 4000,
+            responseMimeType: "application/json",
           },
-          error: parsed.error,
-          durationMs: Date.now() - startedAt,
-        };
-
-      } catch (error: any) {
-        lastError = error?.message || 'Unknown error';
-        attempt++;
-
-        logger.warn(`LLM attempt failed`, {
-          agentId,
-          promptType,
-          model,
-          attempt,
-          error: lastError.slice(0, 150),
         });
 
-        if (error?.status === 429 || error?.status === 503) {
-          await sleep(4000 * attempt);
-          continue;
+        const response = await result.response;
+        const rawText = response.text();
+
+        logger.info(rawText)
+
+
+        const cleaned = repairJSON(rawText);
+        const parsed = parseJSON<T>(cleaned);
+
+
+        if (!parsed.success) {
+          throw new Error(parsed.error || 'JSON parsing failed');
         }
 
-        break;
+        logger.info('✅ Gemini success', {
+          agentId,
+          promptType,
+          parsedData: parsed.data,
+        });
+
+        return buildSuccessResponse(parsed.data!, rawText, response, startedAt);
+
+      } catch (error: any) {
+
+        lastError = error?.message || 'Unknown error';
+
+        logger.warn(`⚠️ ${modelName} attempt ${attempt + 1} failed`, {
+          agentId,
+          promptType,
+          error: lastError,
+        });
+
+        if (attempt < MAX_RETRIES - 1) {
+          await sleep(500);
+          continue;
+        }
       }
     }
   }
 
-  logger.error('❌ All LLM models failed', { agentId, promptType, lastError });
+  // =======================
+  // ALL GEMINI MODELS FAILED
+  // =======================
+
+  logger.error('❌ All Gemini models failed', {
+    agentId,
+    promptType,
+    lastError,
+  });
 
   return {
     success: false,
     data: null,
     rawResponse: '',
     tokensUsed: { inputTokens: 0, outputTokens: 0, cacheHits: 0, totalCost: 0 },
-    error: lastError || 'All fallback models failed',
+    error: lastError,
     durationMs: Date.now() - startedAt,
   };
 }
 
-// JSON Parser
-function parseJSON<T>(raw: string): { success: boolean; data: T | null; error: string | null } {
-  try {
-    const cleaned = raw
-      .replace(/^```json\s*/i, '')
-      .replace(/^```\s*/i, '')
-      .replace(/\s*```$/i, '')
-      .trim();
+// =======================
+// HELPERS
+// =======================
 
-    const data = JSON.parse(cleaned) as T;
-    return { success: true, data, error: null };
-  } catch (e: any) {
-    return { success: false, data: null, error: e.message };
-  }
+function buildSuccessResponse<T>(
+  data: T,
+  rawText: string,
+  response: any,
+  startedAt: number
+): ClaudeCallResult<T> {
+  return {
+    success: true,
+    data,
+    rawResponse: rawText,
+    tokensUsed: {
+      inputTokens: response.usageMetadata?.promptTokenCount ?? 0,
+      outputTokens: response.usageMetadata?.candidatesTokenCount ?? 0,
+      cacheHits: 0,
+      totalCost: 0,
+    },
+    error: null,
+    durationMs: Date.now() - startedAt,
+  };
 }
 
-// System prompts
-const POST_MORTEM_SYSTEM = `
-You are a trading performance analyst.
-Analyze losing trades objectively and identify clear patterns.
-Always respond in valid JSON only. Be specific and actionable.
-`.trim();
+function repairJSON(raw: string): string {
+  return raw
+    .replace(/```json/g, '')
+    .replace(/```/g, '')
+    .trim();
+}
 
-const SYNTHESIS_SYSTEM = `
-You are an expert at synthesizing trading lessons.
-Compress multiple lessons into the most important, actionable rules.
-Always respond in valid JSON only.
-`.trim();
+function cleanJson(str: string): string {
+  return str
+    .replace(/,\s*}/g, "}")      // trailing commas in objects
+    .replace(/,\s*]/g, "]")      // trailing commas in arrays
+    .replace(/"\s*:\s*"/g, '":"') // normalize spacing
+    .trim();
+}
+
+function repairTruncatedJSON(raw: string): string {
+  let str = raw.trim();
+
+  // Count open braces vs closed
+  const opens  = (str.match(/\{/g) ?? []).length;
+  const closes = (str.match(/\}/g) ?? []).length;
+  const diff   = opens - closes;
+
+  // Add missing closing braces
+  if (diff > 0) {
+    // First close any open string by adding a quote if needed
+    // Check if we're mid-string (odd number of unescaped quotes after last })
+    const lastBrace = str.lastIndexOf('}');
+    const tail      = str.slice(lastBrace + 1);
+    const quotes    = (tail.match(/(?<!\\)"/g) ?? []).length;
+
+    if (quotes % 2 !== 0) {
+      str += '"';  // close the open string
+    }
+
+    // Close any open array
+    const openArrays  = (str.match(/\[/g) ?? []).length;
+    const closeArrays = (str.match(/\]/g) ?? []).length;
+    str += ']'.repeat(openArrays - closeArrays);
+
+    // Close the open braces
+    str += '}'.repeat(diff);
+  }
+
+  return str;
+}
+
+export function parseJSON<T>(raw: string): {
+  success: boolean;
+  data:    T | null;
+  error:   string | null;
+} {
+  // 1. Direct parse
+  try {
+    return { success: true, data: JSON.parse(raw), error: null };
+  } catch {}
+
+  // 2. Extract JSON block
+  try {
+    const match = raw.match(/\{[\s\S]*\}/);
+    if (match) {
+      const candidate = cleanJson(match[0]);
+      return { success: true, data: JSON.parse(candidate), error: null };
+    }
+  } catch {}
+
+  // 3. Repair truncated JSON
+  try {
+    const repaired = repairTruncatedJSON(raw);
+    const candidate = cleanJson(repaired);
+    const parsed    = JSON.parse(candidate);
+
+    logger.warn('Used truncation repair on Gemini response', {
+      original: raw.slice(0, 100),
+      repaired: repaired.slice(0, 100),
+    });
+
+    return { success: true, data: parsed, error: null };
+  } catch {}
+
+  return {
+    success: false,
+    data:    null,
+    error:   `No JSON object found. Raw: ${raw.slice(0, 200)}`,
+  };
+}
 
 function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
+
+// =======================
+// SYSTEM PROMPTS
+// =======================
+
+const POST_MORTEM_SYSTEM = `
+You are a trading performance analyst.
+Analyze losing trades objectively and identify clear patterns.
+Return ONLY valid JSON.
+`.trim();
+
+const SYNTHESIS_SYSTEM = `
+You are an expert at synthesizing trading lessons.
+Compress multiple lessons into actionable rules.
+Return ONLY valid JSON.
+`.trim();

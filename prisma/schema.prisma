@@ -103,3 +103,22 @@ model BacktestResult {
 
   @@map("backtest_results")
 }
+
+model PendingSignal {
+  id          String   @id @default(uuid())
+  agentId     String
+  pair        String
+  direction   String   // LONG | SHORT
+  status      String  // PENDING | EXPIRED
+  entryPrice  Float
+  tp          Float
+  sl          Float
+  positionSize Float
+  confidence  Int
+  reasoning   String
+  rawSignal   Json
+  expiresAt   DateTime // signal is only valid until this time
+  createdAt   DateTime @default(now())
+
+  @@map("pending_signals")
+}

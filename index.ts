@@ -7,6 +7,10 @@ import { Candle, CandleInterval } from './types/market.types';
 import { detectRegime, isSignificantCandle } from './markets/regime';
 import { buildMtfData } from './markets/mtf';
 
+declare global {
+  var lastAiCall: Record<string, number>;
+}
+
 // ─────────────────────────────────────────────
 // Graceful shutdown
 // ─────────────────────────────────────────────
@@ -29,6 +33,7 @@ process.on('unhandledRejection', (reason) => {
   logger.error('Unhandled rejection', { reason });
 });
 
+
 // ─────────────────────────────────────────────
 // Boot sequence
 // ─────────────────────────────────────────────
@@ -37,6 +42,8 @@ async function main(): Promise<void> {
   console.log('══════════════════════════════════');
   console.log('  Trading bot starting');
   console.log('══════════════════════════════════');
+
+  
 
   // 1. Resume open trades
   await agentManager.resumeOpenTrades();
@@ -63,6 +70,7 @@ async function main(): Promise<void> {
     onCandle(pair, '60', (candle) => handleCandle(candle));
   });
 
+
   const socket = new BybitWebSocket();
   await socket.connectWebSocket();
 
@@ -86,26 +94,72 @@ async function handleCandle(candle: Candle): Promise<void> {
     // 1. Significance check — free, no API call
     const pair = candle.pair;
     const buffer = getCandleBuffer(pair, candle.interval);
-    // const newsAlert = hasRecentHighImpactNews(pair);
-    const significant = isSignificantCandle(buffer);
+    const newsAlert = hasRecentHighImpactNews(pair);
 
+    const regime = detectRegime(buffer);
 
-    if (!significant) {
-      logger.info('Candle not significant — skipping', { pair });
+    console.log(regime, "Regime Check");
+    
+    if (!regime) return;
+
+    // 🔥 pass regime into significance
+    const significant = isSignificantCandle(buffer, regime.regime);
+
+    // ─────────────────────────────────────────
+    // FORCE CHECK SYSTEM
+    // ─────────────────────────────────────────
+
+    const now = Date.now();
+
+    // simple in-memory tracker (define above or globally)
+    if (!global.lastAiCall) global.lastAiCall = {};
+    const lastCall = global.lastAiCall[pair] || 0;
+
+    // 1. TIME FALLBACK (guarantee coverage)
+    const forceByTime = now - lastCall > 5 * 60 * 1000; // 5 mins
+
+    // 2. BREAKOUT
+    const current = buffer.at(-1)!;
+    const recentHigh = Math.max(...buffer.slice(-20, -1).map(c => c.high));
+    const recentLow = Math.min(...buffer.slice(-20, -1).map(c => c.low));
+
+    const breakout =
+      current.close > recentHigh ||
+      current.close < recentLow;
+
+    // 3. (Optional for now) — add later
+    const nearLevel = false;
+    const regimeChanged = false;
+
+    // FINAL DECISION
+    const shouldCallAI =
+      significant ||
+      forceByTime ||
+      breakout;
+
+    if (!shouldCallAI) {
+      logger.info('Skipped AI call', {
+        pair,
+        significant,
+        forceByTime,
+        breakout,
+      });
       return;
     }
 
+    // ✅ update last call
+    global.lastAiCall[pair] = now;
+
     // 2. Build multi-timeframe snapshot
     const mtfData = buildMtfData(pair);
-    
+
     if (!mtfData) {
       logger.warn('Not enough candle history yet', { pair });
       return;
     }
 
     // 3. Detect regime
-    const regime = detectRegime(buffer);
-    if (!regime) return;
+
 
     // 4. News context
     const newsContext = getNewsContextForPrompt(pair);

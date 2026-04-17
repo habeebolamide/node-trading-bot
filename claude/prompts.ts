@@ -38,12 +38,14 @@ export function buildSystemPrompt(agent: Agent): string {
 
     CORE RULES:
     - Only trade when you have clear conviction.
+    - Only trade when there is a high-probability setup. Otherwise return NO_TRADE.
     - Never chase price. If the move already happened, skip it.
     - Always place stop loss on the other side of a structural level.
     - Minimum 1.5:1 reward-to-risk ratio. If you can't find it, return NO_TRADE.
-    - If timeframes conflict or structure is unclear → NO_TRADE.
+    - If structure is unclear → NO_TRADE.
     - Never widen a stop loss. You may only tighten it.
     - Confidence below 7/10 = NO_TRADE.
+    - Prioritize identifying the best possible trade setups. 
 
     You will be given clean multi-timeframe data, regime analysis, key levels, and news context.
     Read it like a professional trader. Be decisive.
@@ -68,6 +70,8 @@ export function buildEntryPrompt(
   performanceMode: PerformanceMode,
 ): string {
 
+  const now = new Date().toISOString();
+
   const currentPrice = mtfData.tf5m.candles.at(-1)?.close ??
     mtfData.tf15m.candles.at(-1)?.close ?? 0;
 
@@ -76,7 +80,7 @@ export function buildEntryPrompt(
     : '';
 
   return `
-  CURRENT PRICE: ${currentPrice} | Pair: ${agent.pair}
+  CURRENT PRICE: ${currentPrice} | CURRENT TIME (UTC): ${now} | Pair: ${agent.pair}
 
   MARKET REGIME: ${regime.regime} (Confidence: ${(regime.confidence * 100).toFixed(0)}%)
 
@@ -100,6 +104,14 @@ export function buildEntryPrompt(
 
   ${relevantLessons}
 
+  Rules for entry_expiry:
+  - Must be a valid ISO 8601 UTC timestamp (e.g. "2026-04-14T23:01:32Z")
+  - Must be calculated relative to CURRENT TIME (UTC)
+  - This is the maximum time the entry remains valid if price has NOT been triggered.
+  - Base it on timeframe_used decided and current volatility.
+  - Expiry must ALWAYS be shorter than expected_tp_duration.
+  - If NO_TRADE, return null.
+
   Analyze the full picture and decide.
 
   Respond ONLY with this exact JSON structure:
@@ -108,19 +120,17 @@ export function buildEntryPrompt(
     "entry": number | null,
     "tp": number | null,
     "sl": number | null,
-    "confidence": number,           // 1-10
+    "confidence": number,
     "timeframe_used": string,
-    "expected_tp_duration": string | null,   // e.g. "2-4 hours", "30-60 minutes", "6-12 hours", "1-2 days"
-    "reasoning": "2-3 sentence clear analysis",
-    "what_invalidates": "What price action would prove you wrong"
-    "tradeStyle" : "What tradestyle did you use (e.g scalp,swing,etc .....)"
+    "reasoning": string,
+    "what_invalidates": string,
+    "tradeStyle": string,
+    "entry_expiry": string | null
   }
 
-  Rules for expected_tp_duration:
-  - Base it on the dominant timeframe and volatility.
-  - Use realistic timeframes: "30-60 minutes", "2-4 hours", "6-12 hours", "12-24 hours", "1-2 days".
-  - If it's a very fast scalp, use minutes.
-  - If NO_TRADE, return null for this field.
+  Keep "reasoning" under 100 characters.
+  Keep "what_invalidates" under 80 characters.
+ 
 `.trim();
 }
 

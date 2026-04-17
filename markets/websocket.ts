@@ -2,6 +2,8 @@ import WebSocket from 'ws';
 import logger from '../utils/logger';
 import { prisma } from '../lib/prisma';
 import { agentManager } from '../agents';
+import { executionEngine } from '../execution';
+import { EntrySignal } from '../types/claude.types';
 
 const BUFFER_SIZE = 200;
 const PING_INTERVAL = 20_000;
@@ -69,7 +71,7 @@ export function initBuffer(pair: string, tf: string): void {
 }
 
 export function getCandleBuffer(pair: string, tf: string): any[] {
-  
+
   if (!candleBuffers[pair]) candleBuffers[pair] = {};
   if (!candleBuffers[pair][tf]) candleBuffers[pair][tf] = [];
   return candleBuffers[pair][tf];
@@ -139,17 +141,25 @@ export class BybitWebSocket {
         if (!candleBuffers[pair][tf]) candleBuffers[pair][tf] = []; // only if missing
       });
     });
-    
+
     const topics: string[] = [];
 
     uniquePairs.forEach(pair => {
+      // ✅ KLINE (existing)
       TIMEFRAMES.forEach(tf => {
-        const topic = `kline.${tf}.${pair}`;
-        if (!this.subscribedTopics.has(topic)) {
-          topics.push(topic);
-          this.subscribedTopics.add(topic);
+        const klineTopic = `kline.${tf}.${pair}`;
+        if (!this.subscribedTopics.has(klineTopic)) {
+          topics.push(klineTopic);
+          this.subscribedTopics.add(klineTopic);
         }
       });
+
+      // 🔥 NEW: TICKER STREAM
+      const tickerTopic = `tickers.${pair}`;
+      if (!this.subscribedTopics.has(tickerTopic)) {
+        topics.push(tickerTopic);
+        this.subscribedTopics.add(tickerTopic);
+      }
     });
 
     if (topics.length > 0 && this.ws) {
@@ -170,6 +180,10 @@ export class BybitWebSocket {
 
     if (message.topic?.startsWith('kline.')) {
       this.handleKline(message);
+    }
+
+    if (message.topic?.startsWith('tickers.')) {
+      this.handleTicker(message);
     }
   }
 
@@ -201,15 +215,84 @@ export class BybitWebSocket {
     }
 
     // save to DB (non-blocking)
-    this.saveCandle(candle).catch(err =>
-      logger.error('Failed to save candle', { error: err })
-    );
+    // this.saveCandle(candle).catch(err =>
+    //   logger.error('Failed to save candle', { error: err })
+    // );
 
     // notify agent loops
     const key = `${pair}:${tf}`;
     listeners[key]?.forEach(handler => handler(candle));
 
     logger.info('Candle closed', { pair, tf, close: candle.close });
+  }
+
+  private handleTicker(message: any): void {
+    const pair = message.topic.split('.')[1];
+    const data = message.data;
+
+    if (!data) return;
+
+    const price = parseFloat(data.lastPrice);
+
+    // 🔥 REAL-TIME EXECUTION
+    this.checkPendingSignalsRealtimeSafe(pair, price);
+  }
+
+  private checkPendingSignalsRealtimeSafe(pair: string, price: number): void {
+    this.processRealtimeSignals(pair, price).catch(err =>
+      logger.error('Realtime pending signal check failed', { pair, error: err })
+    );
+  }
+
+  private async processRealtimeSignals(pair: string, price: number): Promise<void> {
+    const now = new Date();
+
+    // Fetch only active, non-expired, pending signals
+    const signals = await prisma.pendingSignal.findMany({
+      where: {
+        pair,
+        status: 'PENDING',
+        expiresAt: { gt: now },
+      },
+    });
+
+    if (signals.length === 0) return;
+
+    for (const ps of signals) {
+      const entry = ps.entryPrice;
+      let triggered = false;
+
+      // Check if price crossed the entry
+      if (ps.direction === 'LONG' && price <= entry) triggered = true;
+      if (ps.direction === 'SHORT' && price >= entry) triggered = true;
+
+      if (!triggered) continue;
+
+      const agent = agentManager.getSingleAgent(ps.agentId);
+      if (!agent) continue;
+
+      logger.info('Realtime signal triggered', { pair, entry, currentPrice: price });
+
+      // 🔥 EXECUTE
+      const signal: EntrySignal = typeof ps.rawSignal === 'string'
+        ? JSON.parse(ps.rawSignal)
+        : ps.rawSignal;
+
+      await executionEngine.executeEntry(
+        agent,
+        signal,
+        ps.positionSize,
+        price
+      );
+
+      // Update status to prevent duplicate triggers
+      await prisma.pendingSignal.update({
+        where: { id: ps.id },
+        data: { status: 'TRIGGERED' },
+      });
+
+      agent.setState('IN_TRADE');
+    }
   }
 
   private async saveCandle(candle: any): Promise<void> {
@@ -237,6 +320,63 @@ export class BybitWebSocket {
       },
     });
   }
+
+  // private async checkPendingSignals(candle: any) {
+  //   const { pair, high, low, close } = candle;
+
+  //   const signals = await prisma.pendingSignal.findMany({
+  //     where: {
+  //       pair,
+  //       status: 'PENDING',
+  //       expiresAt: { gt: new Date() },
+  //     },
+  //   });
+
+  //   for (const ps of signals) {
+  //     const entry = ps.entryPrice;
+
+  //     let triggered = false;
+
+  //     if (ps.direction === 'LONG') {
+  //       if (low <= entry && high >= entry) triggered = true;
+  //     }
+
+  //     if (ps.direction === 'SHORT') {
+  //       if (high >= entry && low <= entry) triggered = true;
+  //     }
+
+  //     if (!triggered) continue;
+
+  //     const agent = agentManager.getSingleAgent(ps.agentId);
+  //     if (!agent) continue;
+
+  //     // 🔥 REBUILD SIGNAL
+  //     const signal: EntrySignal = JSON.parse(ps.rawSignal as any);
+
+  //     // 🔥 EXECUTE
+  //     await executionEngine.executeEntry(
+  //       agent,
+  //       signal,
+  //       ps.positionSize,
+  //       entry // or candle.close
+  //     );
+
+  //     await prisma.pendingSignal.update({
+  //       where: { id: ps.id },
+  //       data: {
+  //         status: 'TRIGGERED',
+  //       },
+  //     });
+
+  //     agent.setState('IN_TRADE');
+  //   }
+  // }
+
+  // private checkPendingSignalsSafe(candle: any) {
+  //   this.checkPendingSignals(candle).catch(err =>
+  //     logger.error('Pending signal check failed', { error: err })
+  //   );
+  // }
 
   private startPing(): void {
     this.pingTimer = setInterval(() => {

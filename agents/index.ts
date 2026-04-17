@@ -125,6 +125,10 @@ export class AgentManager {
     return Array.from(this.agents.values()).filter(a => a.pair === pair);
   }
 
+  getSingleAgent(agentId: string): AgentRuntime | null {
+    return this.agents.get(agentId) || null;
+  }
+
   getAllAgents(): AgentRuntime[] {
     return Array.from(this.agents.values());
   }
@@ -184,16 +188,40 @@ export class AgentManager {
       logger.info(`Processing agent ${agent.name} in state ${agent.state}`);
 
       try {
-        // Check if cooldown has expired
         agent.checkCooldown();
 
         if (agent.state === 'BLOCKED' || agent.state === 'COOLDOWN') continue;
+
+        const pending = await prisma.pendingSignal.findFirst({
+          where: {
+            agentId: agent.id,
+            status: 'PENDING',
+          },
+        });
+
+        if (pending && pending.expiresAt < new Date()) {
+          await prisma.pendingSignal.update({
+            where: { id: pending.id },
+            data: { status: 'EXPIRED' },
+          });
+
+          agent.setState('COOLDOWN');
+
+          logger.info(`Pending signal expired for ${agent.name}`);
+          continue;
+        }
+
+        // 👇 NORMAL STATE FLOW
+        if (agent.state === 'PENDING_ENTRY') {
+          continue;
+        }
 
         if (agent.state === 'IN_TRADE' && agent.currentTrade) {
           await this.runManagementCycle(agent, mtfData, newsContext);
         } else if (agent.state === 'IDLE') {
           await this.runEntryCycle(agent, mtfData, regime, newsContext);
         }
+
       } catch (err: any) {
         logger.error(`Error processing agent ${agent.name}`, { error: err.message });
       }
@@ -267,9 +295,10 @@ export class AgentManager {
     }
 
     // TODO: wire up execution engine
-    const execResult = await executionEngine.executeEntry(agent, signal, riskResult.positionSize!, portfolio.totalValue);
+    await executionEngine.triggerPendingSignal(agent, signal, riskResult.positionSize!, portfolio.totalValue);
+    // const execResult = await executionEngine.executeEntry(agent, signal, riskResult.positionSize!, portfolio.totalValue);
 
-    logger.info(`Signal approved for ${agent.name} — execution engine not wired yet`, {
+    logger.info(`Signal approved for ${agent.name}`, {
       action: signal.action,
       entry: signal.entry,
       tp: signal.tp,

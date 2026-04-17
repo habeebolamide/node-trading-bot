@@ -8,24 +8,24 @@ import { calculateIndicators, calculateEMASlope } from './indicators';
 
 const THRESHOLDS = {
   adx: {
-    noTrend:    20,   // below this = ranging / no trend
-    weakTrend:  25,   // 20-25 = trend forming
+    noTrend: 20,   // below this = ranging / no trend
+    weakTrend: 25,   // 20-25 = trend forming
     strongTrend: 35,  // above this = strong trend
   },
   bollinger: {
-    tight:  0.02,     // below this = consolidating
-    wide:   0.06,     // above this = volatile / explosive
+    tight: 0.02,     // below this = consolidating
+    wide: 0.06,     // above this = volatile / explosive
   },
   emaSlope: {
-    flat:    0.05,    // % — below this = no direction
-    strong:  0.20,    // % — above this = strong trend
+    flat: 0.05,    // % — below this = no direction
+    strong: 0.20,    // % — above this = strong trend
   },
   volume: {
-    spike:   2.0,     // ratio above this = unusual activity
+    spike: 2.0,     // ratio above this = unusual activity
   },
   rsi: {
-    oversold:    35,
-    overbought:  65,
+    oversold: 35,
+    overbought: 65,
   },
 };
 
@@ -41,13 +41,13 @@ export function detectRegime(candles: Candle[]): RegimeAnalysis | null {
   if (!indicators) return null;
 
   const emaSlope = calculateEMASlope(candles);
-  const regime   = classifyRegime(indicators, emaSlope);
+  const regime = classifyRegime(indicators, emaSlope);
 
   return {
     regime,
-    confidence:  calculateConfidence(indicators, emaSlope, regime),
-    adx:         indicators.adx,
-    bbWidth:     indicators.bollinger.width,
+    confidence: calculateConfidence(indicators, emaSlope, regime),
+    adx: indicators.adx,
+    bbWidth: indicators.bollinger.width,
     emaSlope,
     volumeTrend: indicators.volume.trend,
   };
@@ -61,9 +61,9 @@ export function detectRegime(candles: Candle[]): RegimeAnalysis | null {
 
 function classifyRegime(indicators: Indicators, emaSlope: number): MarketRegime {
   const { adx, bollinger, volume, rsi } = indicators;
-  const bbWidth    = bollinger.width;
-  const volRatio   = volume.ratio;
-  const absSlope   = Math.abs(emaSlope);
+  const bbWidth = bollinger.width;
+  const volRatio = volume.ratio;
+  const absSlope = Math.abs(emaSlope);
 
   // ── Volatile first — highest priority ──
   // Wide BBands + volume spike = something explosive happening
@@ -119,8 +119,8 @@ function classifyRegime(indicators: Indicators, emaSlope: number): MarketRegime 
 
 function calculateConfidence(
   indicators: Indicators,
-  emaSlope:   number,
-  regime:     MarketRegime
+  emaSlope: number,
+  regime: MarketRegime
 ): number {
   const { adx, bollinger, volume } = indicators;
   let score = 0;
@@ -189,43 +189,71 @@ function calculateConfidence(
 // ─────────────────────────────────────────────
 
 export function isSignificantCandle(
-  candles:   Candle[],
-  newsAlert: boolean = false,
+  candles: Candle[],
+  // newsAlert: boolean = false,
+  regime?: MarketRegime
 ): boolean {
 
-  return true; // TEMP OVERRIDE
+  // return true; // TEMP OVERRIDE
 
   if (candles.length < 3) return false;
 
-  const current  = candles.at(-1)!;
-  
+  const current = candles.at(-1)!;
+
   const previous = candles.at(-2)!;
+  
+  let score = 0;
 
-  logger.info('Checking candle significance', {
-    current,
-    previous
-  });
 
-  const priceMove   = Math.abs(current.close - previous.close) / previous.close;
-  const recentVols  = candles.slice(-21, -1).map(c => c.volume);
-  const avgVolume   = recentVols.reduce((a, b) => a + b, 0) / recentVols.length;
+  // logger.info('Checking candle significance', {
+  //   current,
+  //   previous
+  // });
+
+  const priceMove = Math.abs(current.close - previous.close) / previous.close;
+  const recentVols = candles.slice(-21, -1).map(c => c.volume);
+  const avgVolume = recentVols.reduce((a, b) => a + b, 0) / recentVols.length;
   const volumeSpike = current.volume > avgVolume * 1.5;
   const candleRange = current.high - current.low;
-  const bodySize    = Math.abs(current.close - current.open);
-  const strongBody  = candleRange > 0 && bodySize / candleRange > 0.7;
+  const bodySize = Math.abs(current.close - current.open);
+  const strongBody = candleRange > 0 && bodySize / candleRange > 0.7;
+  const recentHigh = Math.max(...candles.slice(-20, -1).map(c => c.high));
+  const recentLow = Math.min(...candles.slice(-20, -1).map(c => c.low));
 
-  // Add this temporarily
-  logger.info('Significance breakdown', {
-    priceMove:      (priceMove * 100).toFixed(3) + '%',
-    priceMovePass:  priceMove > 0.002,
-    volumeSpike,
-    volumeRatio:    (current.volume / avgVolume).toFixed(2),
-    strongBody,
-    bodyRatio:      candleRange > 0 ? (bodySize / candleRange).toFixed(2) : 0,
-  });
+  const breakoutUp = current.close > recentHigh;
+  const breakoutDown = current.close < recentLow;
 
-  // Change to 0.005 Later 
-  return priceMove > 0.005 || volumeSpike || strongBody;
+  if (breakoutUp || breakoutDown) score += 3;
+
+  // // Add this temporarily
+  // logger.info('Significance breakdown', {
+  //   priceMove:      (priceMove * 100).toFixed(3) + '%',
+  //   priceMovePass:  priceMove > 0.002,
+  //   volumeSpike,
+  //   volumeRatio:    (current.volume / avgVolume).toFixed(2),
+  //   strongBody,
+  //   bodyRatio:      candleRange > 0 ? (bodySize / candleRange).toFixed(2) : 0,
+  // });
+
+  // // Change to 0.005 Later 
+  // return priceMove > 0.005 || volumeSpike || strongBody;
+
+
+  if (priceMove > 0.003) score += 1;
+  if (priceMove > 0.006) score += 2;
+  if (volumeSpike) score += 2;
+  if (strongBody) score += 1;
+
+  // breakout bonus
+  if (current.close > recentHigh || current.close < recentLow) {
+    score += 3;
+  }
+
+  // regime-aware threshold
+  if (regime === 'VOLATILE') return score >= 4;
+  if (regime === 'RANGING') return score >= 2;
+
+  return score >= 3;
 }
 
 // ─────────────────────────────────────────────
@@ -236,8 +264,8 @@ export function isSignificantCandle(
 export function formatRegimeForPrompt(analysis: RegimeAnalysis): string {
   const confidenceLabel =
     analysis.confidence >= 0.7 ? 'high confidence' :
-    analysis.confidence >= 0.4 ? 'moderate confidence' :
-    'low confidence — consider overriding';
+      analysis.confidence >= 0.4 ? 'moderate confidence' :
+        'low confidence — consider overriding';
 
   const slopeDirection =
     analysis.emaSlope > 0 ? `+${analysis.emaSlope}%` : `${analysis.emaSlope}%`;
