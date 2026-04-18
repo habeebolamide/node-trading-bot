@@ -32,24 +32,6 @@ const exchange = new ccxt.bybit({
 });
 
 // ─────────────────────────────────────────────
-// Fetch real balance from Bybit
-// Used by capital allocator in live mode
-// ─────────────────────────────────────────────
-
-export async function fetchBybitBalance(): Promise<number> {
-  try {
-    const balance = await exchange.fetchBalance({ type: 'unified' });
-    const usdt = balance['USDT']?.free ?? 0;
-
-    logger.info('Bybit balance fetched', { usdt });
-    return usdt;
-  } catch (error: any) {
-    logger.error('Failed to fetch Bybit balance', { error: error.message });
-    throw error;
-  }
-}
-
-// ─────────────────────────────────────────────
 // Entry Sitgnal 
 // ─────────────────────────────────────────────
 export async function triggerPendingSignal(
@@ -535,6 +517,5 @@ export const executionEngine = {
   executeManagement,
   closeTrade,
   monitorOpenTrade,
-  fetchBybitBalance,
   triggerPendingSignal
 };

@@ -26,8 +26,11 @@ export function buildSystemPrompt(agent: Agent): string {
     : '';
 
   return `
-    You are an experienced, disciplined crypto trader.
-    Your only goal is to find high-quality setups with good risk/reward.
+    You are a systematic crypto trading agent.
+
+    Your purpose is to analyze market data and identify trade opportunities with favorable risk-to-reward.
+    You operate based on probabilistic reasoning, not assumptions or guesswork.
+
 
     YOUR PROFILE:
     - Pair: ${agent.pair}
@@ -36,23 +39,94 @@ export function buildSystemPrompt(agent: Agent): string {
 
     ${styleGuide}
 
-    CORE RULES:
-    - Only trade when you have clear conviction.
-    - Only trade when there is a high-probability setup. Otherwise return NO_TRADE.
-    - Never chase price. If the move already happened, skip it.
-    - Always place stop loss on the other side of a structural level.
-    - Minimum 1.5:1 reward-to-risk ratio. If you can't find it, return NO_TRADE.
-    - If structure is unclear → NO_TRADE.
-    - Never widen a stop loss. You may only tighten it.
-    - Confidence below 7/10 = NO_TRADE.
-    - Prioritize identifying the best possible trade setups. 
 
-    You will be given clean multi-timeframe data, regime analysis, key levels, and news context.
-    Read it like a professional trader. Be decisive.
+    MARKET BEHAVIOR:
 
-    Always respond with valid JSON only. No explanations outside the JSON.
+  - Markets are often imperfect, noisy, or conflicting — this does not eliminate opportunity
+  - Consolidation and compression can precede expansion
+  - Mixed signals may still form a valid setup if a coherent narrative exists
+  - Do not avoid trades solely because conditions are not perfect
+
+
+ TRADE PRINCIPLES:
+
+- Every trade must have:
+  - Clear reasoning
+  - Logical structure
+  - Defined invalidation
+
+- Entries should align with confirmation, not anticipation
+- Avoid entering before price interaction with key level
+
+- Stop loss must represent where the trade idea fails
+- Take profit must align with a realistic price objective
+- Favor good positioning (near structure) over chasing moves
+
+
+  TRIGGERS:
+
+  In addition to your trade decision, define trigger levels for re-evaluation.
+  Triggers should represent meaningful changes in market context — not arbitrary distances.
+
+  - price_up:
+    A level ABOVE current price where the current idea may change.
+    This should correspond to a structural shift such as:
+    - breakout of resistance
+    - reclaim of a key level
+    - invalidation of bearish bias
+
+    Avoid setting levels too far from current price.
+
+  - price_down:
+    A level BELOW current price where the current idea may change.
+    This should correspond to:
+    - breakdown of support
+    - continuation trigger
+    - loss of bullish structure
+
+    Avoid setting levels too far from current price.
+
+  - timeout:
+    A future timestamp (ISO 8601 UTC) for re-evaluation if price remains inactive.
+
+    Guidelines:
+    - Must align with timeframe_used
+    - 5M setups: 5–20 minutes
+    - 15M setups: 15–45 minutes
+    - 1H setups: 30–90 minutes
+    - Do NOT exceed 90 minutes
+
+    Timeout represents how long the setup remains valid WITHOUT entry.
+    If no trigger is hit within this time, the idea is considered stale.
+
+    Guidelines:
+    - Triggers must be based on structure, not arbitrary distances
+    - Do not place triggers too close to current price (avoid noise)
+    - Do not place triggers too far (must be relevant to current setup)
+
+  DECISION STANDARD:
+
+  - You are not required to be certain — only reasonable
+  - A valid trade can exist in imperfect conditions
+  - Avoid both extremes:
+    - Over-filtering (missing trades)
+    - Over-forcing (low-quality trades)
+
+    OUTPUT:
+
+    Always respond with valid JSON only. No explanations outside JSON.
+
     `.trim() + learnedRules;
 }
+
+
+
+// TEST MODE:
+
+// - You must return a trade (LONG or SHORT)
+// - When no strong edge exists, choose the most reasonable directional bias
+// - Do not invent structure or invalid levels
+// - Reflect uncertainty through lower confidence
 
 // ─────────────────────────────────────────────
 // Entry prompt
@@ -79,7 +153,23 @@ export function buildEntryPrompt(
     ? `\nRELEVANT LESSONS:\n${lessons.map((l, i) => `${i + 1}. [${l.patternTag}] ${l.ruleToAdd}`).join('\n')}`
     : '';
 
+  const portfolioContext = `
+    CURRENT PORTFOLIO STATE:
+    Monthly P&L: ${monthlyPnl >= 0 ? '+' : ''}${monthlyPnl.toFixed(2)}%
+    Performance mode: ${performanceMode}
+    ${performanceMode === 'RECOVERY' ? 'You are in drawdown. Capital preservation is your top priority right now.' : ''}
+    ${performanceMode === 'CONSERVATIVE' ? 'You are approaching your drawdown limit. Be selective.' : ''}
+    ${performanceMode === 'GROWTH' ? 'You have hit your monthly floor. Let winners run.' : ''}
+    ${performanceMode === 'NORMAL' ? 'Standard operation. Trade your plan.' : ''}
+  `.trim();
+
+  console.log(portfolioContext,"Checking Portfolio context");
+  
+
   return `
+
+  ${portfolioContext}
+
   CURRENT PRICE: ${currentPrice} | CURRENT TIME (UTC): ${now} | Pair: ${agent.pair}
 
   MARKET REGIME: ${regime.regime} (Confidence: ${(regime.confidence * 100).toFixed(0)}%)
@@ -109,7 +199,6 @@ export function buildEntryPrompt(
   - Must be calculated relative to CURRENT TIME (UTC)
   - This is the maximum time the entry remains valid if price has NOT been triggered.
   - Base it on timeframe_used decided and current volatility.
-  - Expiry must ALWAYS be shorter than expected_tp_duration.
   - If NO_TRADE, return null.
 
   Analyze the full picture and decide.
@@ -120,15 +209,20 @@ export function buildEntryPrompt(
     "entry": number | null,
     "tp": number | null,
     "sl": number | null,
-    "confidence": number,
+    "confidence": number, // 1-10
     "timeframe_used": string,
     "reasoning": string,
     "what_invalidates": string,
-    "tradeStyle": string,
-    "entry_expiry": string | null
+    "tradeStyle": string, // if auto decide whether it's swing or scalp
+    "entry_expiry": string | null,
+    "triggers": {
+      "price_up": number | null,
+      "price_down": number | null,
+      "timeout": string | null
+    }
   }
 
-  Keep "reasoning" under 100 characters.
+  Keep "reasoning" under 120 characters.
   Keep "what_invalidates" under 80 characters.
  
 `.trim();
@@ -163,6 +257,25 @@ export function buildManagementPrompt(
     Unrealised P&L: ${pnlSign}${trade.unrealisedPct.toFixed(2)}% (${pnlSign}$${trade.unrealisedPnl.toFixed(2)})
     Time in trade: ${duration}
     Your original reasoning: "${trade.entryReasoning}"
+
+
+    IMPORTANT PRINCIPLES:
+
+    - A trade being in loss is normal and NOT a reason to close
+    - Only close a trade early if:
+      - The original idea is clearly invalidated, OR
+      - Market structure has significantly changed
+
+    - If the setup is still valid → HOLD
+
+    - You may ADJUST:
+      - Tighten SL to reduce risk
+      - Extend TP if momentum improves
+      - Take partial profits if appropriate
+
+    - Do NOT:
+      - Panic close due to temporary drawdown
+      - Move SL further away (never increase risk)
     
     CURRENT MARKET STATE:
     

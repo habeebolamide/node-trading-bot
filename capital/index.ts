@@ -1,5 +1,7 @@
+import ccxt from 'ccxt';
 import { prisma } from '../lib/prisma';
 import { AgentCapital, Portfolio } from '../types/risk.types';
+import logger from '../utils/logger';
 
 // ─────────────────────────────────────────────
 // Config
@@ -14,8 +16,47 @@ const MAX_ALLOCATION_PCT = 0.85;  // agents can only use 85% total
 // Used by risk layer for position sizing
 // ─────────────────────────────────────────────
 
+
+// ─────────────────────────────────────────────
+// Fetch real balance from Bybit
+// Used by capital allocator in live mode
+// ─────────────────────────────────────────────
+
+const exchange = new ccxt.bybit({
+  apiKey: process.env.BYBIT_API_KEY ?? '',
+  secret: process.env.BYBIT_SECRET ?? '',
+  options: {
+    defaultType: 'linear',
+  },
+  ...(process.env.BYBIT_TESTNET === 'true' && {
+    urls: {
+      api: {
+        public: 'https://api-testnet.bybit.com',
+        private: 'https://api-testnet.bybit.com',
+      },
+    },
+  }),
+});
+
+export async function fetchBybitBalance(): Promise<number> {
+  try {
+    const balance = await exchange.fetchBalance({ type: 'unified' });
+    const usdt = balance['USDT']?.free ?? 0;
+
+    logger.info('Bybit balance fetched', { usdt });
+    return usdt;
+  } catch (error: any) {
+    logger.error('Failed to fetch Bybit balance', { error: error.message });
+    throw error;
+  }
+}
+
 export async function getPortfolio(): Promise<Portfolio> {
-  const initialCapital = parseFloat(process.env.INITIAL_CAPITAL ?? '1000');
+
+  const isTestnet = process.env.BYBIT_TESTNET === 'true';
+  const initialCapital = isTestnet 
+    ? parseFloat(process.env.INITIAL_CAPITAL ?? '1000') 
+    : await fetchBybitBalance();
 
   const agents = await prisma.agent.findMany({
     select: { id: true },

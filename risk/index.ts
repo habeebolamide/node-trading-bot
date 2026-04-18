@@ -120,6 +120,7 @@ export async function validateEntrySignal(
     return block('INSUFFICIENT_CAPITAL', 'Calculated position size is zero');
   }
 
+
   logger.info('Signal approved', {
     agentId: agent.id,
     pair: agent.pair,
@@ -220,6 +221,13 @@ export function calculatePositionSize(
   if (positionValue > maxPositionValue) {
     return maxPositionValue / signal.entry;
   }
+
+  logger.info("Position debug", {
+    entry: signal.entry,
+    sl: signal.sl,
+    distanceToSl,
+    riskAmount
+  });
 
   // Round to 4 decimal places (crypto precision)
   return Math.round(positionSize * 10_000) / 10_000;

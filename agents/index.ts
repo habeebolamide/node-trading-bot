@@ -10,6 +10,7 @@ import logger from "../utils/logger";
 import { getRelevantLessons } from '../learning';
 import { notifications } from "../utils/notifications";
 import { executionEngine } from "../execution";
+import { getPortfolio } from "../capital";
 
 
 // ====================== RUNTIME AGENT CLASS ======================
@@ -273,14 +274,9 @@ export class AgentManager {
     };
 
     // Portfolio value from env for now — capital module will improve this
-    const portfolio = {
-      // userId:         agent.userId,
-      totalValue: parseFloat(process.env.INITIAL_CAPITAL ?? '1000'),
-      availableValue: parseFloat(process.env.INITIAL_CAPITAL ?? '1000'),
-      allocatedValue: 0,
-      reserveValue: parseFloat(process.env.INITIAL_CAPITAL ?? '1000') * 0.15,
-      lastUpdatedAt: new Date(),
-    };
+    const portfolio = await getPortfolio();
+
+    logger.info("Portfolio Data", portfolio)
 
     const riskResult = await validateEntrySignal(
       signal,

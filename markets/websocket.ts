@@ -230,7 +230,10 @@ export class BybitWebSocket {
     const pair = message.topic.split('.')[1];
     const data = message.data;
 
-    if (!data) return;
+    if (!data) {
+      console.log("No Data");
+      
+    };
 
     const price = parseFloat(data.lastPrice);
 
@@ -245,6 +248,17 @@ export class BybitWebSocket {
   }
 
   private async processRealtimeSignals(pair: string, price: number): Promise<void> {
+
+    const lastPriceMap = new Map<string, number>();
+
+    const previousPrice = lastPriceMap.get(pair);
+
+    // update immediately for next tick
+    lastPriceMap.set(pair, price);
+
+    if (previousPrice === undefined) return;
+
+
     const now = new Date();
 
     // Fetch only active, non-expired, pending signals
@@ -263,8 +277,21 @@ export class BybitWebSocket {
       let triggered = false;
 
       // Check if price crossed the entry
-      if (ps.direction === 'LONG' && price <= entry) triggered = true;
-      if (ps.direction === 'SHORT' && price >= entry) triggered = true;
+      if (
+        ps.direction === 'LONG' &&
+        previousPrice > entry &&
+        price <= entry
+      ) {
+        triggered = true;
+      }
+
+      if (
+        ps.direction === 'SHORT' &&
+        previousPrice < entry &&
+        price >= entry
+      ) {
+        triggered = true;
+      }
 
       if (!triggered) continue;
 
