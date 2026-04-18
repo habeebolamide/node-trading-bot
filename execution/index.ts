@@ -37,20 +37,20 @@ const exchange = new ccxt.bybit({
 export async function triggerPendingSignal(
   agent: AgentRuntime,
   signal: EntrySignal,
-  currentPrice: number,
   positionSize: number,
 ): Promise<any> {
 
   const expiresAt = signal.entry_expiry
     ? new Date(signal.entry_expiry)
     : new Date(Date.now() + 60 * 60 * 1000); 
+    
 
   const pending = await prisma.pendingSignal.create({
     data: {
       agentId: agent.id,
       pair: agent.pair,
       direction: signal.action as TradeDirection ,
-      entryPrice: signal.entry ?? currentPrice,
+      entryPrice: signal.entry ?? 0,
       tp: signal.tp ?? 0,
       sl: signal.sl ?? 0,
       positionSize,

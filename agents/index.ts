@@ -11,6 +11,7 @@ import { getRelevantLessons } from '../learning';
 import { notifications } from "../utils/notifications";
 import { executionEngine } from "../execution";
 import { getPortfolio } from "../capital";
+import { mapToOpenTrade } from "../utils/helper";
 
 
 // ====================== RUNTIME AGENT CLASS ======================
@@ -175,6 +176,35 @@ export class AgentManager {
     }
   }
 
+  async restoreAgentState(agent: AgentRuntime) {
+    const openTrade = await prisma.trade.findFirst({
+      where: {
+        agentId: agent.id,
+        status: 'open',
+      },
+    });
+
+    if (openTrade) {
+      agent.setState('IN_TRADE');
+      agent.currentTrade = mapToOpenTrade(openTrade);
+      return;
+    }
+
+    const pending = await prisma.pendingSignal.findFirst({
+      where: {
+        agentId: agent.id,
+        status: 'PENDING',
+      },
+    });
+
+    if (pending && pending.expiresAt > new Date()) {
+      agent.setState('PENDING_ENTRY');
+      return;
+    }
+
+    agent.setState('IDLE');
+  }
+
   // ====================== MAIN CANDLE PROCESSOR ======================
   async processSignificantCandle(
     candle: Candle,
@@ -185,6 +215,9 @@ export class AgentManager {
     const agents = this.getAgentsForPair(candle.pair);
 
     for (const agent of agents) {
+
+      await this.restoreAgentState(agent);
+
 
       logger.info(`Processing agent ${agent.name} in state ${agent.state}`);
 
@@ -200,6 +233,8 @@ export class AgentManager {
           },
         });
 
+        console.log(agent.state, "Agent State");
+
         if (pending && pending.expiresAt < new Date()) {
           await prisma.pendingSignal.update({
             where: { id: pending.id },
@@ -212,8 +247,13 @@ export class AgentManager {
           continue;
         }
 
+
+
         // 👇 NORMAL STATE FLOW
         if (agent.state === 'PENDING_ENTRY') {
+
+          console.log("I'm in pending");
+
           continue;
         }
 
@@ -291,7 +331,7 @@ export class AgentManager {
     }
 
     // TODO: wire up execution engine
-    await executionEngine.triggerPendingSignal(agent, signal, riskResult.positionSize!, portfolio.totalValue);
+    await executionEngine.triggerPendingSignal(agent, signal, riskResult.positionSize ?? 0);
     // const execResult = await executionEngine.executeEntry(agent, signal, riskResult.positionSize!, portfolio.totalValue);
 
     logger.info(`Signal approved for ${agent.name}`, {
