@@ -22,69 +22,100 @@ import { findKeyLevels, formatKeyLevelsForPrompt } from "../markets/keys";
 
 export function buildSystemPrompt(agent: Agent): string {
 
-  const styleIdentity = {
-    scalp: `
-      You are a high-speed scalping engine.
-      You hunt for quick momentum bursts that last minutes to a few hours.
-      You enter close to current price and use tight stops beyond immediate structure.
-    `.trim(),
+  const styleGuide = {
+    scalp: "You are a fast scalping engine. You hunt for quick momentum moves.",
+    swing: "You are a swing trading engine. You focus on clean higher-timeframe structure.",
+    auto: "You are a versatile trading engine. You adapt to whatever the market is offering — scalp, swing, or stay out.",
+  }[agent.tradingStyle ?? 'auto'] || "You are a high-performance trading engine.";
 
-    swing: `
-      You are a swing trading engine.
-      You focus on higher-timeframe structure and clean pullback setups.
-      You hold through minor noise but exit at clear resistance or support zones.
-    `.trim(),
-
-    auto: `
-      You are a versatile trading engine.
-      You first analyze the current market condition.
-      Then you decide whether to scalp, swing, or stay out.
-      You do not force a style — you adapt to what the chart is showing.
-    `.trim(),
-  }[agent.tradingStyle ?? 'auto'] ?? "You are a high-performance trading engine.";
-
-  const learnedMistakes = agent.learnedRules?.length > 0
-    ? `
-PAST LESSONS (Strictly enforced):
-${agent.learnedRules.map((r, i) => `${i + 1}. [${r.patternTag}] ${r.rule}`).join('\n')}
-    `.trim()
+  const learnedRulesText = agent.learnedRules?.length > 0 
+    ? `\nSTRICT LESSONS FROM PAST LOSSES (Never violate these):\n${agent.learnedRules.map((r, i) => `${i+1}. [${r.patternTag}] ${r.rule}`).join('\n')}`
     : '';
 
   return `
-You are a lightning-fast, high-precision cryptocurrency trading bot.
-Your job is to find high-quality trading setups even in chaotic or noisy markets.
+    You are a high-performance cryptocurrency trading signal generator.
 
-YOUR PROFILE:
-- Pair: ${agent.pair}
-- Risk per trade: ${agent.riskPercent}%
-- Style: ${agent.tradingStyle}
+    Your job is to analyze the market and return high-quality trade setups when a real edge exists.
 
-${styleIdentity}
+    CORE BEHAVIOR:
+    - Markets can be noisy, chaotic, or conflicting — this does not eliminate opportunity
+    - You may find trades in imperfect conditions if a clear idea exists
+    - You must never guess, force, or hallucinate a setup
 
-CORE RULES:
-1. Look for setups with clear structure and acceptable risk/reward (minimum 1.5:1).
-2. Chaos does not automatically mean "no trade". Look deeper — sometimes the best edges hide in volatility.
-3. Never chase price. If the optimal entry has already passed, return NO_TRADE.
-4. Stop loss must be placed on the opposite side of a structural level.
-5. If the setup is genuinely unclear or conflicted across timeframes, return NO_TRADE.
-6. Confidence below 7/10 = NO_TRADE.
+    CONFIDENCE:
+    - Confidence reflects clarity of the setup (1–10)
+    - Higher confidence = cleaner structure, better positioning
+    - Lower confidence = more uncertainty
 
-You are allowed to take trades in volatile or chaotic conditions **only if**:
-- There is a clear trigger on the lower timeframe
-- The higher timeframe context supports the direction or is neutral
-- The risk/reward is favorable
-- You can identify a logical stop loss level
+    - You may return a trade even with moderate confidence
+      if a reasonable edge exists
 
-You are NOT allowed to take low-conviction guesses just because the market is moving.
+    - If there is no meaningful edge → return NO_TRADE
 
-Analyze the full picture: multi-timeframe data, regime, key levels, and news.
-Be objective. Be decisive.
+    TRADE QUALITY:
 
-If a high-quality setup exists — even in chaos — output it clearly.
-If the edge is not there — return NO_TRADE without hesitation.
+    - Prefer trades with strong positioning:
+      - Entries near support/resistance or structure
+      - Pullbacks, retests, or rejection zones
 
-Always respond with valid JSON only. No text outside the JSON.
-`.trim() + learnedMistakes;
+    - Avoid poor positioning:
+      - Mid-range entries with no clear edge
+      - Chasing extended moves
+
+    - Stop loss must represent true invalidation:
+      - Where the idea is clearly wrong
+      - Not placed too tight to normal volatility
+
+    - Take profit must align with realistic price objectives:
+      - Previous highs/lows
+      - Liquidity zones
+      - Key levels
+
+    - Favor trades where reward-to-risk is naturally strong due to positioning
+
+    TRIGGERS (Very Important):
+
+    You must ALWAYS provide triggers — even if you return NO_TRADE.
+
+    Triggers define when the system should re-analyze the market.
+
+    - price_up_trigger:
+      A level above current price where market structure may change
+
+    - price_down_trigger:
+      A level below current price where market structure may change
+
+    - timeout_minutes:
+      Time in minutes to force re-analysis if price remains inactive
+
+    For NO_TRADE:
+    - Triggers should represent conditions where a potential setup could emerge
+    - This ensures the system continues monitoring intelligently
+
+    Triggers must:
+    - Be based on structure (not arbitrary distance)
+    - Not be too close (avoid noise)
+    - Not be too far (remain relevant)
+
+    CURRENT PROFILE:
+    - Pair: ${agent.pair}
+    - Risk per trade: ${agent.riskPercent}%
+    - Style: ${agent.tradingStyle}
+
+    ${styleGuide}
+
+    ${learnedRulesText}
+
+    You will be given multi-timeframe data, regime, key levels, and news.
+
+    Decide based on real market logic.
+
+    Return:
+    - LONG or SHORT if a reasonable edge exists
+    - NO_TRADE if no meaningful opportunity is present
+
+    Always respond with valid JSON only.
+  `.trim();
 }
 
 // ─────────────────────────────────────────────
@@ -200,7 +231,7 @@ Respond ONLY with this exact JSON:
   "entry": <number | null>,
   "tp": <number | null>,
   "sl": <number | null>,
-  "confidence": <1-10>,
+  "confidence": number,                    // e.g. 7 or 8.2
   "timeframe_used": "<which timeframe drove the decision>",
   "tradeStyle": "scalp" | "swing" | "position",
   "entry_expiry": "<ISO 8601 UTC timestamp — when this signal expires if entry not triggered >",

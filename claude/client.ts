@@ -96,7 +96,7 @@ async function callWithFallback<T>(
           contents: [{ role: 'user', parts: [{ text: userPrompt }] }],
           generationConfig: {
             temperature: 0.2,
-            maxOutputTokens: 3000,
+            maxOutputTokens: 2700,
             responseMimeType: "application/json",
           },
         });

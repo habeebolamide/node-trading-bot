@@ -53,7 +53,7 @@ async function main(): Promise<void> {
   const agents = agentManager.getAllAgents();
   const uniquePairs = [...new Set(agents.map(a => a.pair))];
 
-  await startNewsMonitor();
+  // await startNewsMonitor();
 
   await seedCandleBuffers(uniquePairs);
 
