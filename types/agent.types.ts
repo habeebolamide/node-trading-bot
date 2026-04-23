@@ -7,7 +7,7 @@ export type AgentMode = 'backtest' | 'paper' | 'live';
 
 export type AgentState = 'IDLE' | 'IN_TRADE' | 'BLOCKED' | 'COOLDOWN' | 'PENDING_ENTRY' | 'WATCHING';
 
-export type TradingStyle = 'scalp' | 'swing' | 'auto';
+export type TradingStyle = 'scalp' | 'swing' | 'position' | 'auto';
 
 export interface Agent {
   id:                string;

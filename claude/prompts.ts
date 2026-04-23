@@ -23,13 +23,18 @@ import { findKeyLevels, formatKeyLevelsForPrompt } from "../markets/keys";
 export function buildSystemPrompt(agent: Agent): string {
 
   const styleGuide = {
-    scalp: "You are a fast scalping engine. You hunt for quick momentum moves.",
-    swing: "You are a swing trading engine. You focus on clean higher-timeframe structure.",
-    auto: "You are a versatile trading engine. You adapt to whatever the market is offering — scalp, swing, or stay out.",
+    scalp: "You are a fast scalping engine. You hunt for quick momentum moves lasting minutes to a few hours. You enter near current price and use tight stops.",
+
+    swing: "You are a swing trading engine. You focus on higher-timeframe structure and pullbacks. Trades last hours to days with wider stops and clear targets.",
+
+    position: "You are a position trading engine. You focus on major market structure, macro direction, and key levels on higher timeframes. Trades can last days to weeks. You prioritize strong confluence and high reward-to-risk setups over frequency.",
+
+    auto: "You are a versatile trading engine. You adapt to whatever the market is offering — scalp, swing, position, or stay out.",
+
   }[agent.tradingStyle ?? 'auto'] || "You are a high-performance trading engine.";
 
-  const learnedRulesText = agent.learnedRules?.length > 0 
-    ? `\nSTRICT LESSONS FROM PAST LOSSES (Never violate these):\n${agent.learnedRules.map((r, i) => `${i+1}. [${r.patternTag}] ${r.rule}`).join('\n')}`
+  const learnedRulesText = agent.learnedRules?.length > 0
+    ? `\nSTRICT LESSONS FROM PAST LOSSES (Never violate these):\n${agent.learnedRules.map((r, i) => `${i + 1}. [${r.patternTag}] ${r.rule}`).join('\n')}`
     : '';
 
   return `
@@ -101,8 +106,7 @@ export function buildSystemPrompt(agent: Agent): string {
     - Pair: ${agent.pair}
     - Risk per trade: ${agent.riskPercent}%
     - Style: ${agent.tradingStyle}
-
-    ${styleGuide}
+    - Style Guide: ${styleGuide}
 
     ${learnedRulesText}
 
@@ -231,9 +235,9 @@ Respond ONLY with this exact JSON:
   "entry": <number | null>,
   "tp": <number | null>,
   "sl": <number | null>,
-  "confidence": number,                    // e.g. 7 or 8.2
+  "confidence": number,                    <1-10>
   "timeframe_used": "<which timeframe drove the decision>",
-  "tradeStyle": "scalp" | "swing" | "position",
+  "tradeStyle": "scalp" | "swing" | "position" ,
   "entry_expiry": "<ISO 8601 UTC timestamp — when this signal expires if entry not triggered >",
   "reasoning": "<your honest analysis in 2-3 sentences — max 150 chars>",
   "what_invalidates": "<what price action proves your read wrong — max 80 chars>",
@@ -263,9 +267,14 @@ export function buildManagementPrompt(
   const duration = getTimeSince(trade.openedAt);
   const currentPrice = mtfData.tf5m.candles.at(-1)?.close ?? trade.entryPrice;
   const styleGuide = {
-    scalp: "You are a fast scalping engine. You hunt for quick momentum moves.",
-    swing: "You are a swing trading engine. You focus on clean higher-timeframe structure.",
-    auto: "You are a versatile trading engine. You adapt to whatever the market is offering — scalp, swing, or stay out.",
+    scalp: "You are a fast scalping engine. You hunt for quick momentum moves lasting minutes to a few hours. You enter near current price and use tight stops.",
+
+    swing: "You are a swing trading engine. You focus on higher-timeframe structure and pullbacks. Trades last hours to days with wider stops and clear targets.",
+
+    position: "You are a position trading engine. You focus on major market structure, macro direction, and key levels on higher timeframes. Trades can last days to weeks. You prioritize strong confluence and high reward-to-risk setups over frequency.",
+
+    auto: "You are a versatile trading engine. You adapt to whatever the market is offering — scalp, swing, position, or stay out.",
+
   }[agent.tradingStyle ?? 'auto'] || "You are a high-performance trading engine.";
 
   return `
