@@ -13,6 +13,14 @@ import { executionEngine } from "../execution";
 import { getPortfolio } from "../capital";
 import { mapToOpenTrade } from "../utils/helper";
 
+import {
+  setTriggers,
+  clearTriggers,
+  checkTriggers,
+  getPendingSignal,
+  hasTriggers,
+} from './triggers';
+
 
 // ====================== RUNTIME AGENT CLASS ======================
 export class AgentRuntime {
@@ -34,6 +42,8 @@ export class AgentRuntime {
   public currentTrade: OpenTrade | null = null;
   public cooldownUntil: Date | null = null;
   public consecutiveLosses: number = 0;
+  public needsReanalysis: boolean = false;
+  public needsManagementReanalysis: boolean = false;
 
   constructor(dbData: any) {
     this.id = dbData.id;
@@ -147,6 +157,7 @@ export class AgentManager {
 
       await this.loadAgents();
 
+
       const agent = this.agents.get(dbTrade.agentId);
 
       if (!agent) {
@@ -176,33 +187,69 @@ export class AgentManager {
     }
   }
 
-  async restoreAgentState(agent: AgentRuntime) {
+  async restoreAgentState(agent: AgentRuntime): Promise<void> {
+
+    // 1. Check for open trade first — highest priority
     const openTrade = await prisma.trade.findFirst({
-      where: {
-        agentId: agent.id,
-        status: 'open',
-      },
+      where: { agentId: agent.id, status: 'open' },
     });
 
     if (openTrade) {
-      agent.setState('IN_TRADE');
-      agent.currentTrade = mapToOpenTrade(openTrade);
+      agent.attachTrade(mapToOpenTrade(openTrade));
+      logger.info(`[${agent.name}] Restored → IN_TRADE`, { tradeId: openTrade.id });
       return;
     }
 
-    const pending = await prisma.pendingSignal.findFirst({
-      where: {
-        agentId: agent.id,
-        status: 'PENDING',
-      },
+    // 2. Check for active signal
+    const activeSignal = await prisma.signal.findFirst({
+      where: { agentId: agent.id, status: 'active' },
+      orderBy: { createdAt: 'desc' },
     });
 
-    if (pending && pending.expiresAt > new Date()) {
-      agent.setState('PENDING_ENTRY');
+    if (!activeSignal) {
+      agent.setState('IDLE');
+      logger.info(`[${agent.name}] Restored → IDLE`);
       return;
     }
 
-    agent.setState('IDLE');
+    const triggers = activeSignal.triggers as any;
+    const now = Date.now();
+
+    // 3. Check if signal expired while bot was down
+    const timeoutExpired = triggers.timeout
+      && now > new Date(triggers.timeout).getTime();
+
+    const entryExpired = activeSignal.entryExpiry
+      && now > new Date(activeSignal.entryExpiry).getTime();
+
+    if (timeoutExpired || entryExpired) {
+      // Expired during downtime — mark it and go IDLE
+      await prisma.signal.update({
+        where: { id: activeSignal.id },
+        data: {
+          status: 'expired',
+          triggeredBy: timeoutExpired ? 'TIMEOUT' : 'EXPIRY',
+          triggeredAt: new Date(),
+        },
+      });
+      agent.setState('IDLE');
+      logger.info(`[${agent.name}] Signal expired during downtime → IDLE`);
+      return;
+    }
+
+    // 4. Signal still valid — restore to in-memory trigger store
+    if (activeSignal.action === 'NO_TRADE') {
+      // Was WATCHING
+      agent.setState('WATCHING');
+      logger.info(`[${agent.name}] Restored → WATCHING`, {
+        price_up: triggers.price_up,
+        price_down: triggers.price_down,
+      });
+
+    } else {
+      agent.setState('PENDING_ENTRY');
+      logger.info(`[${agent.name}] Restored → PENDING_ENTRY`);
+    }
   }
 
   // ====================== MAIN CANDLE PROCESSOR ======================
@@ -215,56 +262,219 @@ export class AgentManager {
     const agents = this.getAgentsForPair(candle.pair);
 
     for (const agent of agents) {
-
-      await this.restoreAgentState(agent);
-
-
-      logger.info(`Processing agent ${agent.name} in state ${agent.state}`);
-
       try {
+        // ── Cooldown check — pure in-memory ──
         agent.checkCooldown();
 
         if (agent.state === 'BLOCKED' || agent.state === 'COOLDOWN') continue;
 
-        const pending = await prisma.pendingSignal.findFirst({
-          where: {
-            agentId: agent.id,
-            status: 'PENDING',
-          },
-        });
+        logger.info(`[${agent.name}] Processing in state: ${agent.state}`);
 
-        console.log(agent.state, "Agent State");
-
-        if (pending && pending.expiresAt < new Date()) {
-          await prisma.pendingSignal.update({
-            where: { id: pending.id },
-            data: { status: 'EXPIRED' },
-          });
-
-          agent.setState('COOLDOWN');
-
-          logger.info(`Pending signal expired for ${agent.name}`);
-          continue;
-        }
-
-
-
-        // 👇 NORMAL STATE FLOW
-        if (agent.state === 'PENDING_ENTRY') {
-
-          console.log("I'm in pending");
-
-          continue;
-        }
-
-        if (agent.state === 'IN_TRADE' && agent.currentTrade) {
+        // ── Reanalysis flags set by realtime ticker ──
+        if (agent.needsManagementReanalysis && agent.currentTrade) {
+          agent.needsManagementReanalysis = false;
           await this.runManagementCycle(agent, mtfData, newsContext);
-        } else if (agent.state === 'IDLE') {
+          continue;
+        }
+
+        if (agent.needsReanalysis) {
+          agent.needsReanalysis = false;
+          agent.setState('IDLE');
           await this.runEntryCycle(agent, mtfData, regime, newsContext);
+          continue;
+        }
+
+        // ── Check in-memory triggers ──
+        if (hasTriggers(agent.id)) {
+          const result = checkTriggers(agent.id, candle);
+
+          if (result.hit) {
+            await this.handleTriggerHit(
+              agent, result.reason, candle, mtfData, regime, newsContext
+            );
+            continue;
+          }
+
+          // Trigger exists but not hit yet — handle by state
+          switch (agent.state) {
+
+            case 'PENDING_ENTRY':
+              // Entry price not hit yet — realtime ticker handles this
+              // Candle close only checks expiry via checkTriggers above
+              logger.info(`[${agent.name}] Pending entry — waiting`, {
+                entry: getPendingSignal(agent.id)?.entry,
+                currentPrice: candle.close,
+              });
+              break;
+
+            case 'WATCHING':
+              // NO_TRADE triggers set — waiting for price level or timeout
+              // checkTriggers above already checked — nothing hit yet
+              logger.info(`[${agent.name}] Watching triggers`, {
+                currentPrice: candle.close,
+              });
+              break;
+
+            case 'IN_TRADE':
+              // Trade open — triggers set by last management cycle
+              // Run management regardless — triggers just add realtime urgency
+              await this.runManagementCycle(agent, mtfData, newsContext);
+              break;
+
+            default:
+              break;
+          }
+
+          continue;
+        }
+
+        // ── No triggers — normal state flow ──
+        switch (agent.state) {
+
+          case 'IDLE':
+            await this.runEntryCycle(agent, mtfData, regime, newsContext);
+            break;
+
+          case 'IN_TRADE':
+            if (agent.currentTrade) {
+              await this.runManagementCycle(agent, mtfData, newsContext);
+            }
+            break;
+
+          case 'PENDING_ENTRY':
+            // Pending entry with no triggers — lost on restart
+            // Re-analyse to get a fresh signal
+            logger.warn(`[${agent.name}] PENDING_ENTRY with no triggers — re-analysing`);
+            agent.setState('IDLE');
+            await this.runEntryCycle(agent, mtfData, regime, newsContext);
+            break;
+
+          case 'WATCHING':
+            // WATCHING with no triggers — also lost on restart
+            // Go back to IDLE and re-analyse
+            logger.warn(`[${agent.name}] WATCHING with no triggers — re-analysing`);
+            agent.setState('IDLE');
+            await this.runEntryCycle(agent, mtfData, regime, newsContext);
+            break;
+
+          default:
+            break;
         }
 
       } catch (err: any) {
         logger.error(`Error processing agent ${agent.name}`, { error: err.message });
+      }
+    }
+  }
+
+  // ====================== decides what to do based on which trigger fired and agent state ======================
+
+  async handleTriggerHit(
+    agent: any,
+    reason: string,
+    candle: any,
+    mtfData: any,
+    regime: any,
+    newsContext: string,
+  ): Promise<void> {
+    logger.info('Handling trigger hit', { agentId: agent.id, reason, state: agent.state });
+
+    switch (reason) {
+
+      // ── Entry price reached — execute the trade ──
+      case 'ENTRY_HIT': {
+        const signal = getPendingSignal(agent.id);
+        if (!signal) {
+          clearTriggers(agent.id);
+          agent.setState('IDLE');
+          return;
+        }
+
+        const portfolio = await getPortfolio();
+        const validation = await validateEntrySignal(
+          signal,
+          agent.toPromptAgent(),
+          { cooldownUntil: null } as any,
+          portfolio,
+        );
+
+        if (!validation.approved) {
+          logger.info('Risk blocked at entry execution', {
+            agentId: agent.id,
+            reason: validation.blockReason,
+          });
+          clearTriggers(agent.id);
+          agent.setState('IDLE');
+          return;
+        }
+
+        const execResult = await executionEngine.executeEntry(
+          agent,
+          signal,
+          validation.positionSize!,
+          signal.entry!,
+        );
+
+        if (execResult.success && execResult.orderId) {
+          const newTrade = {
+            id: execResult.orderId,
+            agentId: agent.id,
+            pair: agent.pair,
+            direction: signal.action as 'LONG' | 'SHORT',
+            entryPrice: execResult.fillPrice ?? signal.entry!,
+            currentTp: signal.tp!,
+            currentSl: signal.sl!,
+            positionSize: validation.positionSize!,
+            positionValue: validation.positionSize! * signal.entry!,
+            unrealisedPnl: 0,
+            unrealisedPct: 0,
+            openedAt: new Date(),
+            entryReasoning: signal.reasoning ?? '',
+            mode: agent.mode as 'paper' | 'live',
+          };
+
+          clearTriggers(agent.id);
+          agent.attachTrade(newTrade);
+
+          logger.info('Trade opened via trigger', {
+            agentId: agent.id,
+            direction: signal.action,
+            entry: execResult.fillPrice,
+          });
+        }
+        break;
+      }
+
+      // ── Entry expired — signal no longer valid ──
+      case 'EXPIRY': {
+        clearTriggers(agent.id);
+        agent.setState('IDLE');
+
+        logger.info('Signal expired — back to IDLE', { agentId: agent.id });
+        // TODO: send Telegram notification
+        break;
+      }
+
+      // ── Price moved to trigger level or timeout ──
+      // In all cases — re-analyse the market
+      case 'PRICE_UP':
+      case 'PRICE_DOWN':
+      case 'TIMEOUT': {
+        // Clear old triggers before re-analysis
+        clearTriggers(agent.id);
+
+        // If there was a pending entry — cancel it
+        if (agent.state === 'PENDING_ENTRY') {
+          agent.setState('IDLE');
+          logger.info('Pending entry cancelled — re-analysing', {
+            agentId: agent.id,
+            reason,
+          });
+        }
+
+        // Re-run entry cycle with fresh market data
+        await this.runEntryCycle(agent, mtfData, regime, newsContext);
+        break;
       }
     }
   }
@@ -276,16 +486,15 @@ export class AgentManager {
     regime: RegimeAnalysis,
     newsContext: string,
   ): Promise<void> {
-    // Get real monthly P&L from risk module
+
     const drawdown = await getDrawdownState(agent.id);
     const performanceMode = resolvePerformanceMode(drawdown.monthlyPnlPct);
-
     const systemPrompt = buildSystemPrompt(agent.toPromptAgent());
 
     const lessons = await getRelevantLessons(
       agent.id,
       regime.regime,
-      'LONG',                                        // placeholder — Claude decides direction
+      'UNKNOWN',                                   // direction unknown before signal
       mtfData.tf1h.indicators?.rsi ?? 50,
       mtfData.tf1h.indicators?.volume?.ratio ?? 1,
       agent.pair,
@@ -297,27 +506,45 @@ export class AgentManager {
       mtfData,
       regime,
       newsContext,
-      lessons,            // TODO: wire up lesson retriever in learning module
+      lessons,
       drawdown.monthlyPnlPct * 100,
       performanceMode,
     );
 
     const claudeResult = await getEntrySignal(systemPrompt, entryPrompt, agent.id);
-
     if (!claudeResult.success || !claudeResult.data) return;
 
     const signal = claudeResult.data as EntrySignal;
+    const triggers = (signal as any).triggers ?? {};
 
+    // ── NO_TRADE — watch for opportunity ──
     if (signal.action === 'NO_TRADE') {
-      notifications.sendNoTradeSignal(agent.name, agent.pair, signal.reasoning);
+      const watchTriggers = {
+        price_up: triggers.price_up ?? null,
+        price_down: triggers.price_down ?? null,
+        timeout: triggers.timeout ?? null,
+      };
+
+      setTriggers(agent.id, watchTriggers, null, null);
+      agent.setState('WATCHING');                  // ← WATCHING not IDLE
+
+      logger.info(`[${agent.name}] NO_TRADE — watching`, {
+        price_up: watchTriggers.price_up,
+        price_down: watchTriggers.price_down,
+        timeout: watchTriggers.timeout,
+      });
+
+      notifications.sendNoTradeSignal(
+        agent.name,
+        agent.pair,
+        signal.reasoning,
+        watchTriggers,
+      );
       return;
-    };
+    }
 
-    // Portfolio value from env for now — capital module will improve this
+    // ── LONG or SHORT — validate risk ──
     const portfolio = await getPortfolio();
-
-    logger.info("Portfolio Data", portfolio)
-
     const riskResult = await validateEntrySignal(
       signal,
       agent.toPromptAgent(),
@@ -326,20 +553,32 @@ export class AgentManager {
     );
 
     if (!riskResult.approved) {
-      logger.info(`Signal blocked for ${agent.name}`, { reason: riskResult.blockReason });
+      logger.info(`[${agent.name}] Signal blocked`, { reason: riskResult.blockReason });
       return;
     }
 
-    // TODO: wire up execution engine
-    await executionEngine.triggerPendingSignal(agent, signal, riskResult.positionSize ?? 0);
-    // const execResult = await executionEngine.executeEntry(agent, signal, riskResult.positionSize!, portfolio.totalValue);
+    // ── Set pending entry triggers — entry_expiry only ──
+    // price_up/price_down not relevant here — we already decided to trade
+    const pendingTriggers = {
+      price_up: null,                            // ← null for pending entry
+      price_down: null,                            // ← null for pending entry
+      timeout: null,                            // ← timeout via entry_expiry instead
+    };
 
-    logger.info(`Signal approved for ${agent.name}`, {
+    const entryExpiry = (signal as any).entry_expiry ?? null;
+
+    setTriggers(agent.id, pendingTriggers, signal, entryExpiry);
+    agent.setState('PENDING_ENTRY');               // ← PENDING_ENTRY not IN_TRADE
+
+    await notifications.sendSignalAlert(agent, signal);
+
+    logger.info(`[${agent.name}] Signal pending`, {
       action: signal.action,
       entry: signal.entry,
       tp: signal.tp,
       sl: signal.sl,
       confidence: signal.confidence,
+      expiry: entryExpiry,
     });
   }
 
@@ -363,7 +602,28 @@ export class AgentManager {
     if (!result.success || !result.data) return;
 
     const decision = result.data as ManagementDecision;
-    if (decision.action === 'HOLD') return;
+    const triggers = (decision as any).triggers ?? {};
+
+    // ── Set new IN_TRADE triggers ──
+    // price_up and price_down only — no timeout for IN_TRADE
+    setTriggers(
+      agent.id,
+      {
+        price_up: triggers.price_up ?? null,
+        price_down: triggers.price_down ?? null,
+        timeout: null,                          // never timeout for IN_TRADE
+      },
+      null,   // no pending signal — already in trade
+      null,   // no entry expiry — already in trade
+    );
+
+    if (decision.action === 'HOLD') {
+      logger.info(`[${agent.name}] HOLD — triggers updated`, {
+        price_up: triggers.price_up,
+        price_down: triggers.price_down,
+      });
+      return;
+    }
 
     const validation = validateManagementDecision(
       decision,
@@ -374,15 +634,9 @@ export class AgentManager {
 
     if (!validation.approved) return;
 
-    // TODO: wire up execution engine
     await executionEngine.executeManagement(agent, decision, agent.currentTrade);
-    logger.info(`Management decision for ${agent.name}`, {
-      action: decision.action,
-      newTp: decision.newTp,
-      newSl: decision.newSl,
-      reasoning: decision.reasoning,
-    });
   }
+
 }
 
 // Export singleton

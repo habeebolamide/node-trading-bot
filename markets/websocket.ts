@@ -4,6 +4,7 @@ import { prisma } from '../lib/prisma';
 import { agentManager } from '../agents';
 import { executionEngine } from '../execution';
 import { EntrySignal } from '../types/claude.types';
+import { clearTriggers } from '../agents/triggers';
 
 const BUFFER_SIZE = 200;
 const PING_INTERVAL = 20_000;
@@ -232,7 +233,7 @@ export class BybitWebSocket {
 
     if (!data) {
       console.log("No Data");
-      
+
     };
 
     const price = parseFloat(data.lastPrice);
@@ -247,78 +248,96 @@ export class BybitWebSocket {
     );
   }
 
+  private lastPriceMap = new Map<string, number>();
+
+
   private async processRealtimeSignals(pair: string, price: number): Promise<void> {
+    const previousPrice = this.lastPriceMap.get(pair);
+    this.lastPriceMap.set(pair, price);
 
-    const lastPriceMap = new Map<string, number>();
-
-    const previousPrice = lastPriceMap.get(pair);
-
-    // update immediately for next tick
-    lastPriceMap.set(pair, price);
+    
 
     if (previousPrice === undefined) return;
 
-
     const now = new Date();
 
-    // Fetch only active, non-expired, pending signals
-    const signals = await prisma.pendingSignal.findMany({
-      where: {
-        pair,
-        status: 'PENDING',
-        expiresAt: { gt: now },
-      },
+    // ── 1. Check pending entry signals ──
+    const pendingSignals = await prisma.pendingSignal.findMany({
+      where: { pair, status: 'PENDING', expiresAt: { gt: now } },
     });
 
-    if (signals.length === 0) return;
-
-    for (const ps of signals) {
+    for (const ps of pendingSignals) {
       const entry = ps.entryPrice;
       let triggered = false;
 
-      // Check if price crossed the entry
-      if (
-        ps.direction === 'LONG' &&
-        previousPrice > entry &&
-        price <= entry
-      ) {
-        triggered = true;
-      }
-
-      if (
-        ps.direction === 'SHORT' &&
-        previousPrice < entry &&
-        price >= entry
-      ) {
-        triggered = true;
-      }
+      if (ps.direction === 'LONG' && previousPrice > entry && price <= entry) triggered = true;
+      if (ps.direction === 'SHORT' && previousPrice < entry && price >= entry) triggered = true;
 
       if (!triggered) continue;
 
       const agent = agentManager.getSingleAgent(ps.agentId);
       if (!agent) continue;
 
-      logger.info('Realtime signal triggered', { pair, entry, currentPrice: price });
-
-      // 🔥 EXECUTE
       const signal: EntrySignal = typeof ps.rawSignal === 'string'
         ? JSON.parse(ps.rawSignal)
-        : ps.rawSignal;
+        : (ps.rawSignal as unknown as EntrySignal);
 
-      await executionEngine.executeEntry(
-        agent,
-        signal,
-        ps.positionSize,
-        price
-      );
+      await executionEngine.executeEntry(agent, signal, ps.positionSize, price);
 
-      // Update status to prevent duplicate triggers
       await prisma.pendingSignal.update({
         where: { id: ps.id },
         data: { status: 'TRIGGERED' },
       });
 
       agent.setState('IN_TRADE');
+
+      logger.info('Entry triggered in realtime', { pair, entry, price });
+    }
+
+    // ── 2. Check price_up / price_down triggers ──
+    const watchSignals = await prisma.signal.findMany({
+      where: {
+        pair,           // add pair field to Signal model
+        status: 'active'
+      },
+    });
+
+    for (const ws of watchSignals) {
+      const triggers = ws.triggers as any;
+
+      // Price up trigger hit
+      if (triggers.price_up && previousPrice < triggers.price_up && price >= triggers.price_up) {
+        logger.info('Price up trigger hit in realtime', { pair, price_up: triggers.price_up, price });
+
+        await prisma.signal.update({
+          where: { id: ws.id },
+          data: { status: 'triggered', triggeredBy: 'PRICE_UP', triggeredAt: new Date() },
+        });
+
+        const agent = agentManager.getSingleAgent(ws.agentId);
+        if (agent) {
+          clearTriggers(ws.agentId);
+          agent.setState('IDLE');
+          // agent.needsReanalysis = true;
+        }
+      }
+
+      // Price down trigger hit
+      if (triggers.price_down && previousPrice > triggers.price_down && price <= triggers.price_down) {
+        logger.info('Price down trigger hit in realtime', { pair, price_down: triggers.price_down, price });
+
+        await prisma.signal.update({
+          where: { id: ws.id },
+          data: { status: 'triggered', triggeredBy: 'PRICE_DOWN', triggeredAt: new Date() },
+        });
+
+        const agent = agentManager.getSingleAgent(ws.agentId);
+        if (agent) {
+          clearTriggers(ws.agentId);
+          agent.setState('IDLE');
+          // agent.needsReanalysis = true;
+        }
+      }
     }
   }
 

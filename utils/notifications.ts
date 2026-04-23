@@ -62,9 +62,13 @@ export const notifications = {
     }
   },
 
-  async sendNoTradeSignal(agentName: string, pair: string, reason: string): Promise<void> {
+  async sendNoTradeSignal(agentName: string, pair: string, reason: string, triggers:any): Promise<void> {
     const message = `⚠️ No trade signal from ${agentName} for ${pair} at this time.\n\n` +
-      `Reason: <b>${reason}</b>`;
+      `Reason: <b>${reason}</b>.\n\n
+      Triggers:\n
+        Price Up: ${triggers.price_up}
+        Price Down: ${triggers.price_down}
+      `;
     try {
       await bot.sendMessage(CHAT_ID, message, { parse_mode: 'HTML' });
       console.log('📨 Telegram no-signal alert sent');

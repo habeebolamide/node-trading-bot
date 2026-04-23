@@ -262,50 +262,76 @@ export function buildManagementPrompt(
   const pnlSign = trade.unrealisedPct >= 0 ? '+' : '';
   const duration = getTimeSince(trade.openedAt);
   const currentPrice = mtfData.tf5m.candles.at(-1)?.close ?? trade.entryPrice;
+  const styleGuide = {
+    scalp: "You are a fast scalping engine. You hunt for quick momentum moves.",
+    swing: "You are a swing trading engine. You focus on clean higher-timeframe structure.",
+    auto: "You are a versatile trading engine. You adapt to whatever the market is offering — scalp, swing, or stay out.",
+  }[agent.tradingStyle ?? 'auto'] || "You are a high-performance trading engine.";
 
   return `
-You have an open ${trade.direction} trade on ${trade.pair}.
+  You have an open ${trade.direction} trade on ${trade.pair}.
 
-OPEN TRADE:
-Direction:      ${trade.direction}
-Entry:          ${trade.entryPrice}
-Current price:  ${currentPrice}
-TP:             ${trade.currentTp}
-SL:             ${trade.currentSl}
-Unrealised P&L: ${pnlSign}${trade.unrealisedPct.toFixed(2)}% (${pnlSign}$${trade.unrealisedPnl.toFixed(2)})
-Time open:      ${duration}
-Original read:  "${trade.entryReasoning}"
+  OPEN TRADE:
+  Direction:      ${trade.direction}
+  Entry:          ${trade.entryPrice}
+  Current price:  ${currentPrice}
+  TP:             ${trade.currentTp}
+  SL:             ${trade.currentSl}
+  Unrealised P&L: ${pnlSign}${trade.unrealisedPct.toFixed(2)}% (${pnlSign}$${trade.unrealisedPnl.toFixed(2)})
+  Time open:      ${duration}
+  Original read:  "${trade.entryReasoning}"
+  Trading Style Guide: ${styleGuide}
 
-━━━━━━━━━━━━━━━━━━━━━━━
-4H — is the original thesis still structurally intact?
-${formatTimeframe(mtfData.tf4h)}
 
-━━━━━━━━━━━━━━━━━━━━━━━
-1H — how is momentum developing?
-${formatTimeframe(mtfData.tf1h)}
 
-━━━━━━━━━━━━━━━━━━━━━━━
-15M — what is price doing right now?
-${formatTimeframe(mtfData.tf15m)}
+  ━━━━━━━━━━━━━━━━━━━━━━━
+  4H — is the original thesis still structurally intact?
+  ${formatTimeframe(mtfData.tf4h)}
 
-━━━━━━━━━━━━━━━━━━━━━━━
-NEWS:
-${newsContext}
+  ━━━━━━━━━━━━━━━━━━━━━━━
+  1H — how is momentum developing?
+  ${formatTimeframe(mtfData.tf1h)}
 
-Review the current state against your original thesis.
-A trade being temporarily in loss is normal. Do not close based on that alone.
-Close or adjust only if the thesis is genuinely invalidated or market structure changed.
-You may never move the stop loss further away from entry — only tighten it.
+  ━━━━━━━━━━━━━━━━━━━━━━━
+  15M — what is price doing right now?
+  ${formatTimeframe(mtfData.tf15m)}
 
-Respond ONLY with this exact JSON:
-{
-  "action": "HOLD" | "ADJUST" | "CLOSE" | "PARTIAL_CLOSE",
-  "newTp": <number | null>,
-  "newSl": <number | null>,
-  "closePercent": <0-100 | null>,
-  "reasoning": "<why you are making this decision — max 100 chars>",
-  "urgency": "low" | "medium" | "high"
-}
+  ━━━━━━━━━━━━━━━━━━━━━━━
+  NEWS:
+  ${newsContext}
+
+  Review the current state against your original thesis.
+  A trade being temporarily in loss is normal. Do not close based on that alone.
+  Close or adjust only if the thesis is genuinely invalidated or market structure changed.
+  You may never move the stop loss further away from entry — only tighten it.
+
+  After your decision, always provide re-analysis triggers.
+  These are price levels where the trade situation changes significantly.
+
+  price_up: a level above current price where you would want to re-assess
+    — e.g. resistance that if broken changes the thesis
+    — e.g. a level where partial profit should be taken
+
+  price_down: a level below current price where you would want to re-assess  
+    — e.g. support that if broken invalidates the trade
+    — e.g. a level that would warrant tightening the stop
+
+  Both must be based on visible structure — not arbitrary distances.
+  Set to null only if no meaningful level exists nearby.
+
+  Respond ONLY with this exact JSON:
+  {
+    "action": "HOLD" | "ADJUST" | "CLOSE" | "PARTIAL_CLOSE",
+    "newTp": <number | null>,
+    "newSl": <number | null>,
+    "closePercent": <0-100 | null>,
+    "reasoning": "<why you are making this decision — max 100 chars>",
+    "urgency": "low" | "medium" | "high",
+    "triggers": {
+      "price_up": <number | null>,
+      "price_down": <number | null>
+    }
+  }
   `.trim();
 }
 

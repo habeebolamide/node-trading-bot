@@ -35,6 +35,7 @@ model Agent {
   // Relations
   trades            Trade[]
   lessons           TradeLesson[]  
+  signals Signal[]
 
   @@map("agents")
 }
@@ -121,4 +122,29 @@ model PendingSignal {
   createdAt   DateTime @default(now())
 
   @@map("pending_signals")
+}
+
+model Signal {
+  id            String    @id @default(uuid())
+  agentId       String
+  pair          String?
+  action        String    // LONG | SHORT | NO_TRADE
+  entry         Float?
+  tp            Float?
+  sl            Float?
+  confidence    Float?
+  tradeStyle    String?
+  timeframeUsed String?
+  reasoning     String?
+  whatInvalidates String?
+  entryExpiry   DateTime?
+  triggers      Json      // { price_up, price_down, timeout }
+  status        String    @default("active") // active | triggered | expired | executed | cancelled
+  triggeredBy   String?   // ENTRY_HIT | PRICE_UP | PRICE_DOWN | TIMEOUT | EXPIRY
+  triggeredAt   DateTime?
+  createdAt     DateTime  @default(now())
+
+  agent         Agent     @relation(fields: [agentId], references: [id], onDelete: Cascade)
+
+  @@map("signals")
 }
