@@ -1,3 +1,4 @@
+import { TradingStyle } from "../types/agent.types";
 import { OpenTrade } from "../types/trade.types";
 
 export function mapToOpenTrade(dbTrade: any): OpenTrade {
@@ -25,4 +26,15 @@ export function mapToOpenTrade(dbTrade: any): OpenTrade {
 
     entryReasoning: dbTrade.entryReasoning || '', 
   };
+}
+
+export function calculateManagementTimeout(style: TradingStyle): string {
+  const minutes = {
+    scalp:    15,
+    swing:    30,
+    position: 30,
+    auto:     20,
+  }[style] ?? 20;
+
+  return new Date(Date.now() + minutes * 60_000).toISOString();
 }

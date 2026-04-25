@@ -11,7 +11,7 @@ import { getRelevantLessons } from '../learning';
 import { notifications } from "../utils/notifications";
 import { executionEngine } from "../execution";
 import { getPortfolio } from "../capital";
-import { mapToOpenTrade } from "../utils/helper";
+import { calculateManagementTimeout, mapToOpenTrade } from "../utils/helper";
 
 import {
   setTriggers,
@@ -19,6 +19,7 @@ import {
   checkTriggers,
   getPendingSignal,
   hasTriggers,
+  updateTriggers,
 } from './triggers';
 
 
@@ -318,7 +319,10 @@ export class AgentManager {
             case 'IN_TRADE':
               // Trade open — triggers set by last management cycle
               // Run management regardless — triggers just add realtime urgency
-              await this.runManagementCycle(agent, mtfData, newsContext);
+              // await this.runManagementCycle(agent, mtfData, newsContext);
+              logger.info(`[${agent.name}] TimeOut Not Reached`, {
+                currentPrice: candle.close,
+              });
               break;
 
             default:
@@ -460,6 +464,16 @@ export class AgentManager {
       case 'PRICE_UP':
       case 'PRICE_DOWN':
       case 'TIMEOUT': {
+
+        if (agent.state == 'IN_TRADE') {
+          logger.info('Management Timeout Reached — re-analysing', {
+            agentId: agent.id,
+            reason,
+          });
+
+          await this.runManagementCycle(agent,mtfData,newsContext)
+          break;
+        }
         // Clear old triggers before re-analysis
         clearTriggers(agent.id);
 
@@ -490,6 +504,10 @@ export class AgentManager {
     const drawdown = await getDrawdownState(agent.id);
     const performanceMode = resolvePerformanceMode(drawdown.monthlyPnlPct);
     const systemPrompt = buildSystemPrompt(agent.toPromptAgent());
+
+
+    console.log("Performance Mode:", performanceMode);
+
 
     const lessons = await getRelevantLessons(
       agent.id,
@@ -602,29 +620,29 @@ export class AgentManager {
     if (!result.success || !result.data) return;
 
     const decision = result.data as ManagementDecision;
-    const triggers = (decision as any).triggers ?? {};
 
-    // ── Set new IN_TRADE triggers ──
-    // price_up and price_down only — no timeout for IN_TRADE
-    setTriggers(
-      agent.id,
-      {
-        price_up: triggers.price_up ?? null,
-        price_down: triggers.price_down ?? null,
-        timeout: null,                          // never timeout for IN_TRADE
-      },
-      null,   // no pending signal — already in trade
-      null,   // no entry expiry — already in trade
-    );
+    // ── AI provides price triggers — system provides timeout ──
+    const aiTriggers = (decision as any).triggers ?? {};
+    const systemTimeout = calculateManagementTimeout(agent.tradingStyle);
 
-    if (decision.action === 'HOLD') {
-      logger.info(`[${agent.name}] HOLD — triggers updated`, {
-        price_up: triggers.price_up,
-        price_down: triggers.price_down,
-      });
-      return;
-    }
+    // Update the SAME signal record — never create a new one
+    await updateTriggers(agent.id, {
+      price_up: aiTriggers.price_up ?? null,
+      price_down: aiTriggers.price_down ?? null,
+      timeout: systemTimeout,                   // system always controls this
+    });
 
+    logger.info(`[${agent.name}] Management cycle`, {
+      action: decision.action,
+      urgency: decision.urgency,
+      price_up: aiTriggers.price_up,
+      price_down: aiTriggers.price_down,
+      timeout: systemTimeout,
+    });
+
+    if (decision.action === 'HOLD') return;
+
+    // Validate the decision
     const validation = validateManagementDecision(
       decision,
       agent.currentTrade.currentSl,
@@ -632,11 +650,15 @@ export class AgentManager {
       agent.currentTrade.direction,
     );
 
-    if (!validation.approved) return;
+    if (!validation.approved) {
+      logger.info(`[${agent.name}] Management decision rejected`, {
+        reason: validation.message,
+      });
+      return;
+    }
 
     await executionEngine.executeManagement(agent, decision, agent.currentTrade);
   }
-
 }
 
 // Export singleton

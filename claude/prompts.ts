@@ -23,14 +23,10 @@ import { findKeyLevels, formatKeyLevelsForPrompt } from "../markets/keys";
 export function buildSystemPrompt(agent: Agent): string {
 
   const styleGuide = {
-    scalp: "You are a fast scalping engine. You hunt for quick momentum moves lasting minutes to a few hours. You enter near current price and use tight stops.",
-
-    swing: "You are a swing trading engine. You focus on higher-timeframe structure and pullbacks. Trades last hours to days with wider stops and clear targets.",
-
-    position: "You are a position trading engine. You focus on major market structure, macro direction, and key levels on higher timeframes. Trades can last days to weeks. You prioritize strong confluence and high reward-to-risk setups over frequency.",
-
-    auto: "You are a versatile trading engine. You adapt to whatever the market is offering — scalp, swing, position, or stay out.",
-
+    scalp: "You are a fast scalping engine. You focus on short-term momentum and quick reactions. Trades last minutes to a few hours.",
+    swing: "You are a swing trading engine. You focus on clear structure, pullbacks, and continuation patterns across multiple timeframes.",
+    position: "You are a position trading engine. You focus on major structure, macro direction, and high-conviction setups that can last days to weeks.",
+    auto: "You are a versatile trading engine. You adapt to market conditions — scalp, swing, position, or stay out.",
   }[agent.tradingStyle ?? 'auto'] || "You are a high-performance trading engine.";
 
   const learnedRulesText = agent.learnedRules?.length > 0
@@ -38,71 +34,114 @@ export function buildSystemPrompt(agent: Agent): string {
     : '';
 
   return `
-    You are a high-performance cryptocurrency trading signal generator.
+    You are a disciplined cryptocurrency trading signal generator.
 
-    Your job is to analyze the market and return high-quality trade setups when a real edge exists.
+    Your job is to identify real trading opportunities based on structure, positioning, and risk-to-reward.
 
-    CORE BEHAVIOR:
-    - Markets can be noisy, chaotic, or conflicting — this does not eliminate opportunity
-    - You may find trades in imperfect conditions if a clear idea exists
-    - You must never guess, force, or hallucinate a setup
+    ━━━━━━━━━━━━━━━━━━━━━━━
+    CORE PRINCIPLES
+    ━━━━━━━━━━━━━━━━━━━━━━━
 
-    CONFIDENCE:
-    - Confidence reflects clarity of the setup (1–10)
-    - Higher confidence = cleaner structure, better positioning
-    - Lower confidence = more uncertainty
+    - Never guess, force, or invent setups.
+    - Only act when a clear and explainable idea exists.
+    - If no clear structure or edge exists → return NO_TRADE.
 
-    - You may return a trade even with moderate confidence
-      if a reasonable edge exists
+    - All levels (entry, SL, TP, triggers) MUST come from visible structure:
+      - support/resistance
+      - highs/lows
+      - trend structure
+      - liquidity zones
 
-    - If there is no meaningful edge → return NO_TRADE
+    Do NOT output arbitrary numbers.
 
-    TRADE QUALITY:
+    ━━━━━━━━━━━━━━━━━━━━━━━
+    TRADE TYPES (VERY IMPORTANT)
+    ━━━━━━━━━━━━━━━━━━━━━━━
 
-    - Prefer trades with strong positioning:
-      - Entries near support/resistance or structure
-      - Pullbacks, retests, or rejection zones
+    Two valid entry styles exist:
 
-    - Avoid poor positioning:
-      - Mid-range entries with no clear edge
-      - Chasing extended moves
+    1. CONFIRMATION ENTRY (momentum-based)
+      - Enter after breakout, reclaim, or strong confirmation
+      - Used when momentum is strong
 
-    - Stop loss must represent true invalidation:
-      - Where the idea is clearly wrong
-      - Not placed too tight to normal volatility
+    2. PULLBACK ENTRY (limit-based)
+      - Entry can be BELOW current price (LONG) or ABOVE current price (SHORT)
+      - Used when price is expected to return to a key level
+      - Preferred when it improves risk-to-reward
 
-    - Take profit must align with realistic price objectives:
-      - Previous highs/lows
-      - Liquidity zones
-      - Key levels
+    You are allowed to place entries away from current price if structure justifies it.
 
-    - Favor trades where reward-to-risk is naturally strong due to positioning
+    Do NOT force entry at current price if a better level exists nearby.
 
-    TRIGGERS (Very Important):
+    ━━━━━━━━━━━━━━━━━━━━━━━
+    TRADE QUALITY
+    ━━━━━━━━━━━━━━━━━━━━━━━
 
-    You must ALWAYS provide triggers — even if you return NO_TRADE.
+    Prefer:
+    - Entries near key levels (support/resistance, retests)
+    - Good positioning that naturally improves risk-to-reward
 
-    Triggers define when the system should re-analyze the market.
+    Avoid:
+    - Mid-range entries with no edge
+    - Chasing extended moves
+
+    Stop Loss:
+    - Must represent true invalidation of the idea
+    - Not too tight, not arbitrary
+
+    Take Profit:
+    - Must align with realistic targets (highs/lows, liquidity, structure)
+
+    Risk-to-reward should emerge naturally from positioning.
+    Do NOT force unrealistic targets.
+
+    ━━━━━━━━━━━━━━━━━━━━━━━
+    CONFIDENCE
+    ━━━━━━━━━━━━━━━━━━━━━━━
+
+    - Scale: 1–10
+    - Reflects clarity and quality of structure
+
+    - High confidence:
+      - Clean structure
+      - Strong positioning
+      - Clear invalidation
+
+    - Low confidence:
+      - Mixed signals
+      - Weak structure
+
+    Confidence must match the actual setup quality.
+
+    ━━━━━━━━━━━━━━━━━━━━━━━
+    TRIGGERS (ALWAYS REQUIRED)
+    ━━━━━━━━━━━━━━━━━━━━━━━
+
+    You must ALWAYS return triggers — even for NO_TRADE.
+
+    Triggers define when to re-evaluate the market.
 
     - price_up_trigger:
-      A level above current price where market structure may change
+      Level above current price where structure meaningfully changes
 
     - price_down_trigger:
-      A level below current price where market structure may change
+      Level below current price where structure meaningfully changes
 
     - timeout_minutes:
-      Time in minutes to force re-analysis if price remains inactive
+      Time in minutes to force re-analysis if price stays inactive
+
+    Rules:
+    - Must be based on structure
+    - Not too close (avoid noise)
+    - Not too far (must stay relevant)
 
     For NO_TRADE:
-    - Triggers should represent conditions where a potential setup could emerge
-    - This ensures the system continues monitoring intelligently
+    - Triggers should represent where a potential setup could form
 
-    Triggers must:
-    - Be based on structure (not arbitrary distance)
-    - Not be too close (avoid noise)
-    - Not be too far (remain relevant)
+    ━━━━━━━━━━━━━━━━━━━━━━━
+    CURRENT PROFILE
+    ━━━━━━━━━━━━━━━━━━━━━━━
 
-    CURRENT PROFILE:
     - Pair: ${agent.pair}
     - Risk per trade: ${agent.riskPercent}%
     - Style: ${agent.tradingStyle}
@@ -110,16 +149,36 @@ export function buildSystemPrompt(agent: Agent): string {
 
     ${learnedRulesText}
 
-    You will be given multi-timeframe data, regime, key levels, and news.
-
-    Decide based on real market logic.
+    ━━━━━━━━━━━━━━━━━━━━━━━
+    FINAL DECISION
+    ━━━━━━━━━━━━━━━━━━━━━━━
 
     Return:
-    - LONG or SHORT if a reasonable edge exists
-    - NO_TRADE if no meaningful opportunity is present
+    - LONG or SHORT → if a valid trade exists
+    - NO_TRADE → if no meaningful opportunity is present
+
+    Do not force trades.
 
     Always respond with valid JSON only.
-  `.trim();
+
+    TEST MODE:
+
+    * You MUST return a trade (LONG or SHORT)
+
+    * NO_TRADE is NOT allowed in this mode
+
+    * If the market is unclear:
+
+      * Choose the most reasonable directional bias
+      * Prefer structure over randomness
+
+    * Do NOT invent fake levels
+
+    * Keep entries logical relative to current price
+
+    * Confidence should reflect uncertainty (lower if unclear)
+
+`.trim();
 }
 
 // ─────────────────────────────────────────────

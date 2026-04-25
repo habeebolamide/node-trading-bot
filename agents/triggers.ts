@@ -2,6 +2,11 @@ import logger from '../utils/logger';
 import type { Candle }        from '../types/market.types';
 import type { EntrySignal }   from '../types/claude.types';
 import { prisma } from '../lib/prisma';
+import { agentManager } from '.';
+import { buildMtfData } from '../markets/mtf';
+import { getCandleBuffer } from '../markets/websocket';
+import { detectRegime } from '../markets/regime';
+import { getNewsContextForPrompt } from '../markets/news';
 
 // ─────────────────────────────────────────────
 // Types
@@ -70,6 +75,37 @@ export async function setTriggers(
   });
 
   logger.info('Signal saved to DB', { agentId, action: pendingSignal?.action ?? 'NO_TRADE' });
+}
+
+// ─────────────────────────────────────────────
+// Update triggers — called after every management cycle
+// Updates the SAME signal record — never creates a new one
+// System controls timeout. AI controls price_up/price_down.
+// ─────────────────────────────────────────────
+ 
+export async function updateTriggers(
+  agentId:    string,
+  newTriggers: Triggers,
+): Promise<void> {
+ 
+  // Update DB — find active signal by agentId
+  await prisma.signal.updateMany({
+    where: { agentId, status: 'active' },
+    data:  { triggers: newTriggers as any },
+  });
+ 
+  // Update in-memory store
+  const existing = store.get(agentId);
+  if (existing) {
+    existing.triggers = newTriggers;
+  }
+ 
+  logger.info('Triggers updated', {
+    agentId,
+    price_up:   newTriggers.price_up,
+    price_down: newTriggers.price_down,
+    timeout:    newTriggers.timeout,
+  });
 }
 
 // ─────────────────────────────────────────────
@@ -261,3 +297,53 @@ export function hasTriggers(agentId: string): boolean {
 export function getTriggerState(agentId: string): AgentTriggerState | null {
   return store.get(agentId) ?? null;
 }
+
+export function startTimeoutChecker(): void {
+  setInterval(async () => {
+    const agents = agentManager.getAllAgents();
+
+    for (const agent of agents) {
+      if (!hasTriggers(agent.id)) continue;
+      // if (agent.state === 'IN_TRADE') continue; // IN_TRADE has no timeout
+
+      const state = getTriggerState(agent.id);
+      if (!state?.triggers.timeout) continue;
+
+      const timeoutTime = new Date(state.triggers.timeout).getTime();
+      if (Date.now() < timeoutTime) continue;
+
+      // Timeout expired — need fresh MTF data to re-analyse
+      const pairs     = [agent.pair];
+      const mtfData   = buildMtfData(agent.pair);
+      const buffer    = getCandleBuffer(agent.pair, '60');
+      const regime    = detectRegime(buffer);
+      const newsContext = getNewsContextForPrompt(agent.pair);
+
+      if (!mtfData || !regime) continue;
+
+      logger.info(`[${agent.name}] Timeout trigger fired`, {
+        timeout: state.triggers.timeout,
+      });
+
+      clearTriggers(agent.id);
+
+      if (agent.state === 'WATCHING') {
+        agent.setState('IDLE');
+        agent.needsReanalysis = true;
+      }
+
+      // Build a fake candle just to pass to handleTriggerHit
+      // We don't actually need candle data for TIMEOUT — just state
+      await agentManager.handleTriggerHit(
+        agent,
+        'TIMEOUT',
+        null as any,
+        mtfData,
+        regime,
+        newsContext,
+      );
+    }
+  }, 30_000); // check every 60 seconds — precise enough
+}
+
+

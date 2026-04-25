@@ -6,7 +6,7 @@ import { BybitWebSocket, candleBuffers, getCandleBuffer, onCandle, seedCandleBuf
 import { Candle, CandleInterval } from './types/market.types';
 import { detectRegime, isSignificantCandle } from './markets/regime';
 import { buildMtfData } from './markets/mtf';
-import { clearTriggers, getTriggerState, hasTriggers } from './agents/triggers';
+import { clearTriggers, getTriggerState, hasTriggers, startTimeoutChecker } from './agents/triggers';
 
 declare global {
   var lastAiCall: Record<string, number>;
@@ -100,8 +100,6 @@ async function handleCandle(candle: Candle): Promise<void> {
 
     const regime = detectRegime(buffer);
 
-    console.log(regime, "Regime Check");
-    
     if (!regime) return;
 
     // 🔥 pass regime into significance
@@ -182,55 +180,6 @@ async function handleCandle(candle: Candle): Promise<void> {
     // Never re-throw — one bad candle never kills the bot
   }
 }
-
-function startTimeoutChecker(): void {
-  setInterval(async () => {
-    const agents = agentManager.getAllAgents();
-
-    for (const agent of agents) {
-      if (!hasTriggers(agent.id)) continue;
-      if (agent.state === 'IN_TRADE') continue; // IN_TRADE has no timeout
-
-      const state = getTriggerState(agent.id);
-      if (!state?.triggers.timeout) continue;
-
-      const timeoutTime = new Date(state.triggers.timeout).getTime();
-      if (Date.now() < timeoutTime) continue;
-
-      // Timeout expired — need fresh MTF data to re-analyse
-      const pairs     = [agent.pair];
-      const mtfData   = buildMtfData(agent.pair);
-      const buffer    = getCandleBuffer(agent.pair, '60');
-      const regime    = detectRegime(buffer);
-      const newsContext = getNewsContextForPrompt(agent.pair);
-
-      if (!mtfData || !regime) continue;
-
-      logger.info(`[${agent.name}] Timeout trigger fired`, {
-        timeout: state.triggers.timeout,
-      });
-
-      clearTriggers(agent.id);
-
-      if (agent.state === 'WATCHING') {
-        agent.setState('IDLE');
-        agent.needsReanalysis = true;
-      }
-
-      // Build a fake candle just to pass to handleTriggerHit
-      // We don't actually need candle data for TIMEOUT — just state
-      await agentManager.handleTriggerHit(
-        agent,
-        'TIMEOUT',
-        null as any,
-        mtfData,
-        regime,
-        newsContext,
-      );
-    }
-  }, 30_000); // check every 60 seconds — precise enough
-}
-
 
 main().catch((error) => {
   logger.error('Fatal startup error', { error: error.message });
