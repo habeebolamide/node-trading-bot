@@ -20,6 +20,7 @@ import {
   getPendingSignal,
   hasTriggers,
   updateTriggers,
+  setTriggersMemory,
 } from './triggers';
 
 
@@ -146,51 +147,51 @@ export class AgentManager {
     return Array.from(this.agents.values());
   }
 
-  async resumeOpenTrades(): Promise<void> {
+  // async resumeOpenTrades(): Promise<void> {
 
-    const openTrades = await prisma.trade.findMany({
-      where: { status: 'open' },
-    });
+  //   const openTrades = await prisma.trade.findMany({
+  //     where: { status: 'open' },
+  //   });
 
-    logger.info(`Resuming ${openTrades.length} open trades from database`);
+  //   logger.info(`Resuming ${openTrades.length} open trades from database`);
 
-    for (const dbTrade of openTrades) {
+  //   for (const dbTrade of openTrades) {
 
-      await this.loadAgents();
+  //     await this.loadAgents();
 
 
-      const agent = this.agents.get(dbTrade.agentId);
+  //     const agent = this.agents.get(dbTrade.agentId);
 
-      if (!agent) {
-        logger.info(`No active agent found for open trade ${dbTrade.id} — skipping`);
-        continue;
-      };
+  //     if (!agent) {
+  //       logger.info(`No active agent found for open trade ${dbTrade.id} — skipping`);
+  //       continue;
+  //     };
 
-      const openTrade: OpenTrade = {
-        id: dbTrade.id,
-        agentId: dbTrade.agentId,
-        pair: dbTrade.pair,
-        direction: dbTrade.direction as 'LONG' | 'SHORT',
-        entryPrice: dbTrade.entryPrice,
-        currentTp: dbTrade.takeProfit ?? 0,
-        currentSl: dbTrade.stopLoss,
-        positionSize: dbTrade.size,
-        positionValue: 0,
-        unrealisedPnl: 0,
-        unrealisedPct: 0,
-        openedAt: dbTrade.openedAt,
-        entryReasoning: '',
-        mode: agent.mode as 'paper' | 'live',
-      };
+  //     const openTrade: OpenTrade = {
+  //       id: dbTrade.id,
+  //       agentId: dbTrade.agentId,
+  //       pair: dbTrade.pair,
+  //       direction: dbTrade.direction as 'LONG' | 'SHORT',
+  //       entryPrice: dbTrade.entryPrice,
+  //       currentTp: dbTrade.takeProfit ?? 0,
+  //       currentSl: dbTrade.stopLoss,
+  //       positionSize: dbTrade.size,
+  //       positionValue: 0,
+  //       unrealisedPnl: 0,
+  //       unrealisedPct: 0,
+  //       openedAt: dbTrade.openedAt,
+  //       entryReasoning: '',
+  //       mode: agent.mode as 'paper' | 'live',
+  //     };
 
-      agent.attachTrade(openTrade);
-      logger.info(`Resumed open trade for ${agent.name}`, { tradeId: dbTrade.id });
-    }
-  }
+  //     agent.attachTrade(openTrade);
+  //     logger.info(`Resumed open trade for ${agent.name}`, { tradeId: dbTrade.id });
+  //   }
+  // }
 
   async restoreAgentState(agent: AgentRuntime): Promise<void> {
 
-    // 1. Check for open trade first — highest priority
+    // 1. Check open trade (highest priority)
     const openTrade = await prisma.trade.findFirst({
       where: { agentId: agent.id, status: 'open' },
     });
@@ -201,7 +202,7 @@ export class AgentManager {
       return;
     }
 
-    // 2. Check for active signal
+    // 2. Get latest active signal
     const activeSignal = await prisma.signal.findFirst({
       where: { agentId: agent.id, status: 'active' },
       orderBy: { createdAt: 'desc' },
@@ -216,15 +217,14 @@ export class AgentManager {
     const triggers = activeSignal.triggers as any;
     const now = Date.now();
 
-    // 3. Check if signal expired while bot was down
-    const timeoutExpired = triggers.timeout
+    // 3. Expiry checks
+    const timeoutExpired = triggers?.timeout
       && now > new Date(triggers.timeout).getTime();
 
     const entryExpired = activeSignal.entryExpiry
       && now > new Date(activeSignal.entryExpiry).getTime();
 
     if (timeoutExpired || entryExpired) {
-      // Expired during downtime — mark it and go IDLE
       await prisma.signal.update({
         where: { id: activeSignal.id },
         data: {
@@ -233,20 +233,34 @@ export class AgentManager {
           triggeredAt: new Date(),
         },
       });
+
       agent.setState('IDLE');
       logger.info(`[${agent.name}] Signal expired during downtime → IDLE`);
       return;
     }
 
-    // 4. Signal still valid — restore to in-memory trigger store
-    if (activeSignal.action === 'NO_TRADE') {
-      // Was WATCHING
-      agent.setState('WATCHING');
-      logger.info(`[${agent.name}] Restored → WATCHING`, {
-        price_up: triggers.price_up,
-        price_down: triggers.price_down,
-      });
+    // 🔥 4. RESTORE TRIGGERS INTO MEMORY
+    setTriggersMemory(
+      agent.id,
+      triggers,
+      activeSignal.action === 'NO_TRADE'
+        ? null
+        : {
+          action: activeSignal.action as any,
+          entry: activeSignal.entry,
+          tp: activeSignal.tp,
+          sl: activeSignal.sl,
+          confidence: activeSignal.confidence,
+          reasoning: activeSignal.reasoning,
+        } as any,
+      activeSignal.entryExpiry
+        ? activeSignal.entryExpiry.toISOString()
+        : null
+    );
 
+    if (activeSignal.action === 'NO_TRADE') {
+      agent.setState('WATCHING');
+      logger.info(`[${agent.name}] Restored → WATCHING`);
     } else {
       agent.setState('PENDING_ENTRY');
       logger.info(`[${agent.name}] Restored → PENDING_ENTRY`);
@@ -471,7 +485,7 @@ export class AgentManager {
             reason,
           });
 
-          await this.runManagementCycle(agent,mtfData,newsContext)
+          await this.runManagementCycle(agent, mtfData, newsContext)
           break;
         }
         // Clear old triggers before re-analysis

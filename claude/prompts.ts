@@ -15,176 +15,137 @@ import type {
 import { findKeyLevels, formatKeyLevelsForPrompt } from "../markets/keys";
 
 // ─────────────────────────────────────────────
+// TEST MODE FLAG
+// Set to true to force LONG/SHORT signals
+// Remove entirely when going live
+// ─────────────────────────────────────────────
+
+const TEST_MODE = false;
+
+// ─────────────────────────────────────────────
 // System prompt
-// WHO the AI is, HOW it thinks, WHAT it knows
-// about itself — not a rulebook
 // ─────────────────────────────────────────────
 
 export function buildSystemPrompt(agent: Agent): string {
 
   const styleGuide = {
-    scalp: "You are a fast scalping engine. You focus on short-term momentum and quick reactions. Trades last minutes to a few hours.",
-    swing: "You are a swing trading engine. You focus on clear structure, pullbacks, and continuation patterns across multiple timeframes.",
-    position: "You are a position trading engine. You focus on major structure, macro direction, and high-conviction setups that can last days to weeks.",
-    auto: "You are a versatile trading engine. You adapt to market conditions — scalp, swing, position, or stay out.",
-  }[agent.tradingStyle ?? 'auto'] || "You are a high-performance trading engine.";
+    scalp: `
+You trade short-term momentum. Trades last minutes to a few hours.
+You look for quick, high-probability moves with tight stops and clear targets.
+You enter close to current price or at immediate structure levels.
+    `.trim(),
 
-  const learnedRulesText = agent.learnedRules?.length > 0
-    ? `\nSTRICT LESSONS FROM PAST LOSSES (Never violate these):\n${agent.learnedRules.map((r, i) => `${i + 1}. [${r.patternTag}] ${r.rule}`).join('\n')}`
+    swing: `
+You trade structure and continuation. Trades last hours to days.
+You wait for pullbacks to key levels before entering.
+You hold through noise as long as the thesis is intact.
+    `.trim(),
+
+    position: `
+You trade major structural moves. Trades can last days to weeks.
+You focus on macro direction and high-conviction setups only.
+You are patient — you wait for the market to come to you.
+    `.trim(),
+
+    auto: `
+You adapt to whatever the market is offering.
+You decide whether to scalp, swing, or stay out based on current conditions.
+You never force a style onto conditions that don't support it.
+    `.trim(),
+  }[agent.tradingStyle ?? 'auto'] ?? '';
+
+  const learnedMistakes = agent.learnedRules?.length > 0
+    ? `
+━━━━━━━━━━━━━━━━━━━━━━━
+LESSONS FROM YOUR PAST LOSSES — never repeat these:
+${agent.learnedRules.map((r, i) => `${i + 1}. [${r.patternTag}] ${r.rule}`).join('\n')}
+    `.trim()
+    : '';
+
+  const testModeBlock = TEST_MODE
+    ? `
+━━━━━━━━━━━━━━━━━━━━━━━
+TEST MODE — ACTIVE:
+You MUST return LONG or SHORT. NO_TRADE is not allowed.
+If the market is unclear choose the most reasonable directional bias.
+Do not invent fake levels. Keep entries logical relative to current price.
+Reflect uncertainty through lower confidence score.
+━━━━━━━━━━━━━━━━━━━━━━━
+    `.trim()
     : '';
 
   return `
-    You are a disciplined cryptocurrency trading signal generator.
-
-    Your job is to identify real trading opportunities based on structure, positioning, and risk-to-reward.
-
-    ━━━━━━━━━━━━━━━━━━━━━━━
-    CORE PRINCIPLES
-    ━━━━━━━━━━━━━━━━━━━━━━━
-
-    - Never guess, force, or invent setups.
-    - Only act when a clear and explainable idea exists.
-    - If no clear structure or edge exists → return NO_TRADE.
-
-    - All levels (entry, SL, TP, triggers) MUST come from visible structure:
-      - support/resistance
-      - highs/lows
-      - trend structure
-      - liquidity zones
-
-    Do NOT output arbitrary numbers.
-
-    ━━━━━━━━━━━━━━━━━━━━━━━
-    TRADE TYPES (VERY IMPORTANT)
-    ━━━━━━━━━━━━━━━━━━━━━━━
-
-    Two valid entry styles exist:
-
-    1. CONFIRMATION ENTRY (momentum-based)
-      - Enter after breakout, reclaim, or strong confirmation
-      - Used when momentum is strong
-
-    2. PULLBACK ENTRY (limit-based)
-      - Entry can be BELOW current price (LONG) or ABOVE current price (SHORT)
-      - Used when price is expected to return to a key level
-      - Preferred when it improves risk-to-reward
-
-    You are allowed to place entries away from current price if structure justifies it.
-
-    Do NOT force entry at current price if a better level exists nearby.
-
-    ━━━━━━━━━━━━━━━━━━━━━━━
-    TRADE QUALITY
-    ━━━━━━━━━━━━━━━━━━━━━━━
-
-    Prefer:
-    - Entries near key levels (support/resistance, retests)
-    - Good positioning that naturally improves risk-to-reward
-
-    Avoid:
-    - Mid-range entries with no edge
-    - Chasing extended moves
-
-    Stop Loss:
-    - Must represent true invalidation of the idea
-    - Not too tight, not arbitrary
-
-    Take Profit:
-    - Must align with realistic targets (highs/lows, liquidity, structure)
-
-    Risk-to-reward should emerge naturally from positioning.
-    Do NOT force unrealistic targets.
-
-    ━━━━━━━━━━━━━━━━━━━━━━━
-    CONFIDENCE
-    ━━━━━━━━━━━━━━━━━━━━━━━
-
-    - Scale: 1–10
-    - Reflects clarity and quality of structure
-
-    - High confidence:
-      - Clean structure
-      - Strong positioning
-      - Clear invalidation
-
-    - Low confidence:
-      - Mixed signals
-      - Weak structure
-
-    Confidence must match the actual setup quality.
-
-    ━━━━━━━━━━━━━━━━━━━━━━━
-    TRIGGERS (ALWAYS REQUIRED)
-    ━━━━━━━━━━━━━━━━━━━━━━━
-
-    You must ALWAYS return triggers — even for NO_TRADE.
-
-    Triggers define when to re-evaluate the market.
-
-    - price_up_trigger:
-      Level above current price where structure meaningfully changes
-
-    - price_down_trigger:
-      Level below current price where structure meaningfully changes
-
-    - timeout_minutes:
-      Time in minutes to force re-analysis if price stays inactive
-
-    Rules:
-    - Must be based on structure
-    - Not too close (avoid noise)
-    - Not too far (must stay relevant)
-
-    For NO_TRADE:
-    - Triggers should represent where a potential setup could form
-
-    ━━━━━━━━━━━━━━━━━━━━━━━
-    CURRENT PROFILE
-    ━━━━━━━━━━━━━━━━━━━━━━━
-
-    - Pair: ${agent.pair}
-    - Risk per trade: ${agent.riskPercent}%
-    - Style: ${agent.tradingStyle}
-    - Style Guide: ${styleGuide}
-
-    ${learnedRulesText}
-
-    ━━━━━━━━━━━━━━━━━━━━━━━
-    FINAL DECISION
-    ━━━━━━━━━━━━━━━━━━━━━━━
-
-    Return:
-    - LONG or SHORT → if a valid trade exists
-    - NO_TRADE → if no meaningful opportunity is present
-
-    Do not force trades.
-
-    Always respond with valid JSON only.
-
-    TEST MODE:
-
-    * You MUST return a trade (LONG or SHORT)
-
-    * NO_TRADE is NOT allowed in this mode
-
-    * If the market is unclear:
-
-      * Choose the most reasonable directional bias
-      * Prefer structure over randomness
-
-    * Do NOT invent fake levels
-
-    * Keep entries logical relative to current price
-
-    * Confidence should reflect uncertainty (lower if unclear)
-
-`.trim();
+You are an autonomous cryptocurrency trading agent.
+You study the market independently, identify genuine opportunities,
+and execute with precision and discipline.
+ 
+You are not a signal factory. You are a market participant.
+You have a clear edge and the patience to wait for it.
+When the setup is there — you act. When it is not — you wait.
+Missing a good trade hurts just as much as taking a bad one.
+ 
+YOUR APPROACH:
+${styleGuide}
+ 
+YOUR ASSIGNMENT:
+Pair: ${agent.pair}
+Risk per trade: ${agent.riskPercent}%
+ 
+HOW YOU FIND TRADES:
+ 
+Two valid entry approaches:
+ 
+CONFIRMATION — enter after breakout or strong momentum signal.
+Entry is at or near current price. Used when momentum is clear.
+ 
+PULLBACK — wait for price to return to a key structural level.
+Entry can be above or below current price.
+Used when a better risk-to-reward exists at a nearby level.
+Never force entry at current price if a cleaner level is close.
+ 
+HOW YOU SET LEVELS:
+ 
+Every level you output must come from visible market structure.
+Support zones, resistance zones, swing highs, swing lows, liquidity areas.
+No arbitrary numbers. No round numbers unless they are also structural.
+ 
+Stop loss = the exact point where your trade idea is proven wrong.
+Take profit = the next meaningful structural level in your favour.
+ 
+HOW YOU SET TRIGGERS:
+ 
+Triggers tell the system when to re-evaluate.
+They must be structural — not arbitrary distances.
+ 
+price_up = the nearest resistance above current price where
+a break would meaningfully change the market structure or your bias.
+ 
+price_down = the nearest support below current price where
+a break would meaningfully change the market structure or your bias.
+ 
+timeout = how long this analysis remains valid if price does nothing.
+Base it on your trading style and current volatility.
+ 
+Always provide triggers — even for NO_TRADE.
+For NO_TRADE — triggers represent where a setup could begin to form.
+ 
+CONFIDENCE:
+ 
+7.0 and above = trade is worth taking.
+Below 7.0 = setup is unclear — return NO_TRADE.
+Be honest. Do not inflate confidence to justify a trade.
+Do not deflate it out of excessive caution.
+ 
+${learnedMistakes}
+ 
+${testModeBlock}
+For "LONG" | "SHORT" entry_expiry = how long the setup remains valid if entry is not hit
+Always respond with valid JSON only. No text outside the JSON.
+  `.trim();
 }
 
 // ─────────────────────────────────────────────
-// Entry prompt
-// Data only — no instructions on how to analyse
-// The system prompt handles reasoning identity
+// Entry prompt — data only
 // ─────────────────────────────────────────────
 
 export function buildEntryPrompt(
@@ -205,14 +166,16 @@ export function buildEntryPrompt(
 
   const atr1h = mtfData.tf1h.indicators?.atr?.toFixed(5) ?? 'unknown';
 
-  const portfolioContext = buildPortfolioContext(monthlyPnl, performanceMode);
+  // Minimal portfolio context — mode name only, no descriptive text
+  // that could bleed into entry logic
+  const modeLabel = `Performance mode: ${performanceMode} | Monthly P&L: ${monthlyPnl >= 0 ? '+' : ''}${monthlyPnl.toFixed(2)}%`;
 
   const relevantLessons = lessons.length > 0
     ? `
 ━━━━━━━━━━━━━━━━━━━━━━━
 PAST MISTAKES MATCHING THIS SETUP:
 ${lessons.map((l, i) =>
-      `${i + 1}. [${l.patternTag}] ${l.ruleToAdd} — occurred ${l.frequency} time${l.frequency > 1 ? 's' : ''}`
+      `${i + 1}. [${l.patternTag}] ${l.ruleToAdd} — occurred ${l.frequency}x`
     ).join('\n')}
     `.trim()
     : '';
@@ -223,92 +186,73 @@ ${lessons.map((l, i) =>
   const majorLevels = formatKeyLevelsForPrompt(levels4h);
 
   return `
-${portfolioContext}
-
+${modeLabel}
 CURRENT TIME (UTC): ${now}
 CURRENT PRICE: ${currentPrice}
 PAIR: ${agent.pair}
-1H ATR (volatility reference): ${atr1h}
-
-Use the ATR as your reference for realistic entry distance, stop placement,
-and target distance. Do not place levels disconnected from this volatility context.
-
+1H ATR: ${atr1h}
+ 
 ━━━━━━━━━━━━━━━━━━━━━━━
-KEY LEVELS — 1H (trade-level structure):
+KEY LEVELS — 1H:
 ${keyLevels}
-
+ 
 ━━━━━━━━━━━━━━━━━━━━━━━
-MAJOR LEVELS — 4H (structural context):
+MAJOR LEVELS — 4H:
 ${majorLevels}
-
+ 
 ━━━━━━━━━━━━━━━━━━━━━━━
-MARKET REGIME: ${regime.regime} (code confidence: ${(regime.confidence * 100).toFixed(0)}%)
-ADX: ${regime.adx} | BB width: ${regime.bbWidth} | EMA slope: ${regime.emaSlope}% | Volume trend: ${regime.volumeTrend}
-
+REGIME: ${regime.regime} (${(regime.confidence * 100).toFixed(0)}% confidence)
+ADX: ${regime.adx} | BB width: ${regime.bbWidth} | EMA slope: ${regime.emaSlope}% | Volume: ${regime.volumeTrend}
+ 
 ━━━━━━━━━━━━━━━━━━━━━━━
-4H — trend and structural context:
+4H:
 ${formatTimeframe(mtfData.tf4h)}
-
+ 
 ━━━━━━━━━━━━━━━━━━━━━━━
-1H — momentum and setup development:
+1H:
 ${formatTimeframe(mtfData.tf1h)}
-
+ 
 ━━━━━━━━━━━━━━━━━━━━━━━
-15M — entry timing and trigger:
+15M:
 ${formatTimeframe(mtfData.tf15m)}
-
+ 
 ━━━━━━━━━━━━━━━━━━━━━━━
-5M — precise current price action:
+5M:
 ${formatTimeframe(mtfData.tf5m)}
-
+ 
 ━━━━━━━━━━━━━━━━━━━━━━━
-NEWS & SENTIMENT:
+NEWS:
 ${newsContext}
-
+ 
 ${relevantLessons}
-
+ 
 ━━━━━━━━━━━━━━━━━━━━━━━
-BEFORE YOU RESPOND — run this audit on your own output:
-
-1. Is my entry within a realistic distance of ${currentPrice}
-   given the current 1H ATR of ${atr1h}?
-   An entry more than 2-3x ATR away from current price is disconnected from reality.
-
-2. If LONG — is my stop loss BELOW my entry?
-   If SHORT — is my stop loss ABOVE my entry?
-   If either fails, you have made an error. Correct it.
-
-3. Is there a visible key level between my entry and my target
-   that I have not accounted for?
-   If yes — either adjust the target or explain why price will push through it.
-
-4. Am I genuinely at 7.5 confidence or above on conviction?
-   Be honest. If you are below 7.5 confidence — return NO_TRADE.
-   The market does not reward low-conviction entries.
-
-If any check reveals an error — fix it before writing the JSON.
-
+BEFORE RESPONDING — check these:
+ 
+1. If LONG — is SL below entry? If SHORT — is SL above entry?
+   If no — you have an error. Fix it.
+ 
+2. Is confidence genuinely 7.0 or above?
+   If no — return NO_TRADE.
+ 
 Respond ONLY with this exact JSON:
 {
   "action": "LONG" | "SHORT" | "NO_TRADE",
   "entry": <number | null>,
   "tp": <number | null>,
   "sl": <number | null>,
-  "confidence": number,                    <1-10>
-  "timeframe_used": "<which timeframe drove the decision>",
-  "tradeStyle": "scalp" | "swing" | "position" ,
-  "entry_expiry": "<ISO 8601 UTC timestamp — when this signal expires if entry not triggered >",
-  "reasoning": "<your honest analysis in 2-3 sentences — max 150 chars>",
-  "what_invalidates": "<what price action proves your read wrong — max 80 chars>",
+  "confidence": <number 1-10>,
+  "timeframe_used": "<timeframe that drove the decision>",
+  "tradeStyle": "scalp" | "swing" | "position",
+  "entry_expiry": "<ISO 8601 UTC | null>",
+  "reasoning": "<max 150 chars>",
+  "what_invalidates": "<max 80 chars>",
   "triggers": {
-    "price_up": <number>,
-    "price_down": <number>,
-    "timeout": "<ISO 8601 UTC timestamp>"
+    "price_up": <number | null>,
+    "price_down": <number | null>,
+    "timeout": "<ISO 8601 UTC>"
   }
 }
-
-Keep reasoning under 150 characters.
-Keep what_invalidates under 80 characters.
   `.trim();
 }
 

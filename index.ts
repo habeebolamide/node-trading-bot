@@ -44,35 +44,30 @@ async function main(): Promise<void> {
   console.log('  Trading bot starting');
   console.log('══════════════════════════════════');
 
-  // 0. StartTimeout
-  startTimeoutChecker()
-
-  // 1. Resume open trades
-  await agentManager.resumeOpenTrades();
-
-  // 2. Load agents FIRST — before anything needs them
+  // 1. Load agents FIRST
   await agentManager.loadActiveAgents();
+
   const agents = agentManager.getAllAgents();
+
+  // 2. Restore full state (VERY IMPORTANT)
+  for (const agent of agents) {
+    await agentManager.restoreAgentState(agent);
+  }
+  
+  // 3. NOW start timeout system (after triggers exist)
+  startTimeoutChecker();
+
+  // 4. Setup market data
   const uniquePairs = [...new Set(agents.map(a => a.pair))];
 
-  // await startNewsMonitor();
-
   await seedCandleBuffers(uniquePairs);
-
-  // const keys = Object.keys(candleBuffers);
-  // keys.forEach(pair => {
-  //   const tfs = Object.keys(candleBuffers[pair]);
-  //   tfs.forEach(tf => {
-  //     console.log(`candleBuffers[${pair}][${tf}] = ${candleBuffers[pair][tf].length} candles`);
-  //   });
-  // });
 
   uniquePairs.forEach(pair => {
     onCandle(pair, '5', (candle) => handleCandle(candle));
     onCandle(pair, '60', (candle) => handleCandle(candle));
   });
 
-
+  // 5. Start websocket (real-time triggers)
   const socket = new BybitWebSocket();
   await socket.connectWebSocket();
 

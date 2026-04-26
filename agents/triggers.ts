@@ -36,6 +36,24 @@ interface AgentTriggerState {
 
 const store = new Map<string, AgentTriggerState>();
 
+
+export async function setTriggersMemory(
+  agentId:       string,
+  triggers:      Triggers,
+  pendingSignal: EntrySignal | null,
+  entryExpiry:   string | null,
+): Promise<void> {
+  // Save to in-memory store
+  store.set(agentId, {
+    triggers,
+    pendingSignal,
+    entryExpiry,
+    setAt: Date.now(),
+  });
+
+  logger.info('Signal saved to Memory', { agentId, action: pendingSignal?.action ?? 'NO_TRADE' });
+}
+
 // ─────────────────────────────────────────────
 // Set triggers after a Gemini response
 // Called by agent manager after every signal
@@ -287,7 +305,16 @@ export function checkTriggers(
 // ─────────────────────────────────────────────
 
 export function hasTriggers(agentId: string): boolean {
-  return store.has(agentId);
+  const state = store.get(agentId);
+  if (!state || !state.triggers) return false;
+
+  const { price_up, price_down, timeout } = state.triggers;
+
+  return (
+    price_up !== null ||
+    price_down !== null ||
+    timeout !== null
+  );
 }
 
 // ─────────────────────────────────────────────
