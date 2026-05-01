@@ -252,94 +252,138 @@ export class BybitWebSocket {
 
 
   private async processRealtimeSignals(pair: string, price: number): Promise<void> {
-    const previousPrice = this.lastPriceMap.get(pair);
-    this.lastPriceMap.set(pair, price);
+  const previousPrice = this.lastPriceMap.get(pair);
+  this.lastPriceMap.set(pair, price);
 
-    
+  if (previousPrice === undefined) return;
 
-    if (previousPrice === undefined) return;
+  const now = new Date();
 
-    const now = new Date();
+  // Fetch all active signals for this pair in one query
+  const activeSignals = await prisma.signal.findMany({
+    where: {
+      pair,
+      status: 'active',
+    },
+  });
 
-    // ── 1. Check pending entry signals ──
-    const pendingSignals = await prisma.pendingSignal.findMany({
-      where: { pair, status: 'PENDING', expiresAt: { gt: now } },
-    });
+  if (activeSignals.length === 0) return;
 
-    for (const ps of pendingSignals) {
-      const entry = ps.entryPrice;
-      let triggered = false;
+  for (const signal of activeSignals) {
+    const agent = agentManager.getSingleAgent(signal.agentId);
+    if (!agent) continue;
 
-      if (ps.direction === 'LONG' && previousPrice > entry && price <= entry) triggered = true;
-      if (ps.direction === 'SHORT' && previousPrice < entry && price >= entry) triggered = true;
+    const triggers = signal.triggers as any;
 
-      if (!triggered) continue;
+    // ── 1. PENDING_ENTRY — check entry price crossed ──
+    // Only signals with a direction (LONG/SHORT) and entry price
+    if (
+      signal.action !== 'NO_TRADE' &&
+      signal.entry !== null &&
+      signal.entryExpiry !== null &&
+      new Date(signal.entryExpiry) > now
+    ) {
+      const entry       = signal.entry;
+      let   entryHit    = false;
 
-      const agent = agentManager.getSingleAgent(ps.agentId);
-      if (!agent) continue;
+      if (signal.action === 'LONG'  && previousPrice > entry && price <= entry) entryHit = true;
+      if (signal.action === 'SHORT' && previousPrice < entry && price >= entry) entryHit = true;
 
-      const signal: EntrySignal = typeof ps.rawSignal === 'string'
-        ? JSON.parse(ps.rawSignal)
-        : (ps.rawSignal as unknown as EntrySignal);
-
-      await executionEngine.executeEntry(agent, signal, ps.positionSize, price);
-
-      await prisma.pendingSignal.update({
-        where: { id: ps.id },
-        data: { status: 'TRIGGERED' },
-      });
-
-      agent.setState('IN_TRADE');
-
-      logger.info('Entry triggered in realtime', { pair, entry, price });
-    }
-
-    // ── 2. Check price_up / price_down triggers ──
-    const watchSignals = await prisma.signal.findMany({
-      where: {
-        pair,           // add pair field to Signal model
-        status: 'active'
-      },
-    });
-
-    for (const ws of watchSignals) {
-      const triggers = ws.triggers as any;
-
-      // Price up trigger hit
-      if (triggers.price_up && previousPrice < triggers.price_up && price >= triggers.price_up) {
-        logger.info('Price up trigger hit in realtime', { pair, price_up: triggers.price_up, price });
-
-        await prisma.signal.update({
-          where: { id: ws.id },
-          data: { status: 'triggered', triggeredBy: 'PRICE_UP', triggeredAt: new Date() },
+      if (entryHit) {
+        logger.info('Entry triggered in realtime', {
+          pair,
+          entry,
+          price,
+          direction: signal.action,
         });
 
-        const agent = agentManager.getSingleAgent(ws.agentId);
-        if (agent) {
-          clearTriggers(ws.agentId);
-          agent.setState('IDLE');
-          // agent.needsReanalysis = true;
-        }
+        const rawSignal = signal.rawSignal as unknown as EntrySignal;
+
+        // Calculate position size from signal
+        const positionSize = (signal as any).positionSize ?? 0;
+
+        await executionEngine.executeEntry(agent, rawSignal, positionSize, price);
+
+        await prisma.signal.update({
+          where: { id: signal.id },
+          data:  {
+            status:      'executed',
+            triggeredBy: 'ENTRY_HIT',
+            triggeredAt: new Date(),
+          },
+        });
+
+        // Also clear from in-memory store
+        // await markSignalExecuted(signal.agentId);
+        agent.setState('IN_TRADE');
+        continue; // entry hit — skip trigger checks for this signal
       }
 
-      // Price down trigger hit
-      if (triggers.price_down && previousPrice > triggers.price_down && price <= triggers.price_down) {
-        logger.info('Price down trigger hit in realtime', { pair, price_down: triggers.price_down, price });
+      // Check entry expiry
+      if (new Date(signal.entryExpiry) <= now) {
+        logger.info('Entry expired in realtime', { pair, agentId: signal.agentId });
 
         await prisma.signal.update({
-          where: { id: ws.id },
-          data: { status: 'triggered', triggeredBy: 'PRICE_DOWN', triggeredAt: new Date() },
+          where: { id: signal.id },
+          data:  {
+            status:      'expired',
+            triggeredBy: 'EXPIRY',
+            triggeredAt: new Date(),
+          },
         });
 
-        const agent = agentManager.getSingleAgent(ws.agentId);
-        if (agent) {
-          clearTriggers(ws.agentId);
-          agent.setState('IDLE');
-          // agent.needsReanalysis = true;
-        }
+        clearTriggers(signal.agentId);
+        agent.setState('IDLE');
+        continue;
+      }
+    }
+
+    // ── 2. WATCHING or IN_TRADE — check price_up / price_down ──
+    if (triggers.price_up && previousPrice < triggers.price_up && price >= triggers.price_up) {
+      logger.info('Price up trigger hit', { pair, price_up: triggers.price_up, price });
+
+      await prisma.signal.update({
+        where: { id: signal.id },
+        data:  {
+          status:      'triggered',
+          triggeredBy: 'PRICE_UP',
+          triggeredAt: new Date(),
+        },
+      });
+
+      clearTriggers(signal.agentId);
+
+      if (agent.state === 'IN_TRADE') {
+        agent.needsManagementReanalysis = true;
+      } else {
+        agent.setState('IDLE');
+        agent.needsReanalysis = true;
+      }
+    }
+
+    if (triggers.price_down && previousPrice > triggers.price_down && price <= triggers.price_down) {
+      logger.info('Price down trigger hit', { pair, price_down: triggers.price_down, price });
+
+      await prisma.signal.update({
+        where: { id: signal.id },
+        data:  {
+          status:      'triggered',
+          triggeredBy: 'PRICE_DOWN',
+          triggeredAt: new Date(),
+        },
+      });
+
+      clearTriggers(signal.agentId);
+
+      if (agent.state === 'IN_TRADE') {
+        agent.needsManagementReanalysis = true;
+      } else {
+        agent.setState('IDLE');
+        agent.needsReanalysis = true;
       }
     }
   }
+}
 
   private async saveCandle(candle: any): Promise<void> {
     await prisma.candle.upsert({
@@ -366,63 +410,6 @@ export class BybitWebSocket {
       },
     });
   }
-
-  // private async checkPendingSignals(candle: any) {
-  //   const { pair, high, low, close } = candle;
-
-  //   const signals = await prisma.pendingSignal.findMany({
-  //     where: {
-  //       pair,
-  //       status: 'PENDING',
-  //       expiresAt: { gt: new Date() },
-  //     },
-  //   });
-
-  //   for (const ps of signals) {
-  //     const entry = ps.entryPrice;
-
-  //     let triggered = false;
-
-  //     if (ps.direction === 'LONG') {
-  //       if (low <= entry && high >= entry) triggered = true;
-  //     }
-
-  //     if (ps.direction === 'SHORT') {
-  //       if (high >= entry && low <= entry) triggered = true;
-  //     }
-
-  //     if (!triggered) continue;
-
-  //     const agent = agentManager.getSingleAgent(ps.agentId);
-  //     if (!agent) continue;
-
-  //     // 🔥 REBUILD SIGNAL
-  //     const signal: EntrySignal = JSON.parse(ps.rawSignal as any);
-
-  //     // 🔥 EXECUTE
-  //     await executionEngine.executeEntry(
-  //       agent,
-  //       signal,
-  //       ps.positionSize,
-  //       entry // or candle.close
-  //     );
-
-  //     await prisma.pendingSignal.update({
-  //       where: { id: ps.id },
-  //       data: {
-  //         status: 'TRIGGERED',
-  //       },
-  //     });
-
-  //     agent.setState('IN_TRADE');
-  //   }
-  // }
-
-  // private checkPendingSignalsSafe(candle: any) {
-  //   this.checkPendingSignals(candle).catch(err =>
-  //     logger.error('Pending signal check failed', { error: err })
-  //   );
-  // }
 
   private startPing(): void {
     this.pingTimer = setInterval(() => {

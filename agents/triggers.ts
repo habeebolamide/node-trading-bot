@@ -64,6 +64,8 @@ export async function setTriggers(
   triggers:      Triggers,
   pendingSignal: EntrySignal | null,
   entryExpiry:   string | null,
+  rawSignal:     any,
+  positionSize:  number | null
 ): Promise<void> {
   // Save to in-memory store
   store.set(agentId, {
@@ -89,6 +91,8 @@ export async function setTriggers(
       entryExpiry:    entryExpiry ? new Date(entryExpiry) : null,
       triggers:       triggers as any,
       status:         'active',
+      rawSignal,
+      positionSize
     },
   });
 

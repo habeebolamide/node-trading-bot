@@ -121,6 +121,7 @@ export async function validateEntrySignal(
   }
 
 
+
   logger.info('Signal approved', {
     agentId: agent.id,
     pair: agent.pair,
@@ -190,10 +191,8 @@ export function calculatePositionSize(
 ): number {
   if (!signal.entry || !signal.sl) return 0;
 
-  // How much capital this agent controls
   const agentCapital = portfolio.totalValue * (agent.allocationPercent / 100);
 
-  // Reduce size in conservative/recovery modes
   const sizeMultiplier: Record<PerformanceMode, number> = {
     NORMAL: 1.0,
     GROWTH: 1.0,
@@ -202,35 +201,64 @@ export function calculatePositionSize(
   };
 
   const adjustedCapital = agentCapital * sizeMultiplier[performanceMode];
+  const leverage = agent.leverage ?? 1;
 
-  // How much to risk on this trade
-  const riskAmount = adjustedCapital * (agent.riskPercent / 100);
-
-  // Distance from entry to stop loss
+  const maxRisk = adjustedCapital * (agent.riskPercent / 100);
   const distanceToSl = Math.abs(signal.entry - signal.sl);
 
   if (distanceToSl === 0) return 0;
 
-  // Position size in base currency units
-  const positionSize = riskAmount / distanceToSl;
+  // ─────────────────────────────────────────────
+  // 1. MAX POSSIBLE POSITION (based on margin)
+  // ─────────────────────────────────────────────
+  const maxPositionValue = adjustedCapital * leverage;
+  const maxPositionSize = maxPositionValue / signal.entry;
 
-  // Hard cap — never use more than agent's full allocation
-  const maxPositionValue = adjustedCapital;
-  const positionValue = positionSize * signal.entry;
+  // ─────────────────────────────────────────────
+  // 2. RISK AT MAX SIZE
+  // ─────────────────────────────────────────────
+  const riskAtMaxSize = maxPositionSize * distanceToSl;
 
-  if (positionValue > maxPositionValue) {
-    return maxPositionValue / signal.entry;
+  // ─────────────────────────────────────────────
+  // 3. IF RISK IS SAFE → USE FULL SIZE
+  // ─────────────────────────────────────────────
+  if (riskAtMaxSize <= maxRisk) {
+    logger.info('Using max size (risk below cap)', {
+      agentId: agent.id,
+      maxPositionSize,
+      riskAtMaxSize,
+      maxRisk,
+    });
+
+    return Math.round(maxPositionSize * 10_000) / 10_000;
   }
 
-  logger.info("Position debug", {
-    entry: signal.entry,
-    sl: signal.sl,
-    distanceToSl,
-    riskAmount
+  // ─────────────────────────────────────────────
+  // 4. OTHERWISE → SCALE DOWN TO RISK CAP
+  // ─────────────────────────────────────────────
+  const safePositionSize = maxRisk / distanceToSl;
+
+  const safePositionValue = safePositionSize * signal.entry;
+  const requiredMargin = safePositionValue / leverage;
+
+  // Safety check (should rarely fail)
+  if (requiredMargin > adjustedCapital) {
+    logger.warn('Trade rejected — cannot fit within margin even after scaling', {
+      agentId: agent.id,
+      requiredMargin,
+      adjustedCapital,
+    });
+    return 0;
+  }
+
+  logger.info('Scaled to risk cap', {
+    agentId: agent.id,
+    safePositionSize,
+    actualRisk: safePositionSize * distanceToSl,
+    maxRisk,
   });
 
-  // Round to 4 decimal places (crypto precision)
-  return Math.round(positionSize * 10_000) / 10_000;
+  return Math.round(safePositionSize * 10_000) / 10_000;
 }
 
 // ─────────────────────────────────────────────

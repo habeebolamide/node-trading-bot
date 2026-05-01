@@ -22,6 +22,7 @@ model Agent {
   mode              String        // "paper" | "live"
   tradingStyle      String
   status            String        @default("active")
+  leverage          Float         @default(10.0)
 
   learnedRules      Json?
 
@@ -132,6 +133,7 @@ model Signal {
   entry         Float?
   tp            Float?
   sl            Float?
+  positionSize  Float?
   confidence    Float?
   tradeStyle    String?
   timeframeUsed String?
@@ -140,6 +142,7 @@ model Signal {
   entryExpiry   DateTime?
   triggers      Json      // { price_up, price_down, timeout }
   status        String    @default("active") // active | triggered | expired | executed | cancelled
+  rawSignal     Json
   triggeredBy   String?   // ENTRY_HIT | PRICE_UP | PRICE_DOWN | TIMEOUT | EXPIRY
   triggeredAt   DateTime?
   createdAt     DateTime  @default(now())

@@ -38,6 +38,7 @@ export class AgentRuntime {
   public learnedRules: LearnedRule[] = [];
   public createdAt: Date;
   public updatedAt: Date;
+  public leverage: number
 
   // Runtime-only
   public state: AgentState = 'IDLE';
@@ -59,6 +60,7 @@ export class AgentRuntime {
     this.status = dbData.status ?? 'active';
     this.createdAt = dbData.createdAt;
     this.updatedAt = dbData.updatedAt;
+    this.leverage = dbData.leverage ?? 10;
 
     this.learnedRules = dbData.learnedRules
       ? (typeof dbData.learnedRules === 'string'
@@ -81,6 +83,7 @@ export class AgentRuntime {
       learnedRules: this.learnedRules,
       createdAt: this.createdAt,
       updatedAt: this.updatedAt,
+      leverage: this.leverage
     };
   }
 
@@ -557,7 +560,7 @@ export class AgentManager {
         timeout: triggers.timeout ?? null,
       };
 
-      setTriggers(agent.id, watchTriggers, null, null);
+      setTriggers(agent.id, watchTriggers, null, null,claudeResult.data, null);
       agent.setState('WATCHING');                  // ← WATCHING not IDLE
 
       logger.info(`[${agent.name}] NO_TRADE — watching`, {
@@ -599,7 +602,7 @@ export class AgentManager {
 
     const entryExpiry = (signal as any).entry_expiry ?? null;
 
-    setTriggers(agent.id, pendingTriggers, signal, entryExpiry);
+    setTriggers(agent.id, pendingTriggers, signal, entryExpiry, claudeResult.data, riskResult.positionSize);
     agent.setState('PENDING_ENTRY');               // ← PENDING_ENTRY not IN_TRADE
 
     await notifications.sendSignalAlert(agent, signal);

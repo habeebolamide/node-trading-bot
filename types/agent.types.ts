@@ -22,6 +22,7 @@ export interface Agent {
   learnedRules:      LearnedRule[];   // synthesised from past losses
   createdAt:         Date;
   updatedAt:         Date;
+  leverage:          number;
 }
 
 export interface AgentRuntimeState {

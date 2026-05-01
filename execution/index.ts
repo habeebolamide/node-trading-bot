@@ -31,44 +31,7 @@ const exchange = new ccxt.bybit({
   }),
 });
 
-// ─────────────────────────────────────────────
-// Entry Sitgnal 
-// ─────────────────────────────────────────────
-export async function triggerPendingSignal(
-  agent: AgentRuntime,
-  signal: EntrySignal,
-  positionSize: number,
-): Promise<any> {
 
-  const expiresAt = signal.entry_expiry
-    ? new Date(signal.entry_expiry)
-    : new Date(Date.now() + 60 * 60 * 1000); 
-    
-
-  const pending = await prisma.pendingSignal.create({
-    data: {
-      agentId: agent.id,
-      pair: agent.pair,
-      direction: signal.action as TradeDirection ,
-      entryPrice: signal.entry ?? 0,
-      tp: signal.tp ?? 0,
-      sl: signal.sl ?? 0,
-      positionSize,
-      status: 'PENDING',
-      confidence: signal.confidence,
-      reasoning: signal.reasoning,
-      expiresAt,
-      createdAt: new Date(),
-      rawSignal: JSON.stringify(signal),
-    }
-  });
-
-  agent.setState('PENDING_ENTRY');
-
-  await notifications.sendSignalAlert(agent, signal);
-
-  return pending;
-}
 // ─────────────────────────────────────────────
 // Execute entry — routes to paper or live
 // ─────────────────────────────────────────────
@@ -517,5 +480,4 @@ export const executionEngine = {
   executeManagement,
   closeTrade,
   monitorOpenTrade,
-  triggerPendingSignal
 };
