@@ -186,73 +186,73 @@ ${lessons.map((l, i) =>
   const majorLevels = formatKeyLevelsForPrompt(levels4h);
 
   return `
-${modeLabel}
-CURRENT TIME (UTC): ${now}
-CURRENT PRICE: ${currentPrice}
-PAIR: ${agent.pair}
-1H ATR: ${atr1h}
- 
-━━━━━━━━━━━━━━━━━━━━━━━
-KEY LEVELS — 1H:
-${keyLevels}
- 
-━━━━━━━━━━━━━━━━━━━━━━━
-MAJOR LEVELS — 4H:
-${majorLevels}
- 
-━━━━━━━━━━━━━━━━━━━━━━━
-REGIME: ${regime.regime} (${(regime.confidence * 100).toFixed(0)}% confidence)
-ADX: ${regime.adx} | BB width: ${regime.bbWidth} | EMA slope: ${regime.emaSlope}% | Volume: ${regime.volumeTrend}
- 
-━━━━━━━━━━━━━━━━━━━━━━━
-4H:
-${formatTimeframe(mtfData.tf4h)}
- 
-━━━━━━━━━━━━━━━━━━━━━━━
-1H:
-${formatTimeframe(mtfData.tf1h)}
- 
-━━━━━━━━━━━━━━━━━━━━━━━
-15M:
-${formatTimeframe(mtfData.tf15m)}
- 
-━━━━━━━━━━━━━━━━━━━━━━━
-5M:
-${formatTimeframe(mtfData.tf5m)}
- 
-━━━━━━━━━━━━━━━━━━━━━━━
-NEWS:
-${newsContext}
- 
-${relevantLessons}
- 
-━━━━━━━━━━━━━━━━━━━━━━━
-BEFORE RESPONDING — check these:
- 
-1. If LONG — is SL below entry? If SHORT — is SL above entry?
-   If no — you have an error. Fix it.
- 
-2. Is confidence genuinely 7.0 or above?
-   If no — return NO_TRADE.
- 
-Respond ONLY with this exact JSON:
-{
-  "action": "LONG" | "SHORT" | "NO_TRADE",
-  "entry": <number | null>,
-  "tp": <number | null>,
-  "sl": <number | null>,
-  "confidence": <number 1-10>,
-  "timeframe_used": "<timeframe that drove the decision>",
-  "tradeStyle": "scalp" | "swing" | "position",
-  "entry_expiry": "<ISO 8601 UTC | null>",
-  "reasoning": "<max 150 chars>",
-  "what_invalidates": "<max 80 chars>",
-  "triggers": {
-    "price_up": <number | null>,
-    "price_down": <number | null>,
-    "timeout": "<ISO 8601 UTC>"
-  }
-}
+    ${modeLabel}
+    CURRENT TIME (UTC): ${now}
+    CURRENT PRICE: ${currentPrice}
+    PAIR: ${agent.pair}
+    1H ATR: ${atr1h}
+    
+    ━━━━━━━━━━━━━━━━━━━━━━━
+    KEY LEVELS — 1H:
+    ${keyLevels}
+    
+    ━━━━━━━━━━━━━━━━━━━━━━━
+    MAJOR LEVELS — 4H:
+    ${majorLevels}
+    
+    ━━━━━━━━━━━━━━━━━━━━━━━
+    REGIME: ${regime.regime} (${(regime.confidence * 100).toFixed(0)}% confidence)
+    ADX: ${regime.adx} | BB width: ${regime.bbWidth} | EMA slope: ${regime.emaSlope}% | Volume: ${regime.volumeTrend}
+    
+    ━━━━━━━━━━━━━━━━━━━━━━━
+    4H:
+    ${formatTimeframe(mtfData.tf4h)}
+    
+    ━━━━━━━━━━━━━━━━━━━━━━━
+    1H:
+    ${formatTimeframe(mtfData.tf1h)}
+    
+    ━━━━━━━━━━━━━━━━━━━━━━━
+    15M:
+    ${formatTimeframe(mtfData.tf15m)}
+    
+    ━━━━━━━━━━━━━━━━━━━━━━━
+    5M:
+    ${formatTimeframe(mtfData.tf5m)}
+    
+    ━━━━━━━━━━━━━━━━━━━━━━━
+    NEWS:
+    ${newsContext}
+    
+    ${relevantLessons}
+    
+    ━━━━━━━━━━━━━━━━━━━━━━━
+    BEFORE RESPONDING — check these:
+    
+    1. If LONG — is SL below entry? If SHORT — is SL above entry?
+      If no — you have an error. Fix it.
+    
+    2. Is confidence genuinely 7.0 or above?
+      If no — return NO_TRADE.
+    
+    Respond ONLY with this exact JSON:
+    {
+      "action": "LONG" | "SHORT" | "NO_TRADE",
+      "entry": <number | null>,
+      "tp": <number | null>,
+      "sl": <number | null>,
+      "confidence": <number 1-10>,
+      "timeframe_used": "<timeframe that drove the decision>",
+      "tradeStyle": "scalp" | "swing" | "position",
+      "entry_expiry": "<ISO 8601 UTC | null>",
+      "reasoning": "<max 150 chars>",
+      "what_invalidates": "<max 80 chars>",
+      "triggers": {
+        "price_up": <number | null>,
+        "price_down": <number | null>,
+        "timeout": "<ISO 8601 UTC>"
+      }
+    }
   `.trim();
 }
 
