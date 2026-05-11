@@ -1,294 +1,283 @@
 import logger from '../utils/logger';
-import { GoogleGenerativeAI } from "@google/generative-ai";
-import {
+import type {
   EntrySignal,
   ManagementDecision,
   PostMortemResult,
-  ClaudeCallResult
+  ClaudeCallResult,
 } from '../types/claude.types';
 
-// =======================
-// CONFIG
-// =======================
+// ─────────────────────────────────────────────
+// Config
+// ─────────────────────────────────────────────
 
-const MODEL_PRIORITY = [
-  "gemini-3.1-pro-preview",
-  "gemini-2.5-pro",
-  "gemini-2.5-flash",
-];
+const OLLAMA_BASE_URL = process.env.OLLAMA_URL ?? 'http://localhost:11434';
+
+const MODELS = {
+  entry:      process.env.OLLAMA_ENTRY_MODEL      ?? 'deepseek-r1:8b',
+  management: process.env.OLLAMA_MANAGEMENT_MODEL ?? 'deepseek-r1:8b',
+  postmortem: process.env.OLLAMA_POSTMORTEM_MODEL ?? 'deepseek-r1:8b',
+  synthesis:  process.env.OLLAMA_SYNTHESIS_MODEL  ?? 'deepseek-r1:8b',
+};
 
 const MAX_RETRIES = 2;
 
-// =======================
-// CLIENT
-// =======================
-
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || '');
-
-// =======================
-// PUBLIC API
-// =======================
+// ─────────────────────────────────────────────
+// Public API — same interface as before
+// Nothing else in the codebase changes
+// ─────────────────────────────────────────────
 
 export function getEntrySignal(
   systemPrompt: string,
-  entryPrompt: string,
-  agentId: string,
+  entryPrompt:  string,
+  agentId:      string,
 ): Promise<ClaudeCallResult<EntrySignal>> {
-  return callWithFallback(systemPrompt, entryPrompt, 'entry', agentId);
+  return callOllama(systemPrompt, entryPrompt, 'entry', agentId, MODELS.entry);
 }
 
 export function getManagementDecision(
-  systemPrompt: string,
+  systemPrompt:     string,
   managementPrompt: string,
-  agentId: string,
+  agentId:          string,
 ): Promise<ClaudeCallResult<ManagementDecision>> {
-  return callWithFallback(systemPrompt, managementPrompt, 'management', agentId);
+  return callOllama(systemPrompt, managementPrompt, 'management', agentId, MODELS.management);
 }
 
 export function getPostMortem(
   postMortemPrompt: string,
-  agentId: string,
+  agentId:          string,
 ): Promise<ClaudeCallResult<PostMortemResult>> {
-  return callWithFallback(POST_MORTEM_SYSTEM, postMortemPrompt, 'postmortem', agentId);
+  return callOllama(POST_MORTEM_SYSTEM, postMortemPrompt, 'postmortem', agentId, MODELS.postmortem);
 }
 
 export function getSynthesis(
   synthesisPrompt: string,
-  agentId: string,
+  agentId:         string,
 ): Promise<ClaudeCallResult<{ rules: any[] }>> {
-  return callWithFallback(SYNTHESIS_SYSTEM, synthesisPrompt, 'synthesis', agentId);
+  return callOllama(SYNTHESIS_SYSTEM, synthesisPrompt, 'synthesis', agentId, MODELS.synthesis);
 }
 
-// =======================
-// CORE ENGINE
-// =======================
+// ─────────────────────────────────────────────
+// Core caller
+// ─────────────────────────────────────────────
 
-async function callWithFallback<T>(
+async function callOllama<T>(
   systemPrompt: string,
-  userPrompt: string,
-  promptType: string,
-  agentId: string
+  userPrompt:   string,
+  promptType:   string,
+  agentId:      string,
+  model:        string,
 ): Promise<ClaudeCallResult<T>> {
 
   const startedAt = Date.now();
-  let lastError = '';
+  let   lastError = '';
 
-  const strictSystemPrompt = `
-    ${systemPrompt}
-
-    CRITICAL:
-    - Return ONLY valid JSON
-    - No markdown, no explanations, no backticks
-    - Output must be a single JSON object
-    `.trim();
-
-  for (const modelName of MODEL_PRIORITY) {
-
-    for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
-
-      try {
-        const model = genAI.getGenerativeModel({
-          model: modelName,
-          systemInstruction: strictSystemPrompt,
-        });
-
-        const result = await model.generateContent({
-          contents: [{ role: 'user', parts: [{ text: userPrompt }] }],
-          generationConfig: {
+  for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+    try {
+      const res = await fetch(`${OLLAMA_BASE_URL}/api/chat`, {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model,
+          messages: [
+            { role: 'system', content: systemPrompt },
+            { role: 'user',   content: userPrompt   },
+          ],
+          stream: false,
+          options: {
             temperature: 0.2,
-            maxOutputTokens: 2700,
-            responseMimeType: "application/json",
+            num_predict: 2000,
           },
-        });
+          format: 'json',  // forces Ollama to return valid JSON
+        }),
+      });
 
-        const response = await result.response;
-        const rawText = response.text();
-
-        logger.info(rawText)
-
-
-        const cleaned = repairJSON(rawText);
-        const parsed = parseJSON<T>(cleaned);
-
-
-        if (!parsed.success) {
-          throw new Error(parsed.error || 'JSON parsing failed');
-        }
-
-        logger.info('✅ Gemini success', {
-          agentId,
-          promptType,
-          parsedData: parsed.data,
-        });
-
-        return buildSuccessResponse(parsed.data!, rawText, response, startedAt);
-
-      } catch (error: any) {
-
-        lastError = error?.message || 'Unknown error';
-
-        logger.warn(`⚠️ ${modelName} attempt ${attempt + 1} failed`, {
-          agentId,
-          promptType,
-          error: lastError,
-        });
-
-        if (attempt < MAX_RETRIES - 1) {
-          await sleep(500);
-          continue;
-        }
+      if (!res.ok) {
+        throw new Error(`Ollama HTTP ${res.status}: ${await res.text()}`);
       }
+
+      const data    = await res.json() as any;
+      const rawText = data.message?.content ?? '';
+
+      if (!rawText) {
+        throw new Error('Empty response from Ollama');
+      }
+
+      // DeepSeek-R1 wraps output in <think>...</think> blocks
+      // Strip thinking tokens — only keep the JSON
+      const cleaned = stripThinkingTokens(rawText);
+
+      const parsed = parseJSON<T>(cleaned);
+
+      if (!parsed.success) {
+        throw new Error(`JSON parse failed: ${parsed.error} | Raw: ${cleaned.slice(0, 200)}`);
+      }
+
+      const durationMs = Date.now() - startedAt;
+
+      logger.info('Ollama call completed', {
+        agentId,
+        promptType,
+        model,
+        durationMs,
+        evalTokens: data.eval_count ?? 0,
+      });
+
+      return {
+        success:     true,
+        data:        parsed.data,
+        rawResponse: rawText,
+        tokensUsed: {
+          inputTokens:  data.prompt_eval_count ?? 0,
+          outputTokens: data.eval_count        ?? 0,
+          cacheHits:    0,
+          totalCost:    0,  // local — free
+        },
+        error:     null,
+        durationMs,
+      };
+
+    } catch (error: any) {
+      lastError = error?.message ?? 'Unknown error';
+
+      logger.warn(`Ollama attempt ${attempt} failed`, {
+        agentId,
+        promptType,
+        model,
+        error: lastError,
+      });
+
+      if (attempt < MAX_RETRIES) await sleep(1000 * attempt);
     }
   }
 
-  // =======================
-  // ALL GEMINI MODELS FAILED
-  // =======================
-
-  logger.error('❌ All Gemini models failed', {
+  logger.error('Ollama call failed after all retries', {
     agentId,
     promptType,
+    model,
     lastError,
   });
 
   return {
-    success: false,
-    data: null,
+    success:     false,
+    data:        null,
     rawResponse: '',
-    tokensUsed: { inputTokens: 0, outputTokens: 0, cacheHits: 0, totalCost: 0 },
-    error: lastError,
-    durationMs: Date.now() - startedAt,
+    tokensUsed:  { inputTokens: 0, outputTokens: 0, cacheHits: 0, totalCost: 0 },
+    error:       lastError,
+    durationMs:  Date.now() - startedAt,
   };
 }
 
-// =======================
-// HELPERS
-// =======================
+// ─────────────────────────────────────────────
+// Strip DeepSeek-R1 thinking tokens
+// R1 models output <think>...</think> before JSON
+// We only want what comes after
+// ─────────────────────────────────────────────
 
-function buildSuccessResponse<T>(
-  data: T,
-  rawText: string,
-  response: any,
-  startedAt: number
-): ClaudeCallResult<T> {
-  return {
-    success: true,
-    data,
-    rawResponse: rawText,
-    tokensUsed: {
-      inputTokens: response.usageMetadata?.promptTokenCount ?? 0,
-      outputTokens: response.usageMetadata?.candidatesTokenCount ?? 0,
-      cacheHits: 0,
-      totalCost: 0,
-    },
-    error: null,
-    durationMs: Date.now() - startedAt,
-  };
+function stripThinkingTokens(raw: string): string {
+  // Remove <think>...</think> block entirely
+  const withoutThink = raw.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+
+  // If something remains after stripping — use it
+  if (withoutThink.length > 0) return withoutThink;
+
+  // Fallback — return original if no think block found
+  return raw.trim();
 }
 
-function repairJSON(raw: string): string {
-  return raw
-    .replace(/```json/g, '')
-    .replace(/```/g, '')
-    .trim();
-}
-
-function cleanJson(str: string): string {
-  return str
-    .replace(/,\s*}/g, "}")      // trailing commas in objects
-    .replace(/,\s*]/g, "]")      // trailing commas in arrays
-    .replace(/"\s*:\s*"/g, '":"') // normalize spacing
-    .trim();
-}
-
-function repairTruncatedJSON(raw: string): string {
-  let str = raw.trim();
-
-  // Count open braces vs closed
-  const opens  = (str.match(/\{/g) ?? []).length;
-  const closes = (str.match(/\}/g) ?? []).length;
-  const diff   = opens - closes;
-
-  // Add missing closing braces
-  if (diff > 0) {
-    // First close any open string by adding a quote if needed
-    // Check if we're mid-string (odd number of unescaped quotes after last })
-    const lastBrace = str.lastIndexOf('}');
-    const tail      = str.slice(lastBrace + 1);
-    const quotes    = (tail.match(/(?<!\\)"/g) ?? []).length;
-
-    if (quotes % 2 !== 0) {
-      str += '"';  // close the open string
-    }
-
-    // Close any open array
-    const openArrays  = (str.match(/\[/g) ?? []).length;
-    const closeArrays = (str.match(/\]/g) ?? []).length;
-    str += ']'.repeat(openArrays - closeArrays);
-
-    // Close the open braces
-    str += '}'.repeat(diff);
-  }
-
-  return str;
-}
+// ─────────────────────────────────────────────
+// JSON parser with repair
+// ─────────────────────────────────────────────
 
 export function parseJSON<T>(raw: string): {
   success: boolean;
   data:    T | null;
   error:   string | null;
 } {
+  const cleaned = raw
+    .replace(/^```json\s*/i, '')
+    .replace(/^```\s*/i, '')
+    .replace(/\s*```$/i, '')
+    .trim();
+
   // 1. Direct parse
   try {
-    return { success: true, data: JSON.parse(raw), error: null };
+    return { success: true, data: JSON.parse(cleaned), error: null };
   } catch {}
 
   // 2. Extract JSON block
   try {
-    const match = raw.match(/\{[\s\S]*\}/);
+    const match = cleaned.match(/\{[\s\S]*\}/);
     if (match) {
-      const candidate = cleanJson(match[0]);
+      const candidate = cleanJSON(match[0]);
       return { success: true, data: JSON.parse(candidate), error: null };
     }
   } catch {}
 
   // 3. Repair truncated JSON
   try {
-    const repaired = repairTruncatedJSON(raw);
-    const candidate = cleanJson(repaired);
-    const parsed    = JSON.parse(candidate);
-
-    logger.warn('Used truncation repair on Gemini response', {
-      original: raw.slice(0, 100),
-      repaired: repaired.slice(0, 100),
-    });
-
-    return { success: true, data: parsed, error: null };
+    const repaired = repairJSON(cleaned);
+    return { success: true, data: JSON.parse(repaired), error: null };
   } catch {}
 
   return {
     success: false,
     data:    null,
-    error:   `No JSON object found. Raw: ${raw.slice(0, 200)}`,
+    error:   `No valid JSON found. Raw: ${raw.slice(0, 200)}`,
   };
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise(resolve => setTimeout(resolve, ms));
+function cleanJSON(str: string): string {
+  return str
+    .replace(/,\s*}/g, '}')
+    .replace(/,\s*]/g, ']')
+    .trim();
 }
 
-// =======================
-// SYSTEM PROMPTS
-// =======================
+function repairJSON(raw: string): string {
+  let str    = raw.trim();
+  const opens  = (str.match(/\{/g) ?? []).length;
+  const closes = (str.match(/\}/g) ?? []).length;
+  const diff   = opens - closes;
+
+  if (diff > 0) {
+    // Close any open string
+    const lastBrace = str.lastIndexOf('}');
+    const tail      = str.slice(lastBrace + 1);
+    const quotes    = (tail.match(/(?<!\\)"/g) ?? []).length;
+    if (quotes % 2 !== 0) str += '"';
+
+    // Close arrays
+    const openArrays  = (str.match(/\[/g) ?? []).length;
+    const closeArrays = (str.match(/\]/g) ?? []).length;
+    str += ']'.repeat(openArrays - closeArrays);
+
+    // Close objects
+    str += '}'.repeat(diff);
+  }
+
+  return str;
+}
+
+// ─────────────────────────────────────────────
+// System prompts for non-trading calls
+// ─────────────────────────────────────────────
 
 const POST_MORTEM_SYSTEM = `
 You are a trading performance analyst.
 Analyze losing trades objectively and identify clear patterns.
-Return ONLY valid JSON.
+Return ONLY valid JSON. No explanations outside JSON.
 `.trim();
 
 const SYNTHESIS_SYSTEM = `
 You are an expert at synthesizing trading lessons.
 Compress multiple lessons into actionable rules.
-Return ONLY valid JSON.
+Return ONLY valid JSON. No explanations outside JSON.
 `.trim();
+
+// ─────────────────────────────────────────────
+// Util
+// ─────────────────────────────────────────────
+
+function sleep(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
