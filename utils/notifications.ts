@@ -11,7 +11,7 @@ export const notifications = {
 
   async sendTradeAlert(
     agent: Agent,
-    type: 'PAPER_OPEN' | 'LIVE_OPEN' | 'CLOSE' | 'PARTIAL_CLOSE' | 'ADJUST',
+    type: 'PAPER_OPEN' | 'LIVE_OPEN' | 'CLOSE' | 'PARTIAL_CLOSE' | 'ADJUST'| 'TP_HIT'| 'SL_HIT',
     trade: OpenTrade | ClosedTrade
   ): Promise<void> {
 

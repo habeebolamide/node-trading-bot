@@ -2,7 +2,7 @@ import WebSocket from 'ws';
 import logger from '../utils/logger';
 import { prisma } from '../lib/prisma';
 import { agentManager } from '../agents';
-import { executionEngine } from '../execution';
+import { executionEngine, updateLivePnl } from '../execution';
 import { EntrySignal } from '../types/claude.types';
 import { clearTriggers } from '../agents/triggers';
 
@@ -237,6 +237,9 @@ export class BybitWebSocket {
     };
 
     const price = parseFloat(data.lastPrice);
+
+    // Live Pnl Update
+    updateLivePnl(pair,price)
 
     // 🔥 REAL-TIME EXECUTION
     this.checkPendingSignalsRealtimeSafe(pair, price);

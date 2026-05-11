@@ -269,16 +269,6 @@ export function buildManagementPrompt(
   const pnlSign = trade.unrealisedPct >= 0 ? '+' : '';
   const duration = getTimeSince(trade.openedAt);
   const currentPrice = mtfData.tf5m.candles.at(-1)?.close ?? trade.entryPrice;
-  const styleGuide = {
-    scalp: "You are a fast scalping engine. You hunt for quick momentum moves lasting minutes to a few hours. You enter near current price and use tight stops.",
-
-    swing: "You are a swing trading engine. You focus on higher-timeframe structure and pullbacks. Trades last hours to days with wider stops and clear targets.",
-
-    position: "You are a position trading engine. You focus on major market structure, macro direction, and key levels on higher timeframes. Trades can last days to weeks. You prioritize strong confluence and high reward-to-risk setups over frequency.",
-
-    auto: "You are a versatile trading engine. You adapt to whatever the market is offering — scalp, swing, position, or stay out.",
-
-  }[agent.tradingStyle ?? 'auto'] || "You are a high-performance trading engine.";
 
   return `
   You have an open ${trade.direction} trade on ${trade.pair}.
@@ -292,7 +282,6 @@ export function buildManagementPrompt(
   Unrealised P&L: ${pnlSign}${trade.unrealisedPct.toFixed(2)}% (${pnlSign}$${trade.unrealisedPnl.toFixed(2)})
   Time open:      ${duration}
   Original read:  "${trade.entryReasoning}"
-  Trading Style Guide: ${styleGuide}
 
 
 

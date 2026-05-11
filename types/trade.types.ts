@@ -71,6 +71,7 @@ export interface OrderRequest {
   tp:           number;
   sl:           number;
   mode:         'paper' | 'live';
+  leverage?:    number
 }
 
 export interface OrderResult {
