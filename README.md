@@ -1,6 +1,6 @@
 # Trading Bot
 
-An autonomous crypto trading bot. LLMs (Claude / DeepSeek / Gemini / Ollama) make the trading decisions, the bot handles execution, risk, persistence, and a learning loop on Bybit perpetual futures.
+An autonomous crypto trading bot. LLMs (Claude for entries, DeepSeek for everything else, routed via OpenRouter) make the trading decisions; the bot handles execution, risk, persistence, and a learning loop on Bybit perpetual futures.
 
 Each **agent** is bound to a pair (e.g. BTCUSDT), a trading style (scalp/swing/position/auto), a risk %, a leverage, and a mode (`paper` or `live`). The bot ingests candles + ticker from Bybit WebSocket, runs a multi-stage decision loop, persists everything to Postgres, and notifies via Telegram.
 
@@ -61,10 +61,7 @@ Each **agent** is bound to a pair (e.g. BTCUSDT), a trading style (scalp/swing/p
 | | [markets/keys.ts](markets/keys.ts) | Swing / structural level detection |
 | | [markets/news.ts](markets/news.ts) | CryptoPanic news monitor |
 | | [markets/historical.ts](markets/historical.ts) | Historical kline fetch |
-| LLM | [claude/client.ts](claude/client.ts) | Ollama client (current default) |
-| | [claude/client-openrouter.ts](claude/client-openrouter.ts) | OpenRouter — Claude (entry) + DeepSeek (mgmt/postmortem/synthesis) |
-| | [claude/client-deepseek.ts](claude/client-deepseek.ts) | DeepSeek direct |
-| | [claude/client-gemini.ts](claude/client-gemini.ts) | Gemini direct |
+| LLM | [claude/client.ts](claude/client.ts) | OpenRouter — Claude (entry) + DeepSeek (mgmt/postmortem/synthesis), per-call-type routing + Anthropic prompt caching |
 | | [claude/prompts.ts](claude/prompts.ts) | System / entry / management / postmortem / synthesis prompts |
 | Risk | [risk/index.ts](risk/index.ts) | Drawdown caps, R/R floor, position sizing, circuit breaker |
 | Execution | [execution/index.ts](execution/index.ts) | Paper + live entry / management / close via ccxt + private WS |
@@ -202,10 +199,9 @@ Lesson retrieval at entry time ([learning/index.ts:91](learning/index.ts:91)) us
 
 - Node 20+
 - PostgreSQL 14+
-- Optional: Ollama running locally (for the default Ollama client)
 - Bybit API key (testnet or mainnet) for live mode
 - Telegram bot token + chat id for notifications
-- OpenRouter API key if using the OpenRouter client
+- OpenRouter API key (only LLM provider supported)
 
 ### Environment — `.env`
 
@@ -217,14 +213,8 @@ BYBIT_API_KEY=...
 BYBIT_SECRET=...
 BYBIT_TESTNET=true
 
-# LLM (pick one)
+# LLM
 OPENROUTER_API_KEY=...
-DEEPSEEK_API_KEY=...
-OLLAMA_URL=http://localhost:11434
-OLLAMA_ENTRY_MODEL=deepseek-r1:8b
-OLLAMA_MANAGEMENT_MODEL=deepseek-r1:8b
-OLLAMA_POSTMORTEM_MODEL=deepseek-r1:8b
-OLLAMA_SYNTHESIS_MODEL=deepseek-r1:8b
 
 # News
 CRYPTOPANIC_API_KEY=...
@@ -260,18 +250,6 @@ npm run dev     # tsx watch
 npm start       # tsx (no watch)
 ```
 
-### Switch LLM provider
-
-Edit the import in [agents/index.ts:1](agents/index.ts:1) and [learning/index.ts:2](learning/index.ts:2):
-
-```ts
-// Default (local, free):
-import { getEntrySignal, getManagementDecision } from "../claude/client";
-
-// Or OpenRouter (Claude entry + DeepSeek management):
-import { getEntrySignal, getManagementDecision } from "../claude/client-openrouter";
-```
-
 ### Measure prompt sizes (no API spend)
 
 ```bash
@@ -284,7 +262,7 @@ Reports system / user prompt token estimates per call type and whether each clea
 
 ## Prompt caching & cost notes
 
-[claude/client-openrouter.ts](claude/client-openrouter.ts) implements per-call-type routing:
+[claude/client.ts](claude/client.ts) implements per-call-type routing:
 
 | Call | Default model |
 |---|---|
@@ -336,7 +314,7 @@ In drawdown the bot keeps trading but must clear a higher confidence floor *and*
 
 - **Synthesis cadence** — `startSynthesisRunner` is a simple `setInterval(7d)`. Restarting the bot resets the clock; if uptime is fragmented to under a week, synthesis never fires. Move to a real cron / external scheduler if that matters.
 - **Live TP/SL via `trading-stop`** — `updateLiveTpSl` now calls Bybit V5's `POST /v5/position/trading-stop` via ccxt's private endpoint passthrough. Defaults to one-way mode (`positionIdx: 0`); change to `1`/`2` if you run hedge mode.
-- **Post-mortem cost** — Every losing trade triggers a Post-mortem LLM call. On the OpenRouter path that's a DeepSeek call (~$0.001). On the Ollama path it's free.
+- **Post-mortem cost** — Every losing trade triggers an LLM call (~$0.001 on DeepSeek via OpenRouter).
 
 ---
 
