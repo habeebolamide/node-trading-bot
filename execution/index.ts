@@ -175,6 +175,12 @@ export async function triggerPendingSignal(
 // on every price tick for IN_TRADE agents
 // ─────────────────────────────────────────────
 
+// Throttle DB writes for unrealised PnL — every ticker tick (~10 Hz × pair) would
+// otherwise pound Postgres with redundant updates. In-memory state stays live;
+// only the DB row gets a coarse snapshot.
+const PNL_WRITE_THROTTLE_MS = 10_000;
+const lastPnlWriteAt = new Map<string, number>();
+
 export function updateLivePnl(pair: string, currentPrice: number): void {
   const agents = agentManager.getAgentsForPair(pair);
 
@@ -192,6 +198,27 @@ export function updateLivePnl(pair: string, currentPrice: number): void {
     trade.unrealisedPct = positionValue > 0
       ? Math.round((pnl / positionValue) * 10_000) / 100
       : 0;
+
+    // Throttled DB flush — makes the row inspectable from Prisma Studio / SQL
+    // without writing on every tick. Fire-and-forget; PnL stays accurate in memory
+    // even if a write transiently fails.
+    const now = Date.now();
+    const lastWrite = lastPnlWriteAt.get(trade.id) ?? 0;
+    if (now - lastWrite >= PNL_WRITE_THROTTLE_MS) {
+      lastPnlWriteAt.set(trade.id, now);
+      prisma.trade.update({
+        where: { id: trade.id },
+        data:  {
+          unrealisedPnl: trade.unrealisedPnl,
+          unrealisedPct: trade.unrealisedPct,
+        },
+      }).catch(err =>
+        logger.error('Failed to persist unrealised PnL', {
+          tradeId: trade.id,
+          error:   err?.message ?? err,
+        }),
+      );
+    }
   }
 }
 
@@ -336,6 +363,7 @@ export async function closeTrade(
   });
 
   agent.clearTrade();
+  lastPnlWriteAt.delete(trade.id);
 
   // Notification with outcome
   const outcome = realisedPnl >= 0 ? 'WIN' : 'LOSS';

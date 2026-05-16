@@ -175,16 +175,24 @@ export function checkTriggers(
   const state = store.get(agentId);
   if (!state) return { hit: false };
 
-  const { triggers, pendingSignal, entryExpiry } = state;
+  const { triggers, pendingSignal, entryExpiry, setAt } = state;
   const now  = Date.now();
   const high = candle.high;
   const low  = candle.low;
 
+  // A candle whose open time is BEFORE the signal was set straddles the signal-
+  // creation moment. Its high/low can include wicks from before the signal
+  // existed — using that range to fire ENTRY_HIT would be like a broker filling
+  // your limit order based on price action that happened before you placed it.
+  // The realtime ticker covers post-signal intra-candle moves; skip pre-signal
+  // candle-close detection.
+  const candlePredatesSignal = candle.openTime < setAt;
+
   // ── PENDING_ENTRY — only check entry hit and expiry ──
   if (pendingSignal) {
 
-    // Entry hit
-    if (pendingSignal.entry != null) {
+    // Entry hit — only on candles that opened AFTER the signal was set
+    if (pendingSignal.entry != null && !candlePredatesSignal) {
       const entryHit =
         pendingSignal.action === 'LONG'
           ? low  <= pendingSignal.entry && high >= pendingSignal.entry
@@ -193,7 +201,7 @@ export function checkTriggers(
       if (entryHit) return { hit: true, reason: 'ENTRY_HIT' };
     }
 
-    // Entry expiry
+    // Entry expiry — time-based check, candle-position irrelevant
     if (entryExpiry) {
       const expiryTime = new Date(entryExpiry).getTime();
       if (!isNaN(expiryTime) && now > expiryTime) {

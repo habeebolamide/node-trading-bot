@@ -58,6 +58,9 @@ model Trade {
 
   entrySnapshot Json?    // { regime, rsi, volumeRatio, news } captured at executeEntry, read by post-mortem
 
+  unrealisedPnl Float?   @default(0)  // updated by updateLivePnl, throttled to 10s, for dashboard visibility
+  unrealisedPct Float?   @default(0)
+
   openedAt      DateTime @default(now())
   closedAt      DateTime?
 
