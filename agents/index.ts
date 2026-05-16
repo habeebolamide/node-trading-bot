@@ -211,6 +211,32 @@ export class AgentManager {
       orderBy: { createdAt: 'desc' },
     });
 
+    // 2a. Cancel any older active signals — defends against prior-crash residue
+    // where the realtime layer would otherwise process them as still-pending.
+    if (activeSignal) {
+      const stale = await prisma.signal.updateMany({
+        where: {
+          agentId: agent.id,
+          status:  'active',
+          id:      { not: activeSignal.id },
+        },
+        data: {
+          status:      'cancelled',
+          triggeredBy: 'STALE_ON_RESTART',
+          triggeredAt: new Date(),
+        },
+      });
+      if (stale.count > 0) {
+        logger.warn(`[${agent.name}] Cancelled ${stale.count} stale active signal(s) on restart`);
+      }
+    } else {
+      // No surviving active signal at all — sweep any leftovers too.
+      await prisma.signal.updateMany({
+        where:  { agentId: agent.id, status: 'active' },
+        data:   { status: 'cancelled', triggeredBy: 'STALE_ON_RESTART', triggeredAt: new Date() },
+      });
+    }
+
     if (!activeSignal) {
       agent.setState('IDLE');
       logger.info(`[${agent.name}] Restored → IDLE`);

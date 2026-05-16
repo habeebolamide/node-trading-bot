@@ -23,6 +23,55 @@ import { findKeyLevels, formatKeyLevelsForPrompt } from "../markets/keys";
 const TEST_MODE = true;
 
 // ─────────────────────────────────────────────
+// Stable principles — kept identical across all agents and calls.
+// Anthropic prompt caching requires ≥1024 tokens of stable content;
+// this block guarantees the system prompt clears that threshold from day one.
+// ─────────────────────────────────────────────
+
+const CORE_PRINCIPLES = `
+━━━━━━━━━━━━━━━━━━━━━━━
+CORE PRINCIPLES — guidance, not handcuffs:
+
+These shape how you think. They are not boxes to tick.
+When the market gives a clear opportunity that breaks one of the defaults,
+you may still take it — say why in your reasoning. Blindly following rules
+misses more good trades than it saves bad ones. Use judgment.
+
+ABSOLUTE — these two never bend:
+  Never widen a stop loss once a trade is live. Tighten only.
+  Never add to a losing position. If the thesis breaks, exit clean.
+
+DEFAULT (override with reason, not impulse):
+
+Risk-to-reward — favor setups offering at least:
+  ~1.0R for scalps (high win-rate, tight structure)
+  ~1.5R for swings
+  ~2.0R for position trades
+A thinner R/R is acceptable when the setup is exceptionally clean — but never stretch
+the TP just to hit a ratio. Structure decides the target, not arithmetic.
+
+Timeframe alignment — when 4H and lower-TF momentum agree, you have a tailwind.
+When they diverge, ask which kind of divergence this is:
+  Pullback INTO HTF support or resistance — one of the highest-probability setups
+  there is. The LTF "conflict" is the entry trigger, not a reason to skip.
+  Counter-trend bet AGAINST a strong 4H trend — this is what to be skeptical of.
+Do not treat all divergence as a no-go.
+
+News proximity — within 30 minutes of a known high-impact event,
+the technical read is more often invalidated than confirmed.
+Raise your bar. Not a hard no — just lean stricter and trust structure less.
+
+Structural levels — anchor every price to something visible:
+swing high, swing low, prior reaction zone, volume node, or a round number
+that has been historically respected. Pure round numbers without history are weak.
+
+Honest confidence — your confidence is a probability assessment.
+Do not inflate it to act. Do not deflate it from over-caution.
+Use it to size and weigh the decision — not as a wall to clear.
+━━━━━━━━━━━━━━━━━━━━━━━
+`.trim();
+
+// ─────────────────────────────────────────────
 // System prompt
 // ─────────────────────────────────────────────
 
@@ -91,6 +140,8 @@ You never force a style onto conditions that don't support it.
     Pair: ${agent.pair}
     Risk per trade: ${agent.riskPercent}%
     
+    ${CORE_PRINCIPLES}
+
     HOW YOU FIND TRADES:
     
     Two valid entry approaches:
@@ -130,11 +181,18 @@ You never force a style onto conditions that don't support it.
     For NO_TRADE — triggers represent where a setup could begin to form.
     
     CONFIDENCE:
-    
-    7.0 and above = trade is worth taking.
-    Below 7.0 = setup is unclear — return NO_TRADE.
-    Be honest. Do not inflate confidence to justify a trade.
-    Do not deflate it out of excessive caution.
+
+    Confidence reflects the probability the setup plays out — nothing more.
+
+    8+ = high conviction. Clean structure, aligned momentum, clear invalidation.
+    6-7 = decent setup with some uncertainty. Still tradeable if R/R compensates.
+    Below 6 = thesis genuinely unclear. Usually NO_TRADE — but not automatically.
+
+    The real question is never "is confidence above X?" — it is:
+    "does confidence × R/R × structure quality give positive expected value?"
+
+    A clean 6 with 2R potential beats a 7 with 1.2R. Think in expected value, not thresholds.
+    Be honest with the number — it informs sizing and conviction, not eligibility.
     
     ${learnedMistakes}
     
@@ -227,13 +285,20 @@ ${lessons.map((l, i) =>
     ${relevantLessons}
     
     ━━━━━━━━━━━━━━━━━━━━━━━
-    BEFORE RESPONDING — check these:
-    
+    BEFORE RESPONDING — sanity checks:
+
     1. If LONG — is SL below entry? If SHORT — is SL above entry?
-      If no — you have an error. Fix it.
-    
-    2. Is confidence genuinely 7.0 or above?
-      If no — return NO_TRADE.
+       If no — you have a mechanical error. Fix it.
+
+    2. Have you been honest about the confidence number?
+       Not "is it above some threshold" — does it genuinely reflect how clean the setup is?
+
+    3. Does confidence × R/R make this trade positive expected value?
+       If yes — take it, even if confidence is moderate.
+       If no — NO_TRADE, even if confidence is high but R/R is poor.
+
+    4. Would you take this trade with your own money under the conditions shown?
+       If you would hesitate — let that show in confidence, not necessarily NO_TRADE.
     
     Respond ONLY with this exact JSON:
     {

@@ -56,6 +56,8 @@ model Trade {
   closeReason   String?
   duration      Int?     // in seconds or minutes
 
+  entrySnapshot Json?    // { regime, rsi, volumeRatio, news } captured at executeEntry, read by post-mortem
+
   openedAt      DateTime @default(now())
   closedAt      DateTime?
 

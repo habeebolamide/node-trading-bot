@@ -13,6 +13,7 @@ export type RiskBlockReason =
   | 'INSUFFICIENT_CAPITAL'
   | 'COOLDOWN_ACTIVE'
   | 'RECOVERY_MODE_FILTER'
+  | 'POOR_RISK_REWARD'
   | 'INVALID_SIGNAL';
 
 export type PerformanceMode =

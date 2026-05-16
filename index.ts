@@ -7,6 +7,7 @@ import { Candle, CandleInterval } from './types/market.types';
 import { detectRegime, isSignificantCandle } from './markets/regime';
 import { buildMtfData } from './markets/mtf';
 import { clearTriggers, getTriggerState, hasTriggers, startTimeoutChecker } from './agents/triggers';
+import { synthesiseLessons } from './learning';
 
 declare global {
   var lastAiCall: Record<string, number>;
@@ -56,6 +57,12 @@ async function main(): Promise<void> {
   
   // 3. NOW start timeout system (after triggers exist)
   startTimeoutChecker();
+
+  // 3b. Weekly lesson synthesis — compresses TradeLessons into top-5 LearnedRules.
+  // In-process interval: runs once per week per agent. Restarting the bot resets
+  // the clock — if the process stays up <7 days continuously, synthesis is skipped.
+  // Acceptable tradeoff for v1; move to a cron/scheduler if uptime is fragmented.
+  startSynthesisRunner();
 
   // 4. Setup market data
   const uniquePairs = [...new Set(agents.map(a => a.pair))];
@@ -174,6 +181,27 @@ async function handleCandle(candle: Candle): Promise<void> {
     });
     // Never re-throw — one bad candle never kills the bot
   }
+}
+
+// ─────────────────────────────────────────────
+// Weekly synthesis runner
+// ─────────────────────────────────────────────
+
+const SYNTHESIS_INTERVAL_MS = 7 * 24 * 60 * 60 * 1000;
+
+function startSynthesisRunner(): void {
+  setInterval(async () => {
+    const agents = agentManager.getAllAgents();
+    logger.info('Weekly synthesis tick', { agentCount: agents.length });
+
+    for (const agent of agents) {
+      try {
+        await synthesiseLessons(agent.id);
+      } catch (err: any) {
+        logger.error('Synthesis failed', { agentId: agent.id, error: err?.message ?? err });
+      }
+    }
+  }, SYNTHESIS_INTERVAL_MS);
 }
 
 main().catch((error) => {

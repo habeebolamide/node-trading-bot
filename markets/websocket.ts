@@ -227,38 +227,41 @@ export class BybitWebSocket {
     logger.info('Candle closed', { pair, tf, close: candle.close });
   }
 
+  private tickerPrevPrice = new Map<string, number>();
+
   private handleTicker(message: any): void {
     const pair = message.topic.split('.')[1];
     const data = message.data;
 
-    if (!data) {
-      console.log("No Data");
-
-    };
+    if (!data) return;
+    if (data.lastPrice == null) return;
 
     const price = parseFloat(data.lastPrice);
+    const prevPrice = this.tickerPrevPrice.get(pair) ?? price;
+    this.tickerPrevPrice.set(pair, price);
 
-    // Live Pnl Update
-    updateLivePnl(pair,price)
+    // Live unrealised PnL update for in-memory IN_TRADE agents
+    updateLivePnl(pair, price);
 
-    // 🔥 REAL-TIME EXECUTION
-    this.checkPendingSignalsRealtimeSafe(pair, price);
+    // Paper TP/SL detection — closes paper trades autonomously when price
+    // crosses currentTp or currentSl. Live mode is handled by Bybit's native
+    // TP/SL on the order; this only fires for paper agents.
+    executionEngine.checkPaperTpSl(pair, price, prevPrice).catch(err =>
+      logger.error('checkPaperTpSl failed', { pair, error: err?.message ?? err }),
+    );
+
+    // Realtime trigger detection for pending signals
+    this.checkPendingSignalsRealtimeSafe(pair, price, prevPrice);
   }
 
-  private checkPendingSignalsRealtimeSafe(pair: string, price: number): void {
-    this.processRealtimeSignals(pair, price).catch(err =>
+  private checkPendingSignalsRealtimeSafe(pair: string, price: number, prevPrice: number): void {
+    this.processRealtimeSignals(pair, price, prevPrice).catch(err =>
       logger.error('Realtime pending signal check failed', { pair, error: err })
     );
   }
 
-  private lastPriceMap = new Map<string, number>();
-
-
-  private async processRealtimeSignals(pair: string, price: number): Promise<void> {
-  const previousPrice = this.lastPriceMap.get(pair);
-  this.lastPriceMap.set(pair, price);
-
-  if (previousPrice === undefined) return;
+  private async processRealtimeSignals(pair: string, price: number, previousPrice: number): Promise<void> {
+  if (previousPrice === price) return;
 
   const now = new Date();
 
@@ -316,29 +319,19 @@ export class BybitWebSocket {
           },
         });
 
-        // Also clear from in-memory store
-        // await markSignalExecuted(signal.agentId);
+        // Clear in-memory triggers so the next candle close does NOT also detect
+        // ENTRY_HIT and double-open the trade. signal status='executed' above
+        // already prevents this DB-level path from re-firing; this guards the
+        // candle-close path which reads from memory.
+        await clearTriggers(signal.agentId, 'ENTRY_HIT');
+
         agent.setState('IN_TRADE');
         continue; // entry hit — skip trigger checks for this signal
       }
 
-      // Check entry expiry
-      if (new Date(signal.entryExpiry) <= now) {
-        logger.info('Entry expired in realtime', { pair, agentId: signal.agentId });
-
-        await prisma.signal.update({
-          where: { id: signal.id },
-          data:  {
-            status:      'expired',
-            triggeredBy: 'EXPIRY',
-            triggeredAt: new Date(),
-          },
-        });
-
-        clearTriggers(signal.agentId);
-        agent.setState('IDLE');
-        continue;
-      }
+      // Entry expiry is enforced by the outer filter (signal.entryExpiry > now);
+      // an expired signal never reaches this inner block. Expiry transitions are
+      // handled by checkTriggers on candle close.
     }
 
     // ── 2. WATCHING or IN_TRADE — check price_up / price_down ──

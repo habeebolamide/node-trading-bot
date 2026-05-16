@@ -153,81 +153,6 @@ export async function clearTriggers(
 }
 
 
-// In agents/triggers.ts — add this export
-
-export async function resumeActiveSignals(agentIds: string[]): Promise<void> {
-  logger.info('Resuming active signals from DB');
-
-  const activeSignals = await prisma.signal.findMany({
-    where: {
-      agentId: { in: agentIds },
-      status:  'active',
-    },
-  });
-
-  for (const row of activeSignals) {
-    const triggers = row.triggers as unknown as Triggers;
-    
-    // Check if timeout or entry_expiry already passed while bot was down
-    const now = Date.now();
-
-    if (triggers.timeout) {
-      const timeoutTime = new Date(triggers.timeout).getTime();
-      if (now > timeoutTime) {
-        // Expired while bot was offline — mark as expired
-        await prisma.signal.update({
-          where: { id: row.id },
-          data:  { status: 'expired', triggeredBy: 'TIMEOUT', triggeredAt: new Date() },
-        });
-        logger.info('Signal expired during downtime', { agentId: row.agentId });
-        continue;
-      }
-    }
-
-    if (row.entryExpiry) {
-      const expiryTime = new Date(row.entryExpiry).getTime();
-      if (now > expiryTime) {
-        await prisma.signal.update({
-          where: { id: row.id },
-          data:  { status: 'expired', triggeredBy: 'EXPIRY', triggeredAt: new Date() },
-        });
-        logger.info('Entry expired during downtime', { agentId: row.agentId });
-        continue;
-      }
-    }
-
-    // Signal still valid — restore to in-memory store
-    const pendingSignal = row.action !== 'NO_TRADE'
-      ? {
-          action:           row.action,
-          entry:            row.entry,
-          tp:               row.tp,
-          sl:               row.sl,
-          confidence:       row.confidence,
-          reasoning:        row.reasoning,
-          timeframe_used:   row.timeframeUsed,
-          what_invalidates: row.whatInvalidates,
-          tradeStyle:       row.tradeStyle,
-        } as unknown as EntrySignal
-      : null;
-
-    store.set(row.agentId, {
-      triggers,
-      pendingSignal,
-      entryExpiry: row.entryExpiry?.toISOString() ?? null,
-      setAt:       row.createdAt.getTime(),
-    });
-
-    logger.info('Signal resumed', {
-      agentId: row.agentId,
-      action:  row.action,
-      status:  pendingSignal ? 'PENDING_ENTRY' : 'WATCHING',
-    });
-  }
-
-  logger.info('Signal resume complete', { count: activeSignals.length });
-}
-
 // ─────────────────────────────────────────────
 // Get pending signal for an agent
 // Used by agent manager to attach trade
@@ -310,14 +235,18 @@ export function checkTriggers(
 
 export function hasTriggers(agentId: string): boolean {
   const state = store.get(agentId);
-  if (!state || !state.triggers) return false;
+  if (!state) return false;
 
-  const { price_up, price_down, timeout } = state.triggers;
+  const { triggers, pendingSignal, entryExpiry } = state;
+
+  // PENDING_ENTRY: pendingSignal + entryExpiry drive the wait — even with all
+  // price/timeout triggers null, checkTriggers must still run to detect entry hit.
+  if (pendingSignal !== null || entryExpiry !== null) return true;
 
   return (
-    price_up !== null ||
-    price_down !== null ||
-    timeout !== null
+    triggers.price_up !== null ||
+    triggers.price_down !== null ||
+    triggers.timeout !== null
   );
 }
 

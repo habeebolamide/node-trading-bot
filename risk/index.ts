@@ -14,7 +14,7 @@ const LIMITS = {
   monthlyDrawdownCap: 0.10,  // 10% — all agents pause beyond this
   dailyDrawdownCap: 0.05,  // 5%  — agent pauses for rest of day
   maxCorrelatedTrades: 2,     // max agents in same direction same pair
-  minConfidence: 7,     // Claude confidence below this = blocked
+  minConfidence: 6,     // Claude confidence below this = blocked
   maxSpreadPct: 0.005, // 0.5% spread — market too illiquid
   maxPriceMove5m: 0.03,  // 3% move in 5 mins = circuit breaker
   maxVolatilityRatio: 3.0,   // volume 3x average = circuit breaker
@@ -22,6 +22,27 @@ const LIMITS = {
   conservativeThreshold: 0.07,  // -7% monthly triggers conservative mode
   growthModeThreshold: 0.05,  // +5% monthly triggers growth mode
   cooldownAfterLoss: 2,     // candles to wait after a loss
+};
+
+// Per-mode reward/risk floor. In drawdown we demand asymmetric payoffs
+// rather than rarer high-confidence calls — size shrinks via sizeMultiplier,
+// quality is enforced here.
+const MIN_RR_BY_MODE: Record<PerformanceMode, number> = {
+  NORMAL:       1.0,
+  GROWTH:       1.0,
+  CONSERVATIVE: 1.8,
+  RECOVERY:     2.5,
+};
+
+// Per-mode confidence floor — calibration safety net on top of R/R-by-mode.
+// Without this, an LLM that over-rates its setups could push thin-confidence
+// trades through using only the R/R gate. Floors are generous (well below the
+// prompt's "honest 6+" range) to avoid the original problem of over-filtering.
+const MIN_CONFIDENCE_BY_MODE: Record<PerformanceMode, number> = {
+  NORMAL:       6.0,
+  GROWTH:       6.0,
+  CONSERVATIVE: 6.5,
+  RECOVERY:     7.0,
 };
 
 // ─────────────────────────────────────────────
@@ -61,8 +82,8 @@ export async function validateEntrySignal(
     return block('LOW_CONFIDENCE', 'Claude returned NO_TRADE');
   }
 
-  if (signal.entry == null || signal.sl == null) {
-    return block('INVALID_SIGNAL', 'Missing entry or SL price — rejecting signal');
+  if (signal.entry == null || signal.sl == null || signal.tp == null) {
+    return block('INVALID_SIGNAL', 'Missing entry, SL, or TP price — rejecting signal');
   }
 
   if (signal.action === 'LONG' && signal?.sl >= signal.entry) {
@@ -73,7 +94,15 @@ export async function validateEntrySignal(
     return block('INVALID_SIGNAL', 'Invalid SL placement — rejecting signal');
   }
 
-  // ── 3. Confidence threshold ──
+  if (signal.action === 'LONG' && signal.tp <= signal.entry) {
+    return block('INVALID_SIGNAL', 'TP must be above entry for LONG — rejecting signal');
+  }
+
+  if (signal.action === 'SHORT' && signal.tp >= signal.entry) {
+    return block('INVALID_SIGNAL', 'TP must be below entry for SHORT — rejecting signal');
+  }
+
+  // ── 3. Confidence threshold (mode-independent floor) ──
   if (signal.confidence < LIMITS.minConfidence) {
     return block('LOW_CONFIDENCE', `Confidence ${signal.confidence} below minimum ${LIMITS.minConfidence}`);
   }
@@ -90,11 +119,11 @@ export async function validateEntrySignal(
   }
 
   // ── 6. Correlation guard ──
-  const correlation = await getCorrelationSnapshot(signal, agent.id);
+  const correlation = await getCorrelationSnapshot(signal, agent.id, agent.pair);
   if (correlation.activeAgentCount >= LIMITS.maxCorrelatedTrades) {
     return block(
       'CORRELATION_LIMIT',
-      `${correlation.activeAgentCount} agents already ${signal.action} on ${signal.action === 'LONG' ? 'long' : 'short'} ${agent.pair}`
+      `${correlation.activeAgentCount} agents already ${signal.action} on ${agent.pair}`
     );
   }
 
@@ -103,14 +132,26 @@ export async function validateEntrySignal(
     return block('COOLDOWN_ACTIVE', 'Agent in cooldown after consecutive losses');
   }
 
-  // ── 8. Recovery mode — only A+ setups ──
-  if (drawdown.performanceMode === 'RECOVERY' && signal.confidence < 9) {
-    return block('RECOVERY_MODE_FILTER', 'Recovery mode requires confidence 9+');
+  // ── 8. Mode-aware confidence floor (calibration safety net) ──
+  const minConfMode = MIN_CONFIDENCE_BY_MODE[drawdown.performanceMode];
+  if (signal.confidence < minConfMode) {
+    return block(
+      'LOW_CONFIDENCE',
+      `Confidence ${signal.confidence} below ${drawdown.performanceMode} floor ${minConfMode}`,
+    );
   }
 
-  // ── 9. Conservative mode — tighten confidence ──
-  if (drawdown.performanceMode === 'CONSERVATIVE' && signal.confidence < 8) {
-    return block('RECOVERY_MODE_FILTER', 'Conservative mode requires confidence 8+');
+  // ── 9. Risk/reward floor — stricter in degraded performance modes ──
+  const risk   = Math.abs(signal.entry - signal.sl);
+  const reward = Math.abs(signal.tp   - signal.entry);
+  const rr     = risk > 0 ? reward / risk : 0;
+  const minRr  = MIN_RR_BY_MODE[drawdown.performanceMode];
+
+  if (rr < minRr) {
+    return block(
+      'POOR_RISK_REWARD',
+      `R/R ${rr.toFixed(2)} below ${drawdown.performanceMode} floor ${minRr.toFixed(2)}`,
+    );
   }
 
   // ── 10. Calculate position size ──
@@ -405,21 +446,22 @@ export function manuallyResetCircuitBreaker(): void {
 async function getCorrelationSnapshot(
   signal: EntrySignal,
   agentId: string,
+  pair:    string,
 ): Promise<CorrelationSnapshot> {
   const direction = signal.action === 'LONG' ? 'LONG' : 'SHORT';
 
-  // Count other agents currently in this pair + direction
+  // Count OTHER agents currently in the same pair + same direction
   const count = await prisma.trade.count({
     where: {
-      pair: { contains: signal.action === 'LONG' ? 'USDT' : 'USDT' },
+      pair,
       direction,
-      status: 'open',
-      agentId: { not: agentId }, // exclude this agent
+      status:  'open',
+      agentId: { not: agentId },
     },
   });
 
   return {
-    pair: signal.action,
+    pair,
     direction,
     activeAgentCount: count,
   };

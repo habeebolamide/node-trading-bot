@@ -159,15 +159,19 @@ export async function getRelevantLessons(
 
 function detectRelevantTags(ctx: {
   regime:      string;
-  signal:      string;
+  signal:      string;            // 'LONG' | 'SHORT' | 'UNKNOWN' (pre-decision)
   rsi:         number;
   volumeRatio: number;
   dayOfWeek:   number;
 }): string[] {
   const tags: string[] = [];
+  const unknown = ctx.signal === 'UNKNOWN';
 
-  // Counter trend entry — going against the big trend
+  // Counter trend entry — going against the big trend.
+  // Pre-decision (UNKNOWN): surface for any strong trend regime since either
+  // direction could be counter-trend depending on what the LLM picks.
   if (
+    (unknown && (ctx.regime === 'TRENDING_BULL' || ctx.regime === 'TRENDING_BEAR')) ||
     (ctx.regime === 'TRENDING_BEAR' && ctx.signal === 'LONG') ||
     (ctx.regime === 'TRENDING_BULL' && ctx.signal === 'SHORT')
   ) {
@@ -186,14 +190,14 @@ function detectRelevantTags(ctx: {
     tags.push('NEWS_DRIVEN_MOVE');
   }
 
-  // Overbought entering long
-  if (ctx.rsi > 68 && ctx.signal === 'LONG') {
+  // Overbought entering long (or any direction if pre-decision)
+  if (ctx.rsi > 68 && (unknown || ctx.signal === 'LONG')) {
     tags.push('OVERBOUGHT_LONG');
     tags.push('RSI_EXTREME_ENTRY');
   }
 
-  // Oversold entering short
-  if (ctx.rsi < 32 && ctx.signal === 'SHORT') {
+  // Oversold entering short (or any direction if pre-decision)
+  if (ctx.rsi < 32 && (unknown || ctx.signal === 'SHORT')) {
     tags.push('OVERSOLD_SHORT');
     tags.push('RSI_EXTREME_ENTRY');
   }

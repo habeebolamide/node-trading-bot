@@ -13,13 +13,34 @@ const openrouter = new OpenAI({
   apiKey: process.env.OPENROUTER_API_KEY,
 });
 
-// Model priority: Best reasoning → Fast → Backup
-const MODEL_PRIORITY = [
-  "anthropic/claude-opus-4-6",      // Primary: Best reasoning for entry logic
-  "anthropic/claude-sonnet-4-6",    // Secondary: Fast, reliable fallback
-  "google/gemini-2.5-pro",    
-  "google/gemini-2.5-flash",    // Backup: Extremely fast/low cost
-];
+// Per-call-type model routing.
+// Entry needs the strongest reasoning — keep on Anthropic.
+// Management / postmortem / synthesis are higher-frequency or batch
+// and run against a fixed JSON schema — DeepSeek handles them at ~50x lower cost.
+type PromptType = 'entry' | 'management' | 'postmortem' | 'synthesis';
+
+const MODELS_BY_TYPE: Record<PromptType, string[]> = {
+  entry: [
+    "anthropic/claude-sonnet-4-6",
+    "anthropic/claude-opus-4-6",
+    "google/gemini-2.5-pro",
+  ],
+  management: [
+    "deepseek/deepseek-chat-v3.2",
+    "anthropic/claude-sonnet-4-6",
+    "google/gemini-2.5-flash",
+  ],
+  postmortem: [
+    "deepseek/deepseek-chat-v3.2",
+    "anthropic/claude-sonnet-4-6",
+  ],
+  synthesis: [
+    "deepseek/deepseek-chat-v3.2",
+    "anthropic/claude-sonnet-4-6",
+  ],
+};
+
+const isAnthropicModel = (model: string) => model.startsWith('anthropic/');
 
 export async function getEntrySignal(
   systemPrompt: string,
@@ -57,35 +78,101 @@ export async function getSynthesis(
   );
 }
 
+// Rough token estimate — Claude/GPT English text ≈ 3.5 chars/token
+function estimateTokens(text: string): number {
+  return Math.ceil(text.length / 3.5);
+}
+
+const ANTHROPIC_CACHE_MIN_TOKENS = 1024; // Sonnet/Opus minimum. Haiku = 2048.
+
 // Core function with smart fallback
 async function callWithFallback<T>(
   systemPrompt: string,
   userPrompt: string,
-  promptType: string,
+  promptType: PromptType,
   agentId: string
 ): Promise<ClaudeCallResult<T>> {
 
   const startedAt = Date.now();
   let lastError = '';
 
-  for (const model of MODEL_PRIORITY) {
+  // ── Pre-call size measurement ──
+  const sysTokensEst = estimateTokens(systemPrompt);
+  const userTokensEst = estimateTokens(userPrompt);
+
+  logger.info('Prompt size (pre-call)', {
+    agentId,
+    promptType,
+    systemChars: systemPrompt.length,
+    userChars: userPrompt.length,
+    systemTokensEst: sysTokensEst,
+    userTokensEst: userTokensEst,
+    totalTokensEst: sysTokensEst + userTokensEst,
+    systemCacheable: sysTokensEst >= ANTHROPIC_CACHE_MIN_TOKENS,
+    systemPaddingNeeded: Math.max(0, ANTHROPIC_CACHE_MIN_TOKENS - sysTokensEst),
+  });
+
+  const models = MODELS_BY_TYPE[promptType];
+
+  for (const model of models) {
     let attempt = 0;
     const maxAttemptsPerModel = 2;
+    const useCache = isAnthropicModel(model);
+
+    // Anthropic via OpenRouter: send system as a content array so we can attach
+    // cache_control. Other providers ignore the array form, so use a plain string.
+    const systemMessage = useCache
+      ? {
+          role: 'system' as const,
+          content: [
+            {
+              type: 'text',
+              text: systemPrompt,
+              cache_control: { type: 'ephemeral' },
+            },
+          ] as any,
+        }
+      : { role: 'system' as const, content: systemPrompt };
 
     while (attempt < maxAttemptsPerModel) {
       try {
         const completion = await openrouter.chat.completions.create({
           model: model,
           messages: [
-            { role: "system", content: systemPrompt },
-            { role: "user", content: userPrompt },
+            systemMessage,
+            { role: 'user', content: userPrompt },
           ],
           temperature: 0.2,
-               
         });
 
         const rawText = completion.choices[0]?.message?.content || '';
-        const usage = completion.usage;
+        const usage = completion.usage as any;
+
+        // Anthropic cache stats (passed through by OpenRouter on Anthropic calls)
+        const cacheReadTokens = usage?.cache_read_input_tokens ?? usage?.prompt_tokens_details?.cached_tokens ?? 0;
+        const cacheWriteTokens = usage?.cache_creation_input_tokens ?? 0;
+
+        logger.info('Prompt tokens (actual)', {
+          agentId,
+          promptType,
+          model,
+          cacheEnabled: useCache,
+          promptTokensActual: usage?.prompt_tokens,
+          completionTokensActual: usage?.completion_tokens,
+          cacheReadTokens,
+          cacheWriteTokens,
+          cacheStatus:
+            !useCache ? 'disabled'
+              : cacheReadTokens > 0 ? 'HIT'
+                : cacheWriteTokens > 0 ? 'WRITE'
+                  : 'miss',
+          systemTokensEst: sysTokensEst,
+          userTokensEst: userTokensEst,
+          totalTokensEst: sysTokensEst + userTokensEst,
+          estimateError: usage?.prompt_tokens
+            ? `${(((usage.prompt_tokens - (sysTokensEst + userTokensEst)) / usage.prompt_tokens) * 100).toFixed(1)}%`
+            : 'n/a',
+        });
 
         logger.info('Raw Response' , {agentId, promptType,rawText})
 
@@ -101,7 +188,7 @@ async function callWithFallback<T>(
           tokensUsed: {
             inputTokens: usage?.prompt_tokens ?? 0,
             outputTokens: usage?.completion_tokens ?? 0,
-            cacheHits: 0,
+            cacheHits: cacheReadTokens,
             totalCost: 0,
           },
           error: parsed.error,

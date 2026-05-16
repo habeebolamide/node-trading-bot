@@ -4,6 +4,11 @@ import { prisma }       from '../lib/prisma';
 import logger           from '../utils/logger';
 import { agentManager } from '../agents';
 import { notifications } from '../utils/notifications';
+import { getCandleBuffer } from '../markets/websocket';
+import { detectRegime } from '../markets/regime';
+import { calculateIndicators } from '../markets/indicators';
+import { getNewsContextForPrompt } from '../markets/news';
+import { runPostMortem } from '../learning';
 import type { AgentRuntime } from '../agents';
 import type { EntrySignal, ManagementDecision } from '../types/claude.types';
 import type {
@@ -13,6 +18,29 @@ import type {
   OrderResult,
   TradeDirection,
 } from '../types/trade.types';
+
+// ─────────────────────────────────────────────
+// Entry snapshot — captured at executeEntry, read at close for post-mortem
+// ─────────────────────────────────────────────
+interface EntrySnapshot {
+  regime:      string;
+  rsi:         number | null;
+  volumeRatio: number | null;
+  news:        string;
+}
+
+function buildEntrySnapshot(pair: string): EntrySnapshot {
+  const buffer1h   = getCandleBuffer(pair, '60');
+  const regime     = buffer1h.length > 0 ? detectRegime(buffer1h) : null;
+  const indicators = buffer1h.length > 0 ? calculateIndicators(buffer1h) : null;
+
+  return {
+    regime:      regime?.regime ?? 'UNKNOWN',
+    rsi:         indicators?.rsi ?? null,
+    volumeRatio: indicators?.volume?.ratio ?? null,
+    news:        getNewsContextForPrompt(pair),
+  };
+}
 
 // ─────────────────────────────────────────────
 // Bybit exchange instance
@@ -60,17 +88,20 @@ export async function executeEntry(
     : await executePaperEntry(request);
 
   if (result.success) {
+    const entrySnapshot = buildEntrySnapshot(agent.pair);
+
     const trade = await prisma.trade.create({
       data: {
-        id:         result.orderId!,
-        agentId:    agent.id,
-        pair:       agent.pair,
-        direction:  request.direction,
-        entryPrice: signal.entry ?? currentPrice,
-        stopLoss:   request.sl,
-        takeProfit: request.tp,
-        size:       positionSize,
-        status:     'open',
+        id:            result.orderId!,
+        agentId:       agent.id,
+        pair:          agent.pair,
+        direction:     request.direction,
+        entryPrice:    signal.entry ?? currentPrice,
+        stopLoss:      request.sl,
+        takeProfit:    request.tp,
+        size:          positionSize,
+        status:        'open',
+        entrySnapshot: entrySnapshot as any,
       },
     });
 
@@ -326,38 +357,41 @@ export async function closeTrade(
     closeReason,
   });
 
+  // Post-mortem: only on losses. Uses snapshot stored at executeEntry.
+  if (realisedPnl < 0) {
+    const snapshot = (closed as any).entrySnapshot as EntrySnapshot | null;
+    if (snapshot) {
+      const positionValue  = trade.entryPrice * trade.positionSize;
+      const realisedPct    = positionValue > 0 ? (realisedPnl / positionValue) * 100 : 0;
+      const durationHours  = duration / 3600;
+
+      const closedTradeForPm = {
+        ...trade,
+        exitPrice,
+        realisedPnl,
+        realisedPct,
+        closeReason,
+        outcome,
+        closedAt:      new Date(),
+        durationHours,
+        postMortemId:  null,
+      } as unknown as ClosedTrade;
+
+      runPostMortem(
+        closedTradeForPm,
+        snapshot.regime,
+        snapshot.news,
+        snapshot.rsi ?? 50,
+        snapshot.volumeRatio ?? 1,
+      ).catch(err =>
+        logger.error('Post-mortem failed', { tradeId: trade.id, error: err?.message ?? err }),
+      );
+    } else {
+      logger.warn('Losing trade has no entrySnapshot — skipping post-mortem', { tradeId: trade.id });
+    }
+  }
+
   return closed as unknown as ClosedTrade;
-}
-
-// ─────────────────────────────────────────────
-// Monitor open trades on candle close
-// Fallback only — checkPaperTpSl is primary
-// ─────────────────────────────────────────────
-
-export async function monitorOpenTrade(
-  agent:       AgentRuntime,
-  currentHigh: number,
-  currentLow:  number,
-): Promise<void> {
-  const trade = agent.currentTrade;
-  if (!trade || agent.mode !== 'paper') return;
-
-  let hit: 'TP_HIT' | 'SL_HIT' | null = null;
-
-  if (trade.direction === 'LONG') {
-    if (currentHigh >= trade.currentTp) hit = 'TP_HIT';
-    if (currentLow  <= trade.currentSl) hit = 'SL_HIT';
-  }
-
-  if (trade.direction === 'SHORT') {
-    if (currentLow  <= trade.currentTp) hit = 'TP_HIT';
-    if (currentHigh >= trade.currentSl) hit = 'SL_HIT';
-  }
-
-  if (hit) {
-    const exitPrice = hit === 'TP_HIT' ? trade.currentTp : trade.currentSl;
-    await closeTrade(agent, trade, hit, exitPrice);
-  }
 }
 
 // ─────────────────────────────────────────────
@@ -561,18 +595,35 @@ async function updateLiveTpSl(
   newTp: number | null,
   newSl: number | null,
 ): Promise<void> {
+  // Bybit V5 holds TP/SL on the POSITION, not on the entry order. editOrder
+  // (which the previous version called with trade.id, the entry order id) does
+  // not work for this — the entry order is already filled and can't be edited.
+  // The correct call is POST /v5/position/trading-stop, which ccxt exposes via
+  // the private endpoint passthrough below.
+  if (!newTp && !newSl) return;
+
   try {
-    await exchange.editOrder(
-      trade.id, trade.pair, 'limit',
-      trade.direction === 'LONG' ? 'buy' : 'sell',
-      trade.positionSize, undefined,
-      {
-        ...(newTp ? { takeProfit: newTp } : {}),
-        ...(newSl ? { stopLoss:   newSl } : {}),
-      },
-    );
+    const params: Record<string, any> = {
+      category:    'linear',
+      symbol:      trade.pair,
+      positionIdx: 0,             // one-way mode; 1 / 2 for hedge mode long/short
+      tpslMode:    'Full',
+      tpTriggerBy: 'LastPrice',
+      slTriggerBy: 'LastPrice',
+    };
+    if (newTp) params.takeProfit = String(newTp);
+    if (newSl) params.stopLoss   = String(newSl);
+
+    await (exchange as any).privatePostV5PositionTradingStop(params);
+
+    logger.info('Live TP/SL updated via trading-stop', {
+      tradeId: trade.id,
+      pair:    trade.pair,
+      newTp,
+      newSl,
+    });
   } catch (error: any) {
-    logger.error('Failed to update TP/SL', { tradeId: trade.id, error: error.message });
+    logger.error('Failed to update live TP/SL', { tradeId: trade.id, error: error.message });
   }
 }
 
@@ -680,7 +731,6 @@ export const executionEngine = {
   executeEntry,
   executeManagement,
   closeTrade,
-  monitorOpenTrade,
   triggerPendingSignal,
   updateLivePnl,
   checkPaperTpSl,
