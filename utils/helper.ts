@@ -39,3 +39,18 @@ export function calculateManagementTimeout(style: TradingStyle): string {
 
   return new Date(Date.now() + minutes * 60_000).toISOString();
 }
+
+// System-controlled entry expiry. The LLM has repeatedly emitted entry_expiry
+// values in the past (or so close to "now" that free-tier latency expires them
+// before the response lands). We trust the LLM to choose tradeStyle, but the
+// clock belongs to the bot — same pattern as calculateManagementTimeout.
+export function calculateEntryExpiry(style: TradingStyle | string | null | undefined): string {
+  const minutes = {
+    scalp:    45,     // 45 min — enough for the next 5-10 candles on 5m
+    swing:    240,    // 4 hours
+    position: 1440,   // 24 hours
+    auto:     120,    // 2 hours
+  }[style as TradingStyle] ?? 120;
+
+  return new Date(Date.now() + minutes * 60_000).toISOString();
+}

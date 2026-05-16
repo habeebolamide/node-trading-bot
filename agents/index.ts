@@ -11,7 +11,7 @@ import { getRelevantLessons } from '../learning';
 import { notifications } from "../utils/notifications";
 import { executionEngine } from "../execution";
 import { getPortfolio } from "../capital";
-import { calculateManagementTimeout, mapToOpenTrade } from "../utils/helper";
+import { calculateEntryExpiry, calculateManagementTimeout, mapToOpenTrade } from "../utils/helper";
 
 import {
   setTriggers,
@@ -626,7 +626,11 @@ export class AgentManager {
       timeout: null,                            // ← timeout via entry_expiry instead
     };
 
-    const entryExpiry = (signal as any).entry_expiry ?? null;
+    // System-controlled expiry — the LLM keeps emitting stale or zero-duration
+    // entry_expiry values (free-tier latency makes any short window already past
+    // by response time). We honour its tradeStyle but compute the deadline here.
+    const signalStyle = (signal as any).tradeStyle ?? agent.tradingStyle;
+    const entryExpiry = calculateEntryExpiry(signalStyle);
 
     setTriggers(agent.id, pendingTriggers, signal, entryExpiry, claudeResult.data, riskResult.positionSize);
     agent.setState('PENDING_ENTRY');               // ← PENDING_ENTRY not IN_TRADE
