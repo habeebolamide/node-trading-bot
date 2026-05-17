@@ -8,6 +8,7 @@ import { detectRegime, isSignificantCandle } from './markets/regime';
 import { buildMtfData } from './markets/mtf';
 import { clearTriggers, getTriggerState, hasTriggers, startTimeoutChecker } from './agents/triggers';
 import { synthesiseLessons } from './learning';
+import { prisma } from './lib/prisma';
 
 declare global {
   var lastAiCall: Record<string, number>;
@@ -59,15 +60,18 @@ async function main(): Promise<void> {
   startTimeoutChecker();
 
   // 3b. Weekly lesson synthesis — compresses TradeLessons into top-5 LearnedRules.
-  // In-process interval: runs once per week per agent. Restarting the bot resets
-  // the clock — if the process stays up <7 days continuously, synthesis is skipped.
-  // Acceptable tradeoff for v1; move to a cron/scheduler if uptime is fragmented.
+  // Cadence is anchored to Agent.lastSynthesisAt (DB-persisted), so restarts
+  // don't reset the clock. Hourly tick re-evaluates each agent's due-ness.
   startSynthesisRunner();
 
   // 4. Setup market data
   const uniquePairs = [...new Set(agents.map(a => a.pair))];
 
   await seedCandleBuffers(uniquePairs);
+
+  // 4b. Replay any entry hits that happened while the bot was offline.
+  // Uses the 5m buffer just seeded above; must run AFTER seedCandleBuffers.
+  await agentManager.catchUpMissedEntries();
 
   uniquePairs.forEach(pair => {
     onCandle(pair, '5', (candle) => handleCandle(candle));
@@ -188,20 +192,37 @@ async function handleCandle(candle: Candle): Promise<void> {
 // ─────────────────────────────────────────────
 
 const SYNTHESIS_INTERVAL_MS = 7 * 24 * 60 * 60 * 1000;
+const SYNTHESIS_CHECK_MS = 60 * 60 * 1000; // hourly due-ness check
+
+async function tickSynthesis(): Promise<void> {
+  // Re-fetch from DB so lastSynthesisAt reflects writes from prior ticks.
+  const agents = await prisma.agent.findMany({
+    where:  { status: 'active' },
+    select: { id: true, lastSynthesisAt: true },
+  });
+
+  const now = Date.now();
+
+  for (const agent of agents) {
+    const last = agent.lastSynthesisAt?.getTime() ?? 0;
+    if (now - last < SYNTHESIS_INTERVAL_MS) continue;
+
+    try {
+      await synthesiseLessons(agent.id);
+      await prisma.agent.update({
+        where: { id: agent.id },
+        data:  { lastSynthesisAt: new Date() },
+      });
+      logger.info('Synthesis completed', { agentId: agent.id });
+    } catch (err: any) {
+      logger.error('Synthesis failed', { agentId: agent.id, error: err?.message ?? err });
+    }
+  }
+}
 
 function startSynthesisRunner(): void {
-  setInterval(async () => {
-    const agents = agentManager.getAllAgents();
-    logger.info('Weekly synthesis tick', { agentCount: agents.length });
-
-    for (const agent of agents) {
-      try {
-        await synthesiseLessons(agent.id);
-      } catch (err: any) {
-        logger.error('Synthesis failed', { agentId: agent.id, error: err?.message ?? err });
-      }
-    }
-  }, SYNTHESIS_INTERVAL_MS);
+  void tickSynthesis();
+  setInterval(() => { void tickSynthesis(); }, SYNTHESIS_CHECK_MS);
 }
 
 main().catch((error) => {

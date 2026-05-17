@@ -30,6 +30,8 @@ model Agent {
   totalTrades       Int           @default(0)
   winRate           Float         @default(0)
 
+  lastSynthesisAt   DateTime?
+
   createdAt         DateTime      @default(now())
   updatedAt         DateTime      @updatedAt
 

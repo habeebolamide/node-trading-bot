@@ -20,22 +20,37 @@ type PromptType = 'entry' | 'management' | 'postmortem' | 'synthesis';
 
 const MODELS_BY_TYPE: Record<PromptType, string[]> = {
   entry: [
-    "anthropic/claude-sonnet-4-6",
-    "anthropic/claude-opus-4-6",
+    // "deepseek/deepseek-v4-flash:free",
+    // "deepseek/deepseek-v4-flash:free",
+    // "deepseek/deepseek-v4-flash:free",
+    "anthropic/claude-sonnet-4.6",
+    "anthropic/claude-opus-4.6",
     "google/gemini-2.5-pro",
   ],
   management: [
-    "deepseek/deepseek-chat-v3.2",
-    "anthropic/claude-sonnet-4-6",
+    // "deepseek/deepseek-v4-flash:free",
+    // "deepseek/deepseek-v4-flash:free",
+    // "deepseek/deepseek-v4-flash:free",
+    "deepseek/deepseek-v4-pro",
+    "deepseek/deepseek-v4-flash",
+    "anthropic/claude-sonnet-4.6",
     "google/gemini-2.5-flash",
   ],
   postmortem: [
-    "deepseek/deepseek-chat-v3.2",
-    "anthropic/claude-sonnet-4-6",
+    // "deepseek/deepseek-v4-flash:free",
+    // "deepseek/deepseek-v4-flash:free",
+    // "deepseek/deepseek-v4-flash:free",
+    "deepseek/deepseek-v4-pro",
+    "deepseek/deepseek-v4-flash",
+    "anthropic/claude-sonnet-4.6",
   ],
   synthesis: [
-    "deepseek/deepseek-chat-v3.2",
-    "anthropic/claude-sonnet-4-6",
+    // "deepseek/deepseek-v4-flash:free",
+    // "deepseek/deepseek-v4-flash:free",
+    // "deepseek/deepseek-v4-flash:free",
+    "deepseek/deepseek-v4-pro",
+    "deepseek/deepseek-v4-flash",
+    "google/gemini-2.5-flash",
   ],
 };
 
@@ -144,7 +159,44 @@ async function callWithFallback<T>(
           temperature: 0.2,
         });
 
-        const rawText = completion.choices[0]?.message?.content || '';
+        // OpenRouter sometimes returns HTTP 200 with an error body — provider
+        // rate limit, model overloaded, free-tier queue. The OpenAI SDK does
+        // not throw on these, so detect and surface the real cause.
+        const orError = (completion as any)?.error;
+        if (orError) {
+          const msg = orError.message ?? JSON.stringify(orError);
+          const code = orError.code ?? '?';
+          throw Object.assign(new Error(`Provider error ${code}: ${msg}`), {
+            status: typeof code === 'number' ? code : undefined,
+          });
+        }
+
+        const choice = completion.choices?.[0];
+        if (!choice) {
+          logger.warn('OpenRouter returned no choices', {
+            agentId, promptType, model,
+            rawBody: JSON.stringify(completion).slice(0, 500),
+          });
+          throw new Error('OpenRouter response had no choices array');
+        }
+
+        // DeepSeek / reasoning-style models on OpenRouter sometimes put output
+        // in `reasoning` or `reasoning_content` rather than `content`. If content
+        // is empty but tokens were billed, fall back to those fields.
+        const msg = choice.message as any;
+        let rawText = (msg?.content ?? '').trim();
+        if (!rawText) rawText = (msg?.reasoning ?? '').trim();
+        if (!rawText) rawText = (msg?.reasoning_content ?? '').trim();
+
+        if (!rawText) {
+          logger.warn('Empty model response — content, reasoning, reasoning_content all blank', {
+            agentId, promptType, model,
+            finishReason: choice.finish_reason,
+            messageKeys: msg ? Object.keys(msg) : [],
+            messagePreview: JSON.stringify(msg).slice(0, 400),
+          });
+        }
+
         const usage = completion.usage as any;
 
         // Anthropic cache stats (passed through by OpenRouter on Anthropic calls)

@@ -12,6 +12,7 @@ import { notifications } from "../utils/notifications";
 import { executionEngine } from "../execution";
 import { getPortfolio } from "../capital";
 import { calculateEntryExpiry, calculateManagementTimeout, mapToOpenTrade } from "../utils/helper";
+import { getCandleBuffer } from "../markets/websocket";
 
 import {
   setTriggers,
@@ -293,6 +294,94 @@ export class AgentManager {
     } else {
       agent.setState('PENDING_ENTRY');
       logger.info(`[${agent.name}] Restored → PENDING_ENTRY`);
+    }
+  }
+
+  // ====================== DOWNTIME CATCH-UP ======================
+  // Run AFTER seedCandleBuffers — uses the 5m buffer (~16h of history) to detect
+  // entry hits that happened while the bot was offline. Realtime ticker can only
+  // see crossings going forward; candle-close only fires on the NEXT candle to
+  // close. Without this, a hit during downtime is lost forever.
+  async catchUpMissedEntries(): Promise<void> {
+    for (const agent of this.agents.values()) {
+      if (agent.state !== 'PENDING_ENTRY') continue;
+
+      const signal = await prisma.signal.findFirst({
+        where:   { agentId: agent.id, status: 'active' },
+        orderBy: { createdAt: 'desc' },
+      });
+
+      if (!signal || signal.entry === null || signal.action === 'NO_TRADE') continue;
+
+      const buffer  = getCandleBuffer(agent.pair, '5');
+      const setAtMs = signal.createdAt.getTime();
+      const entry   = signal.entry;
+
+      const hitCandle = buffer.find(c =>
+        c.openTime >= setAtMs &&
+        c.low <= entry &&
+        c.high >= entry,
+      );
+
+      if (!hitCandle) {
+        logger.info(`[${agent.name}] No missed entry hits during downtime`);
+        continue;
+      }
+
+      logger.warn(`[${agent.name}] Entry hit during downtime — running catch-up`, {
+        entry,
+        hitCandleOpen: new Date(hitCandle.openTime).toISOString(),
+        hitHigh:       hitCandle.high,
+        hitLow:        hitCandle.low,
+      });
+
+      // Re-validate risk — drawdown / circuit-breaker state may have shifted
+      // during downtime; do not blindly fire a trade that current risk would reject.
+      const rawSignal = signal.rawSignal as unknown as EntrySignal;
+      const portfolio = await getPortfolio();
+      const validation = await validateEntrySignal(
+        rawSignal,
+        agent.toPromptAgent(),
+        { cooldownUntil: agent.cooldownUntil } as any,
+        portfolio,
+      );
+
+      if (!validation.approved) {
+        logger.warn(`[${agent.name}] Catch-up blocked by risk`, {
+          reason: validation.blockReason,
+        });
+        await clearTriggers(agent.id, 'CATCH_UP_BLOCKED');
+        agent.setState('IDLE');
+        continue;
+      }
+
+      // Fill at the intended entry price — for paper this is the "limit got hit"
+      // semantic; for live, Bybit will fill at market when the order submits.
+      const execResult = await executionEngine.executeEntry(
+        agent,
+        rawSignal,
+        validation.positionSize!,
+        entry,
+      );
+
+      if (execResult.success) {
+        await prisma.signal.update({
+          where: { id: signal.id },
+          data:  {
+            status:      'executed',
+            triggeredBy: 'ENTRY_HIT_CATCHUP',
+            triggeredAt: new Date(),
+          },
+        });
+        await clearTriggers(agent.id, 'ENTRY_HIT_CATCHUP');
+        logger.info(`[${agent.name}] Catch-up trade opened`, {
+          tradeId: execResult.orderId,
+        });
+      } else {
+        logger.error(`[${agent.name}] Catch-up execution failed`, {
+          error: execResult.error,
+        });
+      }
     }
   }
 

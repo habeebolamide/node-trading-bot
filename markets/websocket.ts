@@ -224,7 +224,7 @@ export class BybitWebSocket {
     const key = `${pair}:${tf}`;
     listeners[key]?.forEach(handler => handler(candle));
 
-    logger.info('Candle closed', { pair, tf, close: candle.close });
+    // logger.info('Candle closed', { pair, tf, close: candle.close });
   }
 
   private tickerPrevPrice = new Map<string, number>();
@@ -290,10 +290,15 @@ export class BybitWebSocket {
       new Date(signal.entryExpiry) > now
     ) {
       const entry       = signal.entry;
-      let   entryHit    = false;
 
-      if (signal.action === 'LONG'  && previousPrice > entry && price <= entry) entryHit = true;
-      if (signal.action === 'SHORT' && previousPrice < entry && price >= entry) entryHit = true;
+      // Touch-based detection: trigger when price crosses the entry level from
+      // either direction. The bot uses entry as a "price threshold reached"
+      // signal, not as a one-sided limit order. Matches the candle-close path
+      // (range overlap) so both detection paths behave the same.
+      const crossedUp   = previousPrice < entry && price >= entry;
+      const crossedDown = previousPrice > entry && price <= entry;
+      const atEntry     = previousPrice === entry;     // already sitting at level
+      const entryHit    = crossedUp || crossedDown || atEntry;
 
       if (entryHit) {
         logger.info('Entry triggered in realtime', {

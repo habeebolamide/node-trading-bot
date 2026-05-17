@@ -12,7 +12,7 @@ import type {
   ClosedTrade,
   OpenTrade
 } from '../types/trade.types';
-import { findKeyLevels, formatKeyLevelsForPrompt } from "../markets/keys";
+import { findKeyLevels, formatKeyLevelsForPrompt, KeyLevelsResult } from "../markets/keys";
 
 // ─────────────────────────────────────────────
 // TEST MODE FLAG
@@ -97,9 +97,9 @@ export function buildSystemPrompt(agent: Agent): string {
     `.trim(),
 
     auto: `
-You adapt to whatever the market is offering.
-You decide whether to scalp, swing, or stay out based on current conditions.
-You never force a style onto conditions that don't support it.
+      You adapt to whatever the market is offering.
+      You decide whether to scalp, swing, or stay out based on current conditions.
+      You never force a style onto conditions that don't support it.
     `.trim(),
   }[agent.tradingStyle ?? 'auto'] ?? '';
 
@@ -185,13 +185,13 @@ You never force a style onto conditions that don't support it.
     Confidence reflects the probability the setup plays out — nothing more.
 
     8+ = high conviction. Clean structure, aligned momentum, clear invalidation.
-    6-7 = decent setup with some uncertainty. Still tradeable if R/R compensates.
-    Below 6 = thesis genuinely unclear. Usually NO_TRADE — but not automatically.
+    7 = decent setup with some uncertainty. Still tradeable if R/R compensates.
+    Below 7 = thesis genuinely unclear. Usually NO_TRADE — but not automatically.
 
     The real question is never "is confidence above X?" — it is:
     "does confidence × R/R × structure quality give positive expected value?"
 
-    A clean 6 with 2R potential beats a 7 with 1.2R. Think in expected value, not thresholds.
+    A clean 7 with 2R potential beats a 8 with 1.2R. Think in expected value, not thresholds.
     Be honest with the number — it informs sizing and conviction, not eligibility.
     
     ${learnedMistakes}
@@ -230,18 +230,59 @@ export function buildEntryPrompt(
 
   const relevantLessons = lessons.length > 0
     ? `
-━━━━━━━━━━━━━━━━━━━━━━━
-PAST MISTAKES MATCHING THIS SETUP:
-${lessons.map((l, i) =>
+  ━━━━━━━━━━━━━━━━━━━━━━━
+  PAST MISTAKES MATCHING THIS SETUP:
+  ${lessons.map((l, i) =>
       `${i + 1}. [${l.patternTag}] ${l.ruleToAdd} — occurred ${l.frequency}x`
     ).join('\n')}
     `.trim()
     : '';
 
-  const levels1h = findKeyLevels(mtfData.tf1h.candles);
-  const levels4h = findKeyLevels(mtfData.tf4h.candles);
-  const keyLevels = formatKeyLevelsForPrompt(levels1h);
-  const majorLevels = formatKeyLevelsForPrompt(levels4h);
+  // Per-style key-level coverage. Scalps need intraday levels because they're
+  // operating on 5m/15m structure; position trades only need the macro view.
+  // Daily levels would be added here once we seed Daily candles.
+  const style = agent.tradingStyle ?? 'auto';
+  const includeTfs: Array<'5m' | '15m' | '1h' | '4h'> = (
+    style === 'scalp' ? ['5m', '15m', '1h', '4h'] :
+      style === 'swing' ? ['15m', '1h', '4h'] :
+        style === 'position' ? ['1h', '4h'] :
+          ['5m', '15m', '1h', '4h']    // auto: full coverage
+  );
+
+  const levelBlocks: string[] = [];
+
+  if (includeTfs.includes('5m')) {
+    // 5m has the most noise — filter to swing/volume_node only, top 3 per side.
+    // Round-number levels at this resolution are usually meaningless.
+    const raw = findKeyLevels(mtfData.tf5m.candles);
+    const trimmed = trimLevels(raw, 3, ['round_number']);
+    levelBlocks.push(`━━━━━━━━━━━━━━━━━━━━━━━
+    INTRADAY LEVELS — 5M (top 3, structural only):
+    ${formatKeyLevelsForPrompt(trimmed)}`);
+  }
+
+  if (includeTfs.includes('15m')) {
+    const levels15m = findKeyLevels(mtfData.tf15m.candles);
+    levelBlocks.push(`━━━━━━━━━━━━━━━━━━━━━━━
+    INTRADAY LEVELS — 15M:
+    ${formatKeyLevelsForPrompt(levels15m)}`);
+  }
+
+  if (includeTfs.includes('1h')) {
+    const levels1h = findKeyLevels(mtfData.tf1h.candles);
+    levelBlocks.push(`━━━━━━━━━━━━━━━━━━━━━━━
+    KEY LEVELS — 1H:
+    ${formatKeyLevelsForPrompt(levels1h)}`);
+  }
+
+  if (includeTfs.includes('4h')) {
+    const levels4h = findKeyLevels(mtfData.tf4h.candles);
+    levelBlocks.push(`━━━━━━━━━━━━━━━━━━━━━━━
+    MAJOR LEVELS — 4H:
+    ${formatKeyLevelsForPrompt(levels4h)}`);
+  }
+
+  const levelsSection = levelBlocks.join('\n\n    ');
 
   return `
     ${modeLabel}
@@ -249,15 +290,9 @@ ${lessons.map((l, i) =>
     CURRENT PRICE: ${currentPrice}
     PAIR: ${agent.pair}
     1H ATR: ${atr1h}
-    
-    ━━━━━━━━━━━━━━━━━━━━━━━
-    KEY LEVELS — 1H:
-    ${keyLevels}
-    
-    ━━━━━━━━━━━━━━━━━━━━━━━
-    MAJOR LEVELS — 4H:
-    ${majorLevels}
-    
+
+    ${levelsSection}
+
     ━━━━━━━━━━━━━━━━━━━━━━━
     REGIME: ${regime.regime} (${(regime.confidence * 100).toFixed(0)}% confidence)
     ADX: ${regime.adx} | BB width: ${regime.bbWidth} | EMA slope: ${regime.emaSlope}% | Volume: ${regime.volumeTrend}
@@ -543,6 +578,32 @@ function detectStructure(candles: Candle[]): string {
   if (higherHighs && lowerLows) return 'Expanding range — increasing volatility';
   if (lowerHighs && higherLows) return 'Contracting range — compression forming';
   return 'Ranging — no clear direction';
+}
+
+// ─────────────────────────────────────────────
+// Trim a KeyLevelsResult — used for noisier timeframes (5m) where the full
+// set would flood the prompt with weak round-number guesses. Keeps the same
+// shape so formatKeyLevelsForPrompt works unchanged.
+// ─────────────────────────────────────────────
+
+function trimLevels(
+  result: KeyLevelsResult,
+  maxPerSide: number,
+  excludeSources: ('swing' | 'volume_node' | 'round_number' | 'recent_extreme')[] = [],
+): KeyLevelsResult {
+  const filterSide = (levels: KeyLevelsResult['resistances']) =>
+    levels.filter(l => !excludeSources.includes(l.source)).slice(0, maxPerSide);
+
+  const resistances = filterSide(result.resistances);
+  const supports = filterSide(result.supports);
+
+  return {
+    ...result,
+    resistances,
+    supports,
+    nearestResistance: resistances[0]?.price ?? null,
+    nearestSupport: supports[0]?.price ?? null,
+  };
 }
 
 // ─────────────────────────────────────────────
