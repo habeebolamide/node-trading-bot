@@ -64,6 +64,30 @@ async function main(): Promise<void> {
   // don't reset the clock. Hourly tick re-evaluates each agent's due-ness.
   startSynthesisRunner();
 
+  // 3c. Wire up immediate reanalysis handlers — fires the moment needsReanalysis
+  // or needsManagementReanalysis flips to true (e.g. realtime ticker hit).
+  // Lives here because buildMtfData / detectRegime are already imported here,
+  // avoiding a circular dep if we tried to import them inside websocket.ts.
+  for (const agent of agents) {
+    agent.onNeedsReanalysis = async () => {
+      const mtfData     = buildMtfData(agent.pair);
+      const buffer      = getCandleBuffer(agent.pair, '60');
+      const regime      = detectRegime(buffer);
+      const newsContext = getNewsContextForPrompt(agent.pair);
+      if (!mtfData || !regime) return;
+      await agentManager.handleTriggerHit(agent, 'PRICE_UP', null as any, mtfData, regime, newsContext);
+    };
+
+    agent.onNeedsManagementReanalysis = async () => {
+      const mtfData     = buildMtfData(agent.pair);
+      const buffer      = getCandleBuffer(agent.pair, '60');
+      const regime      = detectRegime(buffer);
+      const newsContext = getNewsContextForPrompt(agent.pair);
+      if (!mtfData || !regime) return;
+      await agentManager.handleTriggerHit(agent, 'PRICE_UP', null as any, mtfData, regime, newsContext);
+    };
+  }
+
   // 4. Setup market data
   const uniquePairs = [...new Set(agents.map(a => a.pair))];
 
@@ -137,8 +161,16 @@ async function handleCandle(candle: Candle): Promise<void> {
     const nearLevel = false;
     const regimeChanged = false;
 
+    // Bypass significance gate if any agent already has a pending reanalysis flag
+    // set by the realtime ticker — otherwise the flag silently waits until the
+    // next "significant" candle, which can be many minutes away in quiet markets.
+    const anyAgentNeedsReanalysis = agentManager
+      .getAgentsForPair(pair)
+      .some(a => a.needsReanalysis || a.needsManagementReanalysis);
+
     // FINAL DECISION
     const shouldCallAI =
+      anyAgentNeedsReanalysis ||
       significant ||
       forceByTime ||
       breakout;

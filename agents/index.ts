@@ -11,7 +11,13 @@ import { getRelevantLessons } from '../learning';
 import { notifications } from "../utils/notifications";
 import { executionEngine } from "../execution";
 import { getPortfolio } from "../capital";
-import { calculateEntryExpiry, calculateManagementTimeout, mapToOpenTrade } from "../utils/helper";
+import {
+  calculateManagementTimeout,
+  clampMinutes,
+  entryExpiryMinutesForStyle,
+  mapToOpenTrade,
+  WATCH_TIMEOUT_DEFAULT_MINUTES,
+} from "../utils/helper";
 import { getCandleBuffer } from "../markets/websocket";
 
 import {
@@ -46,8 +52,37 @@ export class AgentRuntime {
   public currentTrade: OpenTrade | null = null;
   public cooldownUntil: Date | null = null;
   public consecutiveLosses: number = 0;
-  public needsReanalysis: boolean = false;
-  public needsManagementReanalysis: boolean = false;
+
+  private _needsReanalysis = false;
+  private _needsManagementReanalysis = false;
+
+  // Registered by index.ts — fires immediately when flag flips to true.
+  // Flag is reset to false before the handler runs so the candle-close path
+  // doesn't double-fire. Falls back to candle loop if handler not yet wired.
+  public onNeedsReanalysis?: () => Promise<void>;
+  public onNeedsManagementReanalysis?: () => Promise<void>;
+
+  get needsReanalysis() { return this._needsReanalysis; }
+  set needsReanalysis(val: boolean) {
+    this._needsReanalysis = val;
+    if (val && this.onNeedsReanalysis) {
+      this._needsReanalysis = false;
+      this.onNeedsReanalysis().catch(err =>
+        logger.error(`[${this.name}] Reanalysis handler failed`, { error: err.message })
+      );
+    }
+  }
+
+  get needsManagementReanalysis() { return this._needsManagementReanalysis; }
+  set needsManagementReanalysis(val: boolean) {
+    this._needsManagementReanalysis = val;
+    if (val && this.onNeedsManagementReanalysis) {
+      this._needsManagementReanalysis = false;
+      this.onNeedsManagementReanalysis().catch(err =>
+        logger.error(`[${this.name}] Management reanalysis handler failed`, { error: err.message })
+      );
+    }
+  }
 
   constructor(dbData: any) {
     this.id = dbData.id;
@@ -669,10 +704,20 @@ export class AgentManager {
 
     // ── NO_TRADE — watch for opportunity ──
     if (signal.action === 'NO_TRADE') {
+      // LLM emits timeout_minutes (a duration it can actually reason about).
+      // Server clamps and converts to an absolute deadline — LLMs cannot
+      // reliably emit absolute timestamps because they have no clock.
+      const watchMinutes = clampMinutes(
+        triggers.timeout_minutes,
+        WATCH_TIMEOUT_DEFAULT_MINUTES,
+        { min: 5, maxMultiplier: 4 },   // up to ~2h
+      );
+      const watchTimeout = new Date(Date.now() + watchMinutes * 60_000).toISOString();
+
       const watchTriggers = {
         price_up: triggers.price_up ?? null,
         price_down: triggers.price_down ?? null,
-        timeout: triggers.timeout ?? null,
+        timeout: watchTimeout,
       };
 
       setTriggers(agent.id, watchTriggers, null, null,claudeResult.data, null);
@@ -681,7 +726,8 @@ export class AgentManager {
       logger.info(`[${agent.name}] NO_TRADE — watching`, {
         price_up: watchTriggers.price_up,
         price_down: watchTriggers.price_down,
-        timeout: watchTriggers.timeout,
+        timeout: watchTimeout,
+        timeout_minutes: watchMinutes,
       });
 
       notifications.sendNoTradeSignal(
@@ -715,11 +761,21 @@ export class AgentManager {
       timeout: null,                            // ← timeout via entry_expiry instead
     };
 
-    // System-controlled expiry — the LLM keeps emitting stale or zero-duration
-    // entry_expiry values (free-tier latency makes any short window already past
-    // by response time). We honour its tradeStyle but compute the deadline here.
+    // LLM emits entry_expiry_minutes (a duration). Server clamps to safe bounds
+    // based on tradeStyle and converts to an absolute deadline. LLMs have no
+    // clock, so we never trust an absolute timestamp from them.
     const signalStyle = (signal as any).tradeStyle ?? agent.tradingStyle;
-    const entryExpiry = calculateEntryExpiry(signalStyle);
+    const styleDefault = entryExpiryMinutesForStyle(signalStyle);
+    const expiryMinutes = clampMinutes(
+      (signal as any).entry_expiry_minutes,
+      styleDefault,
+    );
+    const entryExpiry = new Date(Date.now() + expiryMinutes * 60_000).toISOString();
+
+    // Populate the server-computed timestamp on the signal so downstream
+    // consumers (e.g. notifications) that read signal.entry_expiry get the
+    // real deadline, not the absent LLM field.
+    (signal as any).entry_expiry = entryExpiry;
 
     setTriggers(agent.id, pendingTriggers, signal, entryExpiry, claudeResult.data, riskResult.positionSize);
     agent.setState('PENDING_ENTRY');               // ← PENDING_ENTRY not IN_TRADE
@@ -733,6 +789,7 @@ export class AgentManager {
       sl: signal.sl,
       confidence: signal.confidence,
       expiry: entryExpiry,
+      expiry_minutes: expiryMinutes,
     });
   }
 

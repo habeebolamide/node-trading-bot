@@ -31,8 +31,8 @@ const exchange = new ccxt.bybit({
   ...(process.env.BYBIT_TESTNET === 'true' && {
     urls: {
       api: {
-        public: 'https://api-testnet.bybit.com',
-        private: 'https://api-testnet.bybit.com',
+        public: 'https://api.bybit.com',
+        private: 'https://api.bybit.com',
       },
     },
   }),

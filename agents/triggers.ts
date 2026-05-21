@@ -163,6 +163,21 @@ export function getPendingSignal(agentId: string): EntrySignal | null {
 }
 
 // ─────────────────────────────────────────────
+// Atomic claim — synchronously returns state and removes it from the store
+// in a single tick. Used by the realtime ticker to prevent double-execution
+// when multiple concurrent invocations (or the candle-close path) see the
+// same active signal during an executeEntry await window.
+// Returns null if already claimed.
+// ─────────────────────────────────────────────
+
+export function claimTriggers(agentId: string): AgentTriggerState | null {
+  const state = store.get(agentId);
+  if (!state) return null;
+  store.delete(agentId);
+  return state;
+}
+
+// ─────────────────────────────────────────────
 // Check triggers on every candle close
 // Returns what was hit so the caller decides
 // what to do — this module only detects

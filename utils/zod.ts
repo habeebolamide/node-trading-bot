@@ -10,5 +10,12 @@ export const EntrySignalSchema = z.object({
   reasoning: z.string().nullable(),
   what_invalidates: z.string(),
   tradeStyle: z.string(),
-  entry_expiry: z.string().nullable(),
+  entry_expiry_minutes: z.number().nullable().optional(),
+  triggers: z
+    .object({
+      price_up: z.number().nullable().optional(),
+      price_down: z.number().nullable().optional(),
+      timeout_minutes: z.number().nullable().optional(),
+    })
+    .optional(),
 });

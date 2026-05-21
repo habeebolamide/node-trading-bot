@@ -36,7 +36,7 @@ const THRESHOLDS = {
 
 export function detectRegime(candles: Candle[]): RegimeAnalysis | null {
 
-  console.log(candles.length,"Length");
+  // console.log(candles.length,"Length");
 
   if (candles.length < 50) {
 

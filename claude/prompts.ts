@@ -20,7 +20,7 @@ import { findKeyLevels, formatKeyLevelsForPrompt, KeyLevelsResult } from "../mar
 // Remove entirely when going live
 // ─────────────────────────────────────────────
 
-const TEST_MODE = true;
+const TEST_MODE = false;
 
 // ─────────────────────────────────────────────
 // Stable principles — kept identical across all agents and calls.
@@ -117,6 +117,10 @@ export function buildSystemPrompt(agent: Agent): string {
       TEST MODE — ACTIVE:
       You MUST return LONG or SHORT. NO_TRADE is not allowed.
       If the market is unclear choose the most reasonable directional bias.
+      CRITICAL: You are strictly hunting for HIGH-ROI setups (e.g. 100%+ margin ROI equivalent). 
+      Since your leverage is ${agent.leverage ?? 10}x, a 100% margin ROI requires a target price movement of at least ${(100 / (agent.leverage ?? 10)).toFixed(2)}% from entry.
+      Do NOT return low-potential, 20% ROI micro-scalps just to fulfill the trade requirement. 
+      Look further out on the chart for major structural levels that offer massive Risk/Reward.
       Do not invent fake levels. Keep entries logical relative to current price.
       Reflect uncertainty through lower confidence score.
       ━━━━━━━━━━━━━━━━━━━━━━━
@@ -138,7 +142,9 @@ export function buildSystemPrompt(agent: Agent): string {
     
     YOUR ASSIGNMENT:
     Pair: ${agent.pair}
-    Risk per trade: ${agent.riskPercent}%
+    Leverage: ${agent.leverage ?? 10}x
+    Risk per trade: ${agent.riskPercent}% of allocated capital
+    Target Margin ROI: Aim for 100%+ margin ROI (requires a price movement of at least ${(100 / (agent.leverage ?? 10)).toFixed(2)}% in your direction).
     
     ${CORE_PRINCIPLES}
 
@@ -197,7 +203,9 @@ export function buildSystemPrompt(agent: Agent): string {
     ${learnedMistakes}
     
     ${testModeBlock}
-    For "LONG" | "SHORT" entry_expiry = how long the setup remains valid if entry is not hit
+    For "LONG" | "SHORT": entry_expiry_minutes = how long the setup remains valid if entry isn't hit (e.g. 30 for a tight scalp, 240 for a swing).
+    For "NO_TRADE": triggers.timeout_minutes = how long this market context stays valid before fresh re-analysis is needed.
+    Emit DURATIONS in minutes, not absolute timestamps — the server computes the deadline from your duration.
     Always respond with valid JSON only. No text outside the JSON.
   `.trim();
 }
@@ -344,13 +352,13 @@ export function buildEntryPrompt(
       "confidence": <number 1-10>,
       "timeframe_used": "<timeframe that drove the decision>",
       "tradeStyle": "scalp" | "swing" | "position",
-      "entry_expiry": "<ISO 8601 UTC | null>",
+      "entry_expiry_minutes": <number | null — minutes the LONG/SHORT setup stays valid; null for NO_TRADE>,
       "reasoning": "<max 150 chars>",
       "what_invalidates": "<max 80 chars>",
       "triggers": {
         "price_up": <number | null>,
         "price_down": <number | null>,
-        "timeout": "<ISO 8601 UTC>"
+        "timeout_minutes": <number — minutes this NO_TRADE context stays valid before re-analysis>
       }
     }
   `.trim();

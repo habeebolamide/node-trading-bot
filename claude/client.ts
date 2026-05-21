@@ -1,10 +1,10 @@
 import OpenAI from 'openai';
 import logger from '../utils/logger';
-import { 
-  EntrySignal, 
-  ManagementDecision, 
-  PostMortemResult, 
-  ClaudeCallResult 
+import {
+  EntrySignal,
+  ManagementDecision,
+  PostMortemResult,
+  ClaudeCallResult
 } from '../types/claude.types';
 
 const openrouter = new OpenAI({
@@ -20,37 +20,37 @@ type PromptType = 'entry' | 'management' | 'postmortem' | 'synthesis';
 
 const MODELS_BY_TYPE: Record<PromptType, string[]> = {
   entry: [
-    // "deepseek/deepseek-v4-flash:free",
-    // "deepseek/deepseek-v4-flash:free",
-    // "deepseek/deepseek-v4-flash:free",
-    "anthropic/claude-sonnet-4.6",
-    "anthropic/claude-opus-4.6",
-    "google/gemini-2.5-pro",
+    "openrouter/free",
+    "openrouter/free",
+    "openrouter/free",
+    // "anthropic/claude-sonnet-4.6",
+    // "anthropic/claude-opus-4.6",
+    // "google/gemini-2.5-pro",
   ],
   management: [
-    // "deepseek/deepseek-v4-flash:free",
-    // "deepseek/deepseek-v4-flash:free",
-    // "deepseek/deepseek-v4-flash:free",
-    "deepseek/deepseek-v4-pro",
-    "deepseek/deepseek-v4-flash",
-    "anthropic/claude-sonnet-4.6",
-    "google/gemini-2.5-flash",
+    "openrouter/free",
+    "openrouter/free",
+    "openrouter/free",
+    // "deepseek/deepseek-v4-pro",
+    // "deepseek/deepseek-v4-flash",
+    // "anthropic/claude-sonnet-4.6",
+    // "google/gemini-2.5-flash",
   ],
   postmortem: [
-    // "deepseek/deepseek-v4-flash:free",
-    // "deepseek/deepseek-v4-flash:free",
-    // "deepseek/deepseek-v4-flash:free",
-    "deepseek/deepseek-v4-pro",
-    "deepseek/deepseek-v4-flash",
-    "anthropic/claude-sonnet-4.6",
+    "openrouter/free",
+    "openrouter/free",
+    "openrouter/free",
+    // "deepseek/deepseek-v4-pro",
+    // "deepseek/deepseek-v4-flash",
+    // "anthropic/claude-sonnet-4.6",
   ],
   synthesis: [
-    // "deepseek/deepseek-v4-flash:free",
-    // "deepseek/deepseek-v4-flash:free",
-    // "deepseek/deepseek-v4-flash:free",
-    "deepseek/deepseek-v4-pro",
-    "deepseek/deepseek-v4-flash",
-    "google/gemini-2.5-flash",
+    "openrouter/free",
+    "openrouter/free",
+    "openrouter/free",
+    // "deepseek/deepseek-v4-pro",
+    // "deepseek/deepseek-v4-flash",
+    // "google/gemini-2.5-flash",
   ],
 };
 
@@ -85,9 +85,9 @@ export async function getSynthesis(
   agentId: string,
 ): Promise<ClaudeCallResult<{ rules: any[] }>> {
   return callWithFallback<{ rules: any[] }>(
-    SYNTHESIS_SYSTEM, 
-    synthesisPrompt, 
-    'synthesis', 
+    SYNTHESIS_SYSTEM,
+    synthesisPrompt,
+    'synthesis',
     agentId
   );
 }
@@ -137,15 +137,15 @@ async function callWithFallback<T>(
     // cache_control. Other providers ignore the array form, so use a plain string.
     const systemMessage = useCache
       ? {
-          role: 'system' as const,
-          content: [
-            {
-              type: 'text',
-              text: systemPrompt,
-              cache_control: { type: 'ephemeral' },
-            },
-          ] as any,
-        }
+        role: 'system' as const,
+        content: [
+          {
+            type: 'text',
+            text: systemPrompt,
+            cache_control: { type: 'ephemeral' },
+          },
+        ] as any,
+      }
       : { role: 'system' as const, content: systemPrompt };
 
     while (attempt < maxAttemptsPerModel) {
@@ -225,12 +225,12 @@ async function callWithFallback<T>(
             : 'n/a',
         });
 
-        logger.info('Raw Response' , {agentId, promptType,rawText})
+        logger.info('Raw Response', { agentId, promptType, rawText })
 
         const parsed = parseJSON<T>(rawText);
 
 
-        logger.info('OpenRouter response details', { agentId, promptType,rawResponse: parsed });
+        logger.info('OpenRouter response details', { agentId, promptType, rawResponse: parsed });
 
         return {
           success: parsed.success,
@@ -286,7 +286,7 @@ function parseJSON<T>(raw: string): { success: boolean; data: T | null; error: s
     // Finds the first '{' and the last '}' regardless of surrounding text
     const jsonMatch = raw.match(/\{[\s\S]*\}/);
     if (!jsonMatch) throw new Error("No JSON object found in response");
-    
+
     const data = JSON.parse(jsonMatch[0]) as T;
     return { success: true, data, error: null };
   } catch (e: any) {

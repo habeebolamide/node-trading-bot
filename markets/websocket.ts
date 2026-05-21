@@ -4,7 +4,9 @@ import { prisma } from '../lib/prisma';
 import { agentManager } from '../agents';
 import { executionEngine, updateLivePnl } from '../execution';
 import { EntrySignal } from '../types/claude.types';
-import { clearTriggers } from '../agents/triggers';
+import { clearTriggers, getTriggerState, claimTriggers } from '../agents/triggers';
+import { validateEntrySignal } from '../risk';
+import { getPortfolio } from '../capital';
 
 const BUFFER_SIZE = 200;
 const PING_INTERVAL = 20_000;
@@ -301,6 +303,16 @@ export class BybitWebSocket {
       const entryHit    = crossedUp || crossedDown || atEntry;
 
       if (entryHit) {
+        // Atomic claim — synchronously remove from the in-memory store before
+        // any await. If another realtime invocation, or the candle-close path,
+        // already claimed this signal, we bail. This is the only protection
+        // against double-executing while executeEntry is in flight (200-500ms
+        // API round-trip leaves a wide window otherwise).
+        const claimed = claimTriggers(signal.agentId);
+        if (!claimed) {
+          continue;
+        }
+
         logger.info('Entry triggered in realtime', {
           pair,
           entry,
@@ -310,27 +322,72 @@ export class BybitWebSocket {
 
         const rawSignal = signal.rawSignal as unknown as EntrySignal;
 
-        // Calculate position size from signal
-        const positionSize = (signal as any).positionSize ?? 0;
+        // Re-validate risk — drawdown / cooldown / circuit-breaker state may
+        // have shifted between signal creation and entry hit (e.g. a different
+        // trade hit SL hard in between). Matches the candle-close and catch-up
+        // paths which both re-validate.
+        const portfolio = await getPortfolio();
+        const validation = await validateEntrySignal(
+          rawSignal,
+          agent.toPromptAgent(),
+          { cooldownUntil: agent.cooldownUntil } as any,
+          portfolio,
+        );
 
-        await executionEngine.executeEntry(agent, rawSignal, positionSize, price);
+        if (!validation.approved) {
+          logger.warn('Realtime entry blocked by risk', {
+            agentId: agent.id,
+            reason: validation.blockReason,
+          });
+          await prisma.signal.update({
+            where: { id: signal.id },
+            data:  {
+              status:      'cancelled',
+              triggeredBy: 'RISK_BLOCKED',
+              triggeredAt: new Date(),
+            },
+          });
+          agent.setState('IDLE');
+          continue;
+        }
+
+        const execResult = await executionEngine.executeEntry(
+          agent,
+          rawSignal,
+          validation.positionSize!,
+          price,
+        );
 
         await prisma.signal.update({
           where: { id: signal.id },
           data:  {
-            status:      'executed',
+            status:      execResult.success ? 'executed' : 'failed',
             triggeredBy: 'ENTRY_HIT',
             triggeredAt: new Date(),
           },
         });
 
-        // Clear in-memory triggers so the next candle close does NOT also detect
-        // ENTRY_HIT and double-open the trade. signal status='executed' above
-        // already prevents this DB-level path from re-firing; this guards the
-        // candle-close path which reads from memory.
-        await clearTriggers(signal.agentId, 'ENTRY_HIT');
+        if (execResult.success && execResult.orderId) {
+          agent.attachTrade({
+            id:             execResult.orderId,
+            agentId:        agent.id,
+            pair:           agent.pair,
+            direction:      signal.action as 'LONG' | 'SHORT',
+            entryPrice:     execResult.fillPrice ?? entry,
+            currentTp:      signal.tp!,
+            currentSl:      signal.sl!,
+            positionSize:   validation.positionSize!,
+            positionValue:  validation.positionSize! * entry,
+            unrealisedPnl:  0,
+            unrealisedPct:  0,
+            openedAt:       new Date(),
+            entryReasoning: signal.reasoning ?? '',
+            mode:           agent.mode as 'paper' | 'live',
+          });
+        } else {
+          agent.setState('IDLE');
+        }
 
-        agent.setState('IN_TRADE');
         continue; // entry hit — skip trigger checks for this signal
       }
 
@@ -340,19 +397,18 @@ export class BybitWebSocket {
     }
 
     // ── 2. WATCHING or IN_TRADE — check price_up / price_down ──
-    if (triggers.price_up && previousPrice < triggers.price_up && price >= triggers.price_up) {
+    // Use in-memory state as a one-shot guard: store.delete inside clearTriggers
+    // is synchronous, so after the first firing clears the store, any concurrent
+    // ticker calls see null and skip — avoiding double-fires without a mutex.
+    // Non-directional check (price >= level) replaces the strict cross condition
+    // so we don't miss triggers when price was already at/above the level on
+    // reconnect or when a gap skips over the exact cross point.
+    const memState = getTriggerState(signal.agentId);
+
+    if (triggers.price_up != null && price >= triggers.price_up && memState?.triggers.price_up != null) {
       logger.info('Price up trigger hit', { pair, price_up: triggers.price_up, price });
 
-      await prisma.signal.update({
-        where: { id: signal.id },
-        data:  {
-          status:      'triggered',
-          triggeredBy: 'PRICE_UP',
-          triggeredAt: new Date(),
-        },
-      });
-
-      clearTriggers(signal.agentId);
+      await clearTriggers(signal.agentId, 'PRICE_UP');
 
       if (agent.state === 'IN_TRADE') {
         agent.needsManagementReanalysis = true;
@@ -362,19 +418,10 @@ export class BybitWebSocket {
       }
     }
 
-    if (triggers.price_down && previousPrice > triggers.price_down && price <= triggers.price_down) {
+    if (triggers.price_down != null && price <= triggers.price_down && memState?.triggers.price_down != null) {
       logger.info('Price down trigger hit', { pair, price_down: triggers.price_down, price });
 
-      await prisma.signal.update({
-        where: { id: signal.id },
-        data:  {
-          status:      'triggered',
-          triggeredBy: 'PRICE_DOWN',
-          triggeredAt: new Date(),
-        },
-      });
-
-      clearTriggers(signal.agentId);
+      await clearTriggers(signal.agentId, 'PRICE_DOWN');
 
       if (agent.state === 'IN_TRADE') {
         agent.needsManagementReanalysis = true;

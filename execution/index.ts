@@ -326,6 +326,52 @@ export async function executeManagement(
 // and private WebSocket — exact level hit
 // ─────────────────────────────────────────────
 
+async function updateAgentDbStats(agentId: string): Promise<void> {
+  try {
+    const allClosedTrades = await prisma.trade.findMany({
+      where: { agentId, status: 'closed' },
+      select: { realizedPnL: true, closedAt: true },
+    });
+
+    const totalTrades = allClosedTrades.length;
+    const winCount = allClosedTrades.filter(t => (t.realizedPnL ?? 0) > 0).length;
+    const winRate = totalTrades > 0 ? winCount / totalTrades : 0;
+
+    const monthStart = new Date(new Date().getFullYear(), new Date().getMonth(), 1);
+    const monthlyTrades = allClosedTrades.filter(t => t.closedAt && t.closedAt >= monthStart);
+    const monthlyPnlAmount = monthlyTrades.reduce((sum, t) => sum + (t.realizedPnL ?? 0), 0);
+
+    const initialCapital = parseFloat(process.env.INITIAL_CAPITAL ?? '1000');
+    const agent = await prisma.agent.findUnique({
+      where: { id: agentId },
+      select: { allocationPercent: true },
+    });
+    const agentCapital = initialCapital * ((agent?.allocationPercent ?? 10) / 100);
+    const monthlyPnL = agentCapital > 0 ? (monthlyPnlAmount / agentCapital) * 100 : 0;
+
+    await prisma.agent.update({
+      where: { id: agentId },
+      data: {
+        totalTrades,
+        winRate: Math.round(winRate * 10000) / 10000,
+        monthlyPnL: Math.round(monthlyPnL * 100) / 100,
+      },
+    });
+
+    logger.info('Updated agent database statistics', {
+      agentId,
+      totalTrades,
+      winRate,
+      monthlyPnL,
+    });
+  } catch (error: any) {
+    logger.error('Failed to update agent database statistics', {
+      agentId,
+      error: error.message,
+    });
+  }
+}
+
 export async function closeTrade(
   agent:              AgentRuntime,
   trade:              OpenTrade,
@@ -364,6 +410,9 @@ export async function closeTrade(
 
   agent.clearTrade();
   lastPnlWriteAt.delete(trade.id);
+  
+  // Update Agent's DB stats (win rate, monthly PnL, total trades)
+  void updateAgentDbStats(agent.id);
 
   // Notification with outcome
   const outcome = realisedPnl >= 0 ? 'WIN' : 'LOSS';
