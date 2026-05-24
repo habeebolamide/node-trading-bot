@@ -7,6 +7,7 @@ import { EntrySignal } from '../types/claude.types';
 import { clearTriggers, getTriggerState, claimTriggers } from '../agents/triggers';
 import { validateEntrySignal } from '../risk';
 import { getPortfolio } from '../capital';
+import { notifications } from '../utils/notifications';
 
 const BUFFER_SIZE = 200;
 const PING_INTERVAL = 20_000;
@@ -283,14 +284,42 @@ export class BybitWebSocket {
 
     const triggers = signal.triggers as any;
 
-    // ── 1. PENDING_ENTRY — check entry price crossed ──
+    // ── 1. PENDING_ENTRY — check expiry first, then entry hit ──
     // Only signals with a direction (LONG/SHORT) and entry price
     if (
       signal.action !== 'NO_TRADE' &&
       signal.entry !== null &&
-      signal.entryExpiry !== null &&
-      new Date(signal.entryExpiry) > now
+      signal.entryExpiry !== null
     ) {
+      // Expiry transition happens here on the realtime path so the signal
+      // lifecycle stays in lockstep with the countdown the user sees —
+      // instead of waiting for the next 5m candle close. Marks the signal
+      // 'expired' in DB and returns the agent to IDLE the moment the
+      // deadline passes.
+      if (new Date(signal.entryExpiry) <= now) {
+        const claimed = claimTriggers(signal.agentId);
+        if (!claimed) continue;
+
+        await prisma.signal.update({
+          where: { id: signal.id },
+          data:  {
+            status:      'expired',
+            triggeredBy: 'EXPIRY',
+            triggeredAt: new Date(),
+          },
+        });
+        agent.setState('IDLE');
+
+        logger.info('Pending entry expired in realtime', {
+          agentId:     agent.id,
+          pair,
+          entryExpiry: signal.entryExpiry,
+        });
+
+        await notifications.sendExpiryAlert(agent, signal);
+        continue;
+      }
+
       const entry       = signal.entry;
 
       // Touch-based detection: trigger when price crosses the entry level from
@@ -408,7 +437,7 @@ export class BybitWebSocket {
     if (triggers.price_up != null && price >= triggers.price_up && memState?.triggers.price_up != null) {
       logger.info('Price up trigger hit', { pair, price_up: triggers.price_up, price });
 
-      await clearTriggers(signal.agentId, 'PRICE_UP');
+      await clearTriggers(signal.agentId, { status: 'triggered', triggeredBy: 'PRICE_UP' });
 
       if (agent.state === 'IN_TRADE') {
         agent.needsManagementReanalysis = true;
@@ -421,7 +450,7 @@ export class BybitWebSocket {
     if (triggers.price_down != null && price <= triggers.price_down && memState?.triggers.price_down != null) {
       logger.info('Price down trigger hit', { pair, price_down: triggers.price_down, price });
 
-      await clearTriggers(signal.agentId, 'PRICE_DOWN');
+      await clearTriggers(signal.agentId, { status: 'triggered', triggeredBy: 'PRICE_DOWN' });
 
       if (agent.state === 'IN_TRADE') {
         agent.needsManagementReanalysis = true;

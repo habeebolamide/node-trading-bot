@@ -377,7 +377,8 @@ function analyseResults(
   const wins   = trades.filter(t => t.outcome === 'win');
   const losses = trades.filter(t => t.outcome === 'loss');
 
-  const winRate      = wins.length / trades.length;
+  // Reported as a percentage (0-100), not a 0-1 fraction.
+  const winRate      = (wins.length / trades.length) * 100;
   const netPnlPct    = trades.reduce((sum, t) => sum + t.pnlPct, 0);
   const grossWins    = wins.reduce((sum, t) => sum + t.pnlPct, 0);
   const grossLosses  = Math.abs(losses.reduce((sum, t) => sum + t.pnlPct, 0));
@@ -430,7 +431,7 @@ function analyseResults(
   return {
     config,
     totalTrades:         trades.length,
-    winRate:             round(winRate, 4),
+    winRate:             round(winRate, 2),
     profitFactor:        round(profitFactor),
     netPnlPct:           round(netPnlPct),
     maxDrawdownPct:      round(maxDrawdown),

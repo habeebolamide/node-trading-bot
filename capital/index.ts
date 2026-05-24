@@ -208,7 +208,8 @@ export async function getMonthlyPerformance(
   const pnlAmount  = trades.reduce((sum, t) => sum + (t.realizedPnL ?? 0), 0);
   const winCount   = trades.filter(t => (t.realizedPnL ?? 0) > 0).length;
   const tradeCount = trades.length;
-  const winRate    = tradeCount > 0 ? winCount / tradeCount : 0;
+  // Returned as a percentage (0-100), not a 0-1 fraction.
+  const winRate    = tradeCount > 0 ? (winCount / tradeCount) * 100 : 0;
 
   // P&L as % of agent's allocated capital
   const initialCapital  = parseFloat(process.env.INITIAL_CAPITAL ?? '1000');
@@ -225,7 +226,7 @@ export async function getMonthlyPerformance(
     pnlPercent: round(pnlPercent),
     tradeCount,
     winCount,
-    winRate:    round(winRate, 4),
+    winRate:    round(winRate, 2),
   };
 }
 

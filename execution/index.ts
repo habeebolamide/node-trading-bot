@@ -202,6 +202,9 @@ export function updateLivePnl(pair: string, currentPrice: number): void {
     // Throttled DB flush — makes the row inspectable from Prisma Studio / SQL
     // without writing on every tick. Fire-and-forget; PnL stays accurate in memory
     // even if a write transiently fails.
+    // realizedPnL is also flushed to mirror the live amount (the "what am I
+    // making right now" number you see on the Bybit app) so it stays current
+    // while the trade is open. closeTrade() overwrites it with the final PnL.
     const now = Date.now();
     const lastWrite = lastPnlWriteAt.get(trade.id) ?? 0;
     if (now - lastWrite >= PNL_WRITE_THROTTLE_MS) {
@@ -211,6 +214,7 @@ export function updateLivePnl(pair: string, currentPrice: number): void {
         data:  {
           unrealisedPnl: trade.unrealisedPnl,
           unrealisedPct: trade.unrealisedPct,
+          realizedPnL:   trade.unrealisedPnl,
         },
       }).catch(err =>
         logger.error('Failed to persist unrealised PnL', {
@@ -335,7 +339,8 @@ async function updateAgentDbStats(agentId: string): Promise<void> {
 
     const totalTrades = allClosedTrades.length;
     const winCount = allClosedTrades.filter(t => (t.realizedPnL ?? 0) > 0).length;
-    const winRate = totalTrades > 0 ? winCount / totalTrades : 0;
+    // Stored as a percentage (0-100), not a 0-1 fraction.
+    const winRate = totalTrades > 0 ? (winCount / totalTrades) * 100 : 0;
 
     const monthStart = new Date(new Date().getFullYear(), new Date().getMonth(), 1);
     const monthlyTrades = allClosedTrades.filter(t => t.closedAt && t.closedAt >= monthStart);
@@ -353,7 +358,7 @@ async function updateAgentDbStats(agentId: string): Promise<void> {
       where: { id: agentId },
       data: {
         totalTrades,
-        winRate: Math.round(winRate * 10000) / 10000,
+        winRate: Math.round(winRate * 100) / 100,
         monthlyPnL: Math.round(monthlyPnL * 100) / 100,
       },
     });

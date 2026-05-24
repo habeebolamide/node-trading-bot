@@ -7,6 +7,7 @@ import { buildMtfData } from '../markets/mtf';
 import { getCandleBuffer } from '../markets/websocket';
 import { detectRegime } from '../markets/regime';
 import { getNewsContextForPrompt } from '../markets/news';
+import { notifications } from '../utils/notifications';
 
 // ─────────────────────────────────────────────
 // Types
@@ -20,7 +21,7 @@ export interface Triggers {
 
 export type TriggerResult =
   | { hit: false }
-  | { hit: true; reason: 'PRICE_UP' | 'PRICE_DOWN' | 'TIMEOUT' | 'ENTRY_HIT' | 'EXPIRY' };
+  | { hit: true; reason: 'PRICE_UP' | 'PRICE_DOWN' | 'TIMEOUT' | 'EXPIRY' };
 
 // ─────────────────────────────────────────────
 // Active trigger store per agent
@@ -31,7 +32,6 @@ interface AgentTriggerState {
   triggers:      Triggers;
   pendingSignal: EntrySignal | null;   // null = NO_TRADE watching mode
   entryExpiry:   string | null;        // ISO 8601 — when pending entry expires
-  setAt:         number;               // Date.now() when triggers were set
 }
 
 const store = new Map<string, AgentTriggerState>();
@@ -48,7 +48,6 @@ export async function setTriggersMemory(
     triggers,
     pendingSignal,
     entryExpiry,
-    setAt: Date.now(),
   });
 
   logger.info('Signal saved to Memory', { agentId, action: pendingSignal?.action ?? 'NO_TRADE' });
@@ -72,7 +71,6 @@ export async function setTriggers(
     triggers,
     pendingSignal,
     entryExpiry,
-    setAt: Date.now(),
   });
 
   // Persist to DB — survive restarts
@@ -131,25 +129,38 @@ export async function updateTriggers(
 }
 
 // ─────────────────────────────────────────────
-// Clear triggers — call after trade opens,
-// signal expires, or re-analysis is triggered
+// Clear triggers — call after a signal is consumed.
+// Caller MUST specify how the signal transitioned (status + triggeredBy) so
+// we never leave a row with status='cancelled' + triggeredBy=null, which
+// would erase any record of why the signal ended.
 // ─────────────────────────────────────────────
 
+export interface TriggerTransition {
+  status:      'triggered' | 'executed' | 'expired' | 'cancelled' | 'failed';
+  triggeredBy: string;
+}
+
 export async function clearTriggers(
-  agentId:     string,
-  triggeredBy?: string,
+  agentId:    string,
+  transition: TriggerTransition,
 ): Promise<void> {
   store.delete(agentId);
 
-  // Mark active signal as triggered/expired in DB
   await prisma.signal.updateMany({
     where:  { agentId, status: 'active' },
     data:   {
-      status:      triggeredBy ? 'triggered' : 'cancelled',
-      triggeredBy: triggeredBy ?? null,
+      status:      transition.status,
+      triggeredBy: transition.triggeredBy,
       triggeredAt: new Date(),
     },
   });
+}
+
+// In-memory only — for callers that have already written the DB transition
+// explicitly (e.g. realtime entry hit updates a single signal by id, then
+// just needs the in-memory store cleared).
+export function clearTriggerMemory(agentId: string): void {
+  store.delete(agentId);
 }
 
 
@@ -190,41 +201,22 @@ export function checkTriggers(
   const state = store.get(agentId);
   if (!state) return { hit: false };
 
-  const { triggers, pendingSignal, entryExpiry, setAt } = state;
+  const { triggers, pendingSignal, entryExpiry } = state;
   const now  = Date.now();
   const high = candle.high;
   const low  = candle.low;
 
-  // A candle whose open time is BEFORE the signal was set straddles the signal-
-  // creation moment. Its high/low can include wicks from before the signal
-  // existed — using that range to fire ENTRY_HIT would be like a broker filling
-  // your limit order based on price action that happened before you placed it.
-  // The realtime ticker covers post-signal intra-candle moves; skip pre-signal
-  // candle-close detection.
-  const candlePredatesSignal = candle.openTime < setAt;
-
-  // ── PENDING_ENTRY — only check entry hit and expiry ──
+  // ── PENDING_ENTRY — only check expiry ──
+  // Entry fills are handled exclusively by the realtime ticker path in
+  // websocket.ts so they fire on the first qualifying tick, the same way TP/SL
+  // fire — never waiting for a candle to close.
   if (pendingSignal) {
-
-    // Entry hit — only on candles that opened AFTER the signal was set
-    if (pendingSignal.entry != null && !candlePredatesSignal) {
-      const entryHit =
-        pendingSignal.action === 'LONG'
-          ? low  <= pendingSignal.entry && high >= pendingSignal.entry
-          : high >= pendingSignal.entry && low  <= pendingSignal.entry;
-
-      if (entryHit) return { hit: true, reason: 'ENTRY_HIT' };
-    }
-
-    // Entry expiry — time-based check, candle-position irrelevant
     if (entryExpiry) {
       const expiryTime = new Date(entryExpiry).getTime();
       if (!isNaN(expiryTime) && now > expiryTime) {
         return { hit: true, reason: 'EXPIRY' };
       }
     }
-
-    // Nothing hit for pending entry
     return { hit: false };
   }
 
@@ -290,7 +282,39 @@ export function startTimeoutChecker(): void {
       // if (agent.state === 'IN_TRADE') continue; // IN_TRADE has no timeout
 
       const state = getTriggerState(agent.id);
-      if (!state?.triggers.timeout) continue;
+      if (!state) continue;
+
+      // ── Pending entry expiry — backup path for pairs with no recent ticker
+      //    activity (realtime ticker is the primary detector). Without this,
+      //    a quiet pair would keep a pending entry "alive" past its deadline
+      //    until the next 5m candle closed.
+      if (state.pendingSignal && state.entryExpiry) {
+        const expiryMs = new Date(state.entryExpiry).getTime();
+        if (!isNaN(expiryMs) && Date.now() >= expiryMs) {
+          logger.info(`[${agent.name}] Entry expired (timeout checker)`, {
+            entryExpiry: state.entryExpiry,
+          });
+
+          const expiredSignal = state.pendingSignal;
+
+          await prisma.signal.updateMany({
+            where: { agentId: agent.id, status: 'active' },
+            data:  {
+              status:      'expired',
+              triggeredBy: 'EXPIRY',
+              triggeredAt: new Date(),
+            },
+          });
+
+          store.delete(agent.id);
+          agent.setState('IDLE');
+
+          await notifications.sendExpiryAlert(agent as any, expiredSignal);
+          continue;
+        }
+      }
+
+      if (!state.triggers.timeout) continue;
 
       const timeoutTime = new Date(state.triggers.timeout).getTime();
       if (Date.now() < timeoutTime) continue;
@@ -308,8 +332,10 @@ export function startTimeoutChecker(): void {
         timeout: state.triggers.timeout,
       });
 
-      clearTriggers(agent.id);
-
+      // No clearTriggers here — handleTriggerHit's TIMEOUT case does the DB
+      // transition with the right (status, triggeredBy) pair. Calling it twice
+      // would either double-write or overwrite the explicit transition with
+      // a fallback default.
       if (agent.state === 'WATCHING') {
         agent.setState('IDLE');
         agent.needsReanalysis = true;

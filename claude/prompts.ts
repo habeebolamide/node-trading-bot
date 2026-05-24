@@ -144,7 +144,6 @@ export function buildSystemPrompt(agent: Agent): string {
     Pair: ${agent.pair}
     Leverage: ${agent.leverage ?? 10}x
     Risk per trade: ${agent.riskPercent}% of allocated capital
-    Target Margin ROI: Aim for 100%+ margin ROI (requires a price movement of at least ${(100 / (agent.leverage ?? 10)).toFixed(2)}% in your direction).
     
     ${CORE_PRINCIPLES}
 

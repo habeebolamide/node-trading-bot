@@ -122,7 +122,7 @@ export interface BacktestConfig {
 export interface BacktestResult {
   config:               BacktestConfig;
   totalTrades:          number;
-  winRate:              number;       // 0-1
+  winRate:              number;       // 0-100 (percentage)
   profitFactor:         number;       // gross wins / gross losses
   netPnlPct:            number;       // total % return
   maxDrawdownPct:       number;

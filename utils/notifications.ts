@@ -77,12 +77,17 @@ export const notifications = {
     }
   },
 
-  async sendSignalAlert(agent: Agent, signal: EntrySignal): Promise<void> {
+  async sendSignalAlert(agent: Agent, signal: EntrySignal, positionSize: number): Promise<void> {
     const directionEmoji = signal.action === 'LONG' ? '🟢' : '🔴';
 
     const expiryText = signal.entry_expiry
       ? new Date(signal.entry_expiry).toUTCString()
       : 'N/A';
+
+    // Value = notional USDT exposure at the intended entry. Mirrors how Bybit
+    // displays open positions (size in base units, value in quote).
+    const entryPrice = signal.entry ?? 0;
+    const value      = positionSize * entryPrice;
 
     const message = `${directionEmoji} <b>SIGNAL GENERATED</b>
 
@@ -93,6 +98,9 @@ export const notifications = {
     <b>Entry:</b> ${signal.entry}
     <b>SL:</b> ${signal.sl}
     <b>TP:</b> ${signal.tp}
+
+    <b>Size:</b> ${positionSize}
+    <b>Value:</b> ${value.toFixed(2)} USDT
 
     <b>Confidence:</b> ${signal.confidence}/10
 
@@ -107,6 +115,25 @@ export const notifications = {
       console.log(`📨 Signal alert sent for ${agent.name} → ${signal.action} ${agent.pair}`);
     } catch (error) {
       console.error('Failed to send signal alert:', error);
+    }
+  },
+
+  async sendExpiryAlert(agent: Agent, signal: any): Promise<void> {
+    const message = `⌛ <b>SIGNAL EXPIRED</b>
+
+    <b>Agent:</b> ${agent.name}
+    <b>Pair:</b> ${agent.pair}
+    <b>Direction:</b> ${signal.action}
+    <b>Entry:</b> ${signal.entry}
+
+    Price never reached entry before the deadline — agent back to IDLE.
+    `;
+
+    try {
+      await bot.sendMessage(CHAT_ID, message, { parse_mode: 'HTML' });
+      console.log(`📨 Expiry alert sent for ${agent.name} → ${signal.action} ${agent.pair}`);
+    } catch (error) {
+      console.error('Failed to send expiry alert:', error);
     }
   },
 

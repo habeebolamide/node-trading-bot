@@ -23,6 +23,7 @@ import { getCandleBuffer } from "../markets/websocket";
 import {
   setTriggers,
   clearTriggers,
+  clearTriggerMemory,
   checkTriggers,
   getPendingSignal,
   hasTriggers,
@@ -385,7 +386,7 @@ export class AgentManager {
         logger.warn(`[${agent.name}] Catch-up blocked by risk`, {
           reason: validation.blockReason,
         });
-        await clearTriggers(agent.id, 'CATCH_UP_BLOCKED');
+        await clearTriggers(agent.id, { status: 'cancelled', triggeredBy: 'CATCH_UP_BLOCKED' });
         agent.setState('IDLE');
         continue;
       }
@@ -400,6 +401,9 @@ export class AgentManager {
       );
 
       if (execResult.success) {
+        // Update only this specific signal — using clearTriggers' updateMany
+        // here would clobber any other active signals for the agent with the
+        // wrong reason. Memory cleanup only.
         await prisma.signal.update({
           where: { id: signal.id },
           data:  {
@@ -408,7 +412,7 @@ export class AgentManager {
             triggeredAt: new Date(),
           },
         });
-        await clearTriggers(agent.id, 'ENTRY_HIT_CATCHUP');
+        clearTriggerMemory(agent.id);
         logger.info(`[${agent.name}] Catch-up trade opened`, {
           tradeId: execResult.orderId,
         });
@@ -552,77 +556,19 @@ export class AgentManager {
 
     switch (reason) {
 
-      // ── Entry price reached — execute the trade ──
-      case 'ENTRY_HIT': {
-        const signal = getPendingSignal(agent.id);
-        if (!signal) {
-          clearTriggers(agent.id);
-          agent.setState('IDLE');
-          return;
-        }
-
-        const portfolio = await getPortfolio();
-        const validation = await validateEntrySignal(
-          signal,
-          agent.toPromptAgent(),
-          { cooldownUntil: null } as any,
-          portfolio,
-        );
-
-        if (!validation.approved) {
-          logger.info('Risk blocked at entry execution', {
-            agentId: agent.id,
-            reason: validation.blockReason,
-          });
-          clearTriggers(agent.id);
-          agent.setState('IDLE');
-          return;
-        }
-
-        const execResult = await executionEngine.executeEntry(
-          agent,
-          signal,
-          validation.positionSize!,
-          signal.entry!,
-        );
-
-        if (execResult.success && execResult.orderId) {
-          const newTrade = {
-            id: execResult.orderId,
-            agentId: agent.id,
-            pair: agent.pair,
-            direction: signal.action as 'LONG' | 'SHORT',
-            entryPrice: execResult.fillPrice ?? signal.entry!,
-            currentTp: signal.tp!,
-            currentSl: signal.sl!,
-            positionSize: validation.positionSize!,
-            positionValue: validation.positionSize! * signal.entry!,
-            unrealisedPnl: 0,
-            unrealisedPct: 0,
-            openedAt: new Date(),
-            entryReasoning: signal.reasoning ?? '',
-            mode: agent.mode as 'paper' | 'live',
-          };
-
-          clearTriggers(agent.id);
-          agent.attachTrade(newTrade);
-
-          logger.info('Trade opened via trigger', {
-            agentId: agent.id,
-            direction: signal.action,
-            entry: execResult.fillPrice,
-          });
-        }
-        break;
-      }
-
       // ── Entry expired — signal no longer valid ──
+      // Note: ENTRY_HIT is handled exclusively by the realtime ticker path in
+      // websocket.ts so entries fire on the first qualifying tick instead of
+      // waiting for a 5m candle close. No case for it here.
       case 'EXPIRY': {
-        clearTriggers(agent.id);
+        const expiredSignal = getPendingSignal(agent.id);
+        await clearTriggers(agent.id, { status: 'expired', triggeredBy: 'EXPIRY' });
         agent.setState('IDLE');
 
         logger.info('Signal expired — back to IDLE', { agentId: agent.id });
-        // TODO: send Telegram notification
+        if (expiredSignal) {
+          await notifications.sendExpiryAlert(agent, expiredSignal);
+        }
         break;
       }
 
@@ -641,8 +587,13 @@ export class AgentManager {
           await this.runManagementCycle(agent, mtfData, newsContext)
           break;
         }
-        // Clear old triggers before re-analysis
-        clearTriggers(agent.id);
+        // Clear old triggers before re-analysis. WATCHING signals end as
+        // 'triggered' (a level fired and we're now re-analysing); pending
+        // entries hijacked by an unexpected price-trigger end as 'cancelled'.
+        await clearTriggers(agent.id, {
+          status:      agent.state === 'PENDING_ENTRY' ? 'cancelled' : 'triggered',
+          triggeredBy: reason,
+        });
 
         // If there was a pending entry — cancel it
         if (agent.state === 'PENDING_ENTRY') {
@@ -780,7 +731,7 @@ export class AgentManager {
     setTriggers(agent.id, pendingTriggers, signal, entryExpiry, claudeResult.data, riskResult.positionSize);
     agent.setState('PENDING_ENTRY');               // ← PENDING_ENTRY not IN_TRADE
 
-    await notifications.sendSignalAlert(agent, signal);
+    await notifications.sendSignalAlert(agent, signal, riskResult.positionSize!);
 
     logger.info(`[${agent.name}] Signal pending`, {
       action: signal.action,
