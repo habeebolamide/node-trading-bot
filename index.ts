@@ -9,6 +9,7 @@ import { buildMtfData } from './markets/mtf';
 import { clearTriggers, getTriggerState, hasTriggers, startTimeoutChecker } from './agents/triggers';
 import { synthesiseLessons } from './learning';
 import { prisma } from './lib/prisma';
+import { tickActiveChallenges } from './challenge';
 
 declare global {
   var lastAiCall: Record<string, number>;
@@ -63,6 +64,7 @@ async function main(): Promise<void> {
   // Cadence is anchored to Agent.lastSynthesisAt (DB-persisted), so restarts
   // don't reset the clock. Hourly tick re-evaluates each agent's due-ness.
   startSynthesisRunner();
+  startChallengeChecker();
 
   // 3c. Wire up immediate reanalysis handlers — fires the moment needsReanalysis
   // or needsManagementReanalysis flips to true (e.g. realtime ticker hit).
@@ -255,6 +257,11 @@ async function tickSynthesis(): Promise<void> {
 function startSynthesisRunner(): void {
   void tickSynthesis();
   setInterval(() => { void tickSynthesis(); }, SYNTHESIS_CHECK_MS);
+}
+
+function startChallengeChecker(): void {
+  void tickActiveChallenges();
+  setInterval(() => { void tickActiveChallenges(); }, SYNTHESIS_CHECK_MS);
 }
 
 main().catch((error) => {

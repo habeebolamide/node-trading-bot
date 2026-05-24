@@ -1,7 +1,13 @@
 import { getEntrySignal, getManagementDecision } from "../claude/client";
 import { buildEntryPrompt, buildManagementPrompt, buildSystemPrompt } from "../claude/prompts";
 import { prisma } from "../lib/prisma";
-import { getDrawdownState, resolvePerformanceMode, validateEntrySignal, validateManagementDecision } from "../risk";
+import { getDrawdownState, validateEntrySignal, validateManagementDecision } from "../risk";
+import {
+  getActiveChallenge,
+  evaluateChallenge,
+  buildChallengeRiskContext,
+  buildChallengePromptContext,
+} from "../challenge";
 import { Agent, AgentState, LearnedRule } from "../types/agent.types";
 import { EntrySignal, ManagementDecision } from "../types/claude.types";
 import { Candle, MultiTimeframeData, RegimeAnalysis } from "../types/market.types";
@@ -10,7 +16,7 @@ import logger from "../utils/logger";
 import { getRelevantLessons } from '../learning';
 import { notifications } from "../utils/notifications";
 import { executionEngine } from "../execution";
-import { getPortfolio } from "../capital";
+import { getPortfolio, getChallengePortfolio } from "../capital";
 import {
   calculateManagementTimeout,
   clampMinutes,
@@ -438,6 +444,14 @@ export class AgentManager {
         // ── Cooldown check — pure in-memory ──
         agent.checkCooldown();
 
+        if (agent.status !== 'active') continue;
+
+        const activeChallenge = await getActiveChallenge(agent.id);
+        if (activeChallenge) {
+          const challengeStatus = await evaluateChallenge(activeChallenge);
+          if (challengeStatus !== 'active') continue;
+        }
+
         if (agent.state === 'BLOCKED' || agent.state === 'COOLDOWN') continue;
 
         logger.info(`[${agent.name}] Processing in state: ${agent.state}`);
@@ -619,13 +633,19 @@ export class AgentManager {
     newsContext: string,
   ): Promise<void> {
 
-    const drawdown = await getDrawdownState(agent.id);
-    const performanceMode = resolvePerformanceMode(drawdown.monthlyPnlPct);
+    const challengeSession = await getActiveChallenge(agent.id);
+    const challengeRisk    = challengeSession
+      ? await buildChallengeRiskContext(challengeSession)
+      : null;
+    const challengePrompt  = challengeSession
+      ? await buildChallengePromptContext(challengeSession)
+      : null;
+
+    const drawdown = await getDrawdownState(agent.id, challengeRisk);
+    const performanceMode = drawdown.performanceMode;
     const systemPrompt = buildSystemPrompt(agent.toPromptAgent());
 
-
     console.log("Performance Mode:", performanceMode);
-
 
     const lessons = await getRelevantLessons(
       agent.id,
@@ -637,14 +657,24 @@ export class AgentManager {
       new Date().getDay(),
     );
 
+    const riskAgent = challengeSession
+      ? {
+          ...agent.toPromptAgent(),
+          allocationPercent: 100,
+          riskPercent:       challengeSession.riskPercent ?? agent.riskPercent,
+          leverage:          challengeSession.leverage ?? agent.leverage,
+        }
+      : agent.toPromptAgent();
+
     const entryPrompt = buildEntryPrompt(
-      agent.toPromptAgent(),
+      riskAgent,
       mtfData,
       regime,
       newsContext,
       lessons,
       drawdown.monthlyPnlPct * 100,
       performanceMode,
+      challengePrompt,
     );
 
     const claudeResult = await getEntrySignal(systemPrompt, entryPrompt, agent.id);
@@ -691,12 +721,15 @@ export class AgentManager {
     }
 
     // ── LONG or SHORT — validate risk ──
-    const portfolio = await getPortfolio();
+    const portfolio = challengeSession
+      ? await getChallengePortfolio(challengeSession)
+      : await getPortfolio();
     const riskResult = await validateEntrySignal(
       signal,
-      agent.toPromptAgent(),
+      riskAgent,
       { cooldownUntil: agent.cooldownUntil } as any,
       portfolio,
+      challengeRisk,
     );
 
     if (!riskResult.approved) {

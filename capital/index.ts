@@ -1,6 +1,8 @@
 import ccxt from 'ccxt';
 import { prisma } from '../lib/prisma';
+import { getChallengeEquity } from '../challenge';
 import { AgentCapital, Portfolio } from '../types/risk.types';
+import type { ChallengeSessionRecord } from '../types/challenge.types';
 import logger from '../utils/logger';
 
 // ─────────────────────────────────────────────
@@ -98,6 +100,36 @@ export async function getPortfolio(): Promise<Portfolio> {
     allocatedValue:  round(allocatedValue),
     reserveValue:    round(reserveValue),
     lastUpdatedAt:   new Date(),
+  };
+}
+
+// ─────────────────────────────────────────────
+// Challenge-scoped portfolio (isolated P&L)
+// ─────────────────────────────────────────────
+
+export async function getChallengePortfolio(
+  session: ChallengeSessionRecord,
+): Promise<Portfolio> {
+  const totalValue = await getChallengeEquity(session);
+
+  const openTrades = await prisma.trade.findMany({
+    where: { challengeId: session.id, status: 'open' },
+    select: { size: true, entryPrice: true },
+  });
+
+  const allocatedValue = openTrades.reduce(
+    (sum, t) => sum + t.size * t.entryPrice,
+    0,
+  );
+
+  const availableValue = Math.max(0, totalValue - allocatedValue);
+
+  return {
+    totalValue:     round(totalValue),
+    availableValue: round(availableValue),
+    allocatedValue: round(allocatedValue),
+    reserveValue:   0,
+    lastUpdatedAt:  new Date(),
   };
 }
 

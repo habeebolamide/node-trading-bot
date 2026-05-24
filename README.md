@@ -250,6 +250,18 @@ npm run dev     # tsx watch
 npm start       # tsx (no watch)
 ```
 
+### Challenge mode
+
+Time-boxed single-agent runs with isolated capital (e.g. $5 → $50 in 30 days). See [docs/CHALLENGE_MODE.md](docs/CHALLENGE_MODE.md).
+
+```bash
+npm run challenge -- --agent-id=<uuid> --start=5 --target=50 --days=30 --mode=paper
+```
+
+Optional: `--max-dd=1.0` `--risk-pct=2` `--leverage=10`
+
+The bot must be running (`npm run dev`) for the agent to trade during the challenge. On pass/fail/expire the agent is set to `paused`.
+
 ### Measure prompt sizes (no API spend)
 
 ```bash

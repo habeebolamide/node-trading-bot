@@ -14,7 +14,10 @@ export type RiskBlockReason =
   | 'COOLDOWN_ACTIVE'
   | 'RECOVERY_MODE_FILTER'
   | 'POOR_RISK_REWARD'
-  | 'INVALID_SIGNAL';
+  | 'INVALID_SIGNAL'
+  | 'CHALLENGE_ENDED'
+  | 'CHALLENGE_FAILED'
+  | 'CHALLENGE_TARGET_HIT';
 
 export type PerformanceMode =
   | 'NORMAL'        // 0-5% monthly — standard operation

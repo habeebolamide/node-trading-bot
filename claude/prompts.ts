@@ -1,4 +1,5 @@
 import type { Agent } from '../types/agent.types';
+import type { ChallengePromptContext } from '../types/challenge.types';
 import type {
   Candle,
   MultiTimeframeData,
@@ -221,6 +222,7 @@ export function buildEntryPrompt(
   lessons: RelevantLesson[],
   monthlyPnl: number,
   performanceMode: PerformanceMode,
+  challenge?: ChallengePromptContext | null,
 ): string {
 
   const now = new Date().toISOString();
@@ -233,7 +235,21 @@ export function buildEntryPrompt(
 
   // Minimal portfolio context — mode name only, no descriptive text
   // that could bleed into entry logic
-  const modeLabel = `Performance mode: ${performanceMode} | Monthly P&L: ${monthlyPnl >= 0 ? '+' : ''}${monthlyPnl.toFixed(2)}%`;
+  const modeLabel = challenge
+    ? `CHALLENGE MODE (${challenge.executionMode.toUpperCase()}) | Performance: ${performanceMode}`
+    : `Performance mode: ${performanceMode} | Monthly P&L: ${monthlyPnl >= 0 ? '+' : ''}${monthlyPnl.toFixed(2)}%`;
+
+  const challengeBlock = challenge
+    ? `
+    ━━━━━━━━━━━━━━━━━━━━━━━
+    CHALLENGE (time-boxed account):
+    Start: $${challenge.startingCapital.toFixed(2)} → Target: $${challenge.targetCapital.toFixed(2)}
+    Current equity: $${challenge.currentEquity.toFixed(2)} (${challenge.returnPct >= 0 ? '+' : ''}${challenge.returnPct.toFixed(1)}%)
+    Progress to target: ${challenge.progressToTarget.toFixed(0)}%
+    Time left: ${challenge.daysLeft.toFixed(1)} days of ${challenge.daysTotal.toFixed(0)} day window
+  This is an aggressive growth challenge — size and select setups accordingly, but never widen SL.
+    `.trim()
+    : '';
 
   const relevantLessons = lessons.length > 0
     ? `
@@ -293,6 +309,7 @@ export function buildEntryPrompt(
 
   return `
     ${modeLabel}
+    ${challengeBlock ? challengeBlock + '\n' : ''}
     CURRENT TIME (UTC): ${now}
     CURRENT PRICE: ${currentPrice}
     PAIR: ${agent.pair}

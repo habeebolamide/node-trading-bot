@@ -6,7 +6,12 @@ import { executionEngine, updateLivePnl } from '../execution';
 import { EntrySignal } from '../types/claude.types';
 import { clearTriggers, getTriggerState, claimTriggers } from '../agents/triggers';
 import { validateEntrySignal } from '../risk';
-import { getPortfolio } from '../capital';
+import { getPortfolio, getChallengePortfolio } from '../capital';
+import {
+  getActiveChallenge,
+  buildChallengeRiskContext,
+  getEffectiveExecutionMode,
+} from '../challenge';
 import { notifications } from '../utils/notifications';
 
 const BUFFER_SIZE = 200;
@@ -355,12 +360,31 @@ export class BybitWebSocket {
         // have shifted between signal creation and entry hit (e.g. a different
         // trade hit SL hard in between). Matches the candle-close and catch-up
         // paths which both re-validate.
-        const portfolio = await getPortfolio();
+        // Challenge-aware: when the agent has an active challenge, size against
+        // the challenge sandbox and apply challenge-relative drawdown gates,
+        // not the global portfolio — otherwise the realtime path bypasses the
+        // sandbox the candle-close path enforces.
+        const challengeSession = await getActiveChallenge(agent.id);
+        const challengeRisk    = challengeSession
+          ? await buildChallengeRiskContext(challengeSession)
+          : null;
+        const portfolio = challengeSession
+          ? await getChallengePortfolio(challengeSession)
+          : await getPortfolio();
+        const riskAgent = challengeSession
+          ? {
+              ...agent.toPromptAgent(),
+              allocationPercent: 100,
+              riskPercent:       challengeSession.riskPercent ?? agent.riskPercent,
+              leverage:          challengeSession.leverage    ?? agent.leverage,
+            }
+          : agent.toPromptAgent();
         const validation = await validateEntrySignal(
           rawSignal,
-          agent.toPromptAgent(),
+          riskAgent,
           { cooldownUntil: agent.cooldownUntil } as any,
           portfolio,
+          challengeRisk,
         );
 
         if (!validation.approved) {
@@ -397,22 +421,27 @@ export class BybitWebSocket {
         });
 
         if (execResult.success && execResult.orderId) {
-          agent.attachTrade({
-            id:             execResult.orderId,
-            agentId:        agent.id,
-            pair:           agent.pair,
-            direction:      signal.action as 'LONG' | 'SHORT',
-            entryPrice:     execResult.fillPrice ?? entry,
-            currentTp:      signal.tp!,
-            currentSl:      signal.sl!,
-            positionSize:   validation.positionSize!,
-            positionValue:  validation.positionSize! * entry,
-            unrealisedPnl:  0,
-            unrealisedPct:  0,
-            openedAt:       new Date(),
-            entryReasoning: signal.reasoning ?? '',
-            mode:           agent.mode as 'paper' | 'live',
-          });
+          // executeEntry already attached the trade with the correct effective
+          // mode (challenge override aware). Only re-attach here if it didn't
+          // — keeps trade.mode in sync with the actual routing path.
+          if (!agent.currentTrade) {
+            agent.attachTrade({
+              id:             execResult.orderId,
+              agentId:        agent.id,
+              pair:           agent.pair,
+              direction:      signal.action as 'LONG' | 'SHORT',
+              entryPrice:     execResult.fillPrice ?? entry,
+              currentTp:      signal.tp!,
+              currentSl:      signal.sl!,
+              positionSize:   validation.positionSize!,
+              positionValue:  validation.positionSize! * entry,
+              unrealisedPnl:  0,
+              unrealisedPct:  0,
+              openedAt:       new Date(),
+              entryReasoning: signal.reasoning ?? '',
+              mode:           getEffectiveExecutionMode(agent.mode, challengeSession),
+            });
+          }
         } else {
           agent.setState('IDLE');
         }

@@ -9,6 +9,7 @@ import { detectRegime } from '../markets/regime';
 import { calculateIndicators } from '../markets/indicators';
 import { getNewsContextForPrompt } from '../markets/news';
 import { runPostMortem } from '../learning';
+import { getActiveChallenge, getEffectiveExecutionMode, evaluateChallenge, getChallengeById } from '../challenge';
 import type { AgentRuntime } from '../agents';
 import type { EntrySignal, ManagementDecision } from '../types/claude.types';
 import type {
@@ -70,6 +71,10 @@ export async function executeEntry(
   positionSize: number,
   currentPrice: number,
 ): Promise<OrderResult> {
+  const challenge   = await getActiveChallenge(agent.id);
+  const execMode    = getEffectiveExecutionMode(agent.mode, challenge);
+  const leverage    = challenge?.leverage ?? agent.leverage ?? 10;
+
   const request: OrderRequest = {
     agentId:      agent.id,
     pair:         agent.pair,
@@ -79,11 +84,11 @@ export async function executeEntry(
     positionSize,
     tp:           signal.tp!,
     sl:           signal.sl!,
-    mode:         agent.mode as 'paper' | 'live',
-    leverage:     agent.leverage ?? 10,
+    mode:         execMode,
+    leverage,
   };
 
-  const result = agent.mode === 'live'
+  const result = execMode === 'live'
     ? await executeLiveEntry(request)
     : await executePaperEntry(request);
 
@@ -102,6 +107,7 @@ export async function executeEntry(
         size:          positionSize,
         status:        'open',
         entrySnapshot: entrySnapshot as any,
+        challengeId:   challenge?.id ?? null,
       },
     });
 
@@ -119,14 +125,14 @@ export async function executeEntry(
       unrealisedPct:  0,
       openedAt:       trade.openedAt ?? new Date(),
       entryReasoning: (signal as any).reasoning ?? '',
-      mode:           agent.mode as 'paper' | 'live',
+      mode:           execMode,
     };
 
     agent.attachTrade(openTrade);
 
-    if (agent.mode == 'live') {
+    if (execMode === 'live') {
       notifications.sendTradeAlert(agent, 'LIVE_OPEN', openTrade);
-    }else if(agent.mode == 'paper'){
+    } else {
       notifications.sendTradeAlert(agent, 'PAPER_OPEN', openTrade);
     }
 
@@ -138,7 +144,8 @@ export async function executeEntry(
       tp:        request.tp,
       sl:        request.sl,
       size:      positionSize,
-      mode:      agent.mode,
+      mode:      execMode,
+      challengeId: challenge?.id,
     });
   }
 
@@ -241,9 +248,11 @@ export async function checkPaperTpSl(
   const agents = agentManager.getAgentsForPair(pair);
 
   for (const agent of agents) {
-    if (agent.mode  !== 'paper')   continue;
     if (agent.state !== 'IN_TRADE') continue;
     if (!agent.currentTrade)       continue;
+    // Trade-level mode — a challenge can run paper on a live agent (or vice
+    // versa). Falls back to agent.mode for legacy trades without trade.mode.
+    if ((agent.currentTrade.mode ?? agent.mode) !== 'paper') continue;
 
     const trade = agent.currentTrade;
     let   hit:   'TP_HIT' | 'SL_HIT' | null = null;
@@ -294,7 +303,7 @@ export async function executeManagement(
         },
       });
 
-      if (agent.mode === 'live') {
+      if ((trade.mode ?? agent.mode) === 'live') {
         await updateLiveTpSl(trade, decision.newTp, decision.newSl);
       }
 
@@ -387,7 +396,7 @@ export async function closeTrade(
   let exitPrice = exitPriceOverride ?? 0;
 
   if (!exitPriceOverride) {
-    exitPrice = agent.mode === 'live'
+    exitPrice = (trade.mode ?? agent.mode) === 'live'
       ? await closeLivePosition(trade)
       : await getLatestPrice(agent.pair);
   }
@@ -438,6 +447,13 @@ export async function closeTrade(
     outcome,
     closeReason,
   });
+
+  if (closed.challengeId) {
+    const session = await getChallengeById(closed.challengeId);
+    if (session) {
+      void evaluateChallenge(session);
+    }
+  }
 
   // Post-mortem: only on losses. Uses snapshot stored at executeEntry.
   if (realisedPnl < 0) {
@@ -563,9 +579,9 @@ async function handleExecutionUpdate(executions: any[]): Promise<void> {
     const agents = agentManager.getAgentsForPair(pair);
 
     for (const agent of agents) {
-      if (agent.mode  !== 'live')    continue;
       if (agent.state !== 'IN_TRADE') continue;
       if (!agent.currentTrade)       continue;
+      if ((agent.currentTrade.mode ?? agent.mode) !== 'live') continue;
 
       const exitPrice = parseFloat(exec.execPrice);
 
@@ -599,9 +615,9 @@ async function handlePositionUpdate(positions: any[]): Promise<void> {
     const agents = agentManager.getAgentsForPair(pair);
 
     for (const agent of agents) {
-      if (agent.mode  !== 'live')    continue;
       if (agent.state !== 'IN_TRADE') continue;
       if (!agent.currentTrade)       continue;
+      if ((agent.currentTrade.mode ?? agent.mode) !== 'live') continue;
 
       const exitPrice = parseFloat(pos.markPrice ?? pos.avgPrice ?? agent.currentTrade.entryPrice);
       await closeTrade(agent, agent.currentTrade, 'BYBIT_CLOSE', exitPrice);
@@ -740,7 +756,7 @@ async function partialCloseTrade(
   const remainSize = trade.positionSize - closeSize;
   let   exitPrice  = 0;
 
-  if (agent.mode === 'live') {
+  if ((trade.mode ?? agent.mode) === 'live') {
     try {
       const side  = trade.direction === 'LONG' ? 'sell' : 'buy';
       const order = await exchange.createOrder(

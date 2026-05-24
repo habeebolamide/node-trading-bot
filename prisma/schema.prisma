@@ -38,9 +38,36 @@ model Agent {
   // Relations
   trades            Trade[]
   lessons           TradeLesson[]  
-  signals Signal[]
+  signals           Signal[]
+  challengeSessions ChallengeSession[]
 
   @@map("agents")
+}
+
+model ChallengeSession {
+  id              String    @id @default(uuid())
+  agentId         String
+  startingCapital Float
+  targetCapital   Float
+  maxDrawdownPct  Float     @default(1.0)
+  startsAt        DateTime  @default(now())
+  endsAt          DateTime
+  executionMode   String    // "paper" | "live"
+  status          String    @default("active") // active | passed | failed | expired | cancelled
+  endedAt         DateTime?
+  finalEquity     Float?
+  finalReturnPct  Float?
+  failReason      String?
+  riskPercent     Float?
+  leverage        Float?
+  result          Json?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  agent           Agent     @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  trades          Trade[]
+
+  @@map("challenge_sessions")
 }
 
 model Trade {
@@ -65,6 +92,9 @@ model Trade {
 
   openedAt      DateTime @default(now())
   closedAt      DateTime?
+
+  challengeId   String?
+  challenge     ChallengeSession? @relation(fields: [challengeId], references: [id], onDelete: SetNull)
 
   agent         Agent    @relation(fields: [agentId], references: [id], onDelete: Cascade)
   trade_lesson TradeLesson[]
