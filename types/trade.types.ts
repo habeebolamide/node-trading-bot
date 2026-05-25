@@ -32,6 +32,7 @@ export interface OpenTrade {
   openedAt:      Date;
   entryReasoning: string;         // Claude's reasoning at entry
   mode:          'paper' | 'live';
+  leverage:      number;
 }
 
 export interface ClosedTrade extends OpenTrade {

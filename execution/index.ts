@@ -108,6 +108,7 @@ export async function executeEntry(
         status:        'open',
         entrySnapshot: entrySnapshot as any,
         challengeId:   challenge?.id ?? null,
+        leverage,
       },
     });
 
@@ -126,6 +127,7 @@ export async function executeEntry(
       openedAt:       trade.openedAt ?? new Date(),
       entryReasoning: (signal as any).reasoning ?? '',
       mode:           execMode,
+      leverage:       trade.leverage,
     };
 
     agent.attachTrade(openTrade);
@@ -203,7 +205,7 @@ export function updateLivePnl(pair: string, currentPrice: number): void {
 
     trade.unrealisedPnl = Math.round(pnl * 100) / 100;
     trade.unrealisedPct = positionValue > 0
-      ? Math.round((pnl / positionValue) * 10_000) / 100
+      ? Math.round((pnl / positionValue) * trade.leverage * 10_000) / 100
       : 0;
 
     // Throttled DB flush — makes the row inspectable from Prisma Studio / SQL
@@ -460,7 +462,7 @@ export async function closeTrade(
     const snapshot = (closed as any).entrySnapshot as EntrySnapshot | null;
     if (snapshot) {
       const positionValue  = trade.entryPrice * trade.positionSize;
-      const realisedPct    = positionValue > 0 ? (realisedPnl / positionValue) * 100 : 0;
+      const realisedPct    = positionValue > 0 ? (realisedPnl / positionValue) * trade.leverage * 100 : 0;
       const durationHours  = duration / 3600;
 
       const closedTradeForPm = {

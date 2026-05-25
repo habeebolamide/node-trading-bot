@@ -103,6 +103,7 @@ async function simulate(
           openTrade.direction,
           openTrade.entryPrice,
           closed.exitPrice,
+          openTrade.leverage,
         );
 
         trades.push({
@@ -162,6 +163,7 @@ async function simulate(
               openTrade.direction,
               openTrade.entryPrice,
               exitPrice,
+              openTrade.leverage,
             );
 
             trades.push({
@@ -255,6 +257,7 @@ async function simulate(
       openedAt:       new Date(currentCandle.openTime),
       entryReasoning: signal.reasoning,
       mode:           'paper',
+      leverage:       agent.leverage ?? 10,
     };
 
     state = 'IN_TRADE';
@@ -275,6 +278,7 @@ async function simulate(
       openTrade.direction,
       openTrade.entryPrice,
       lastCandle.close,
+      openTrade.leverage,
     );
 
     trades.push({
@@ -536,12 +540,13 @@ function calculatePnlPct(
   direction:  'LONG' | 'SHORT',
   entry:      number,
   exit:       number,
+  leverage = 10,
 ): number {
   const raw = direction === 'LONG'
     ? ((exit - entry) / entry) * 100
     : ((entry - exit) / entry) * 100;
 
-  return round(raw);
+  return round(raw * leverage);
 }
 
 function emptyResult(config: BacktestConfig): BacktestResult {

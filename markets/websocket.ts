@@ -224,9 +224,9 @@ export class BybitWebSocket {
     }
 
     // save to DB (non-blocking)
-    // this.saveCandle(candle).catch(err =>
-    //   logger.error('Failed to save candle', { error: err })
-    // );
+    this.saveCandle(candle).catch(err =>
+      logger.error('Failed to save candle', { error: err })
+    );
 
     // notify agent loops
     const key = `${pair}:${tf}`;
@@ -269,227 +269,235 @@ export class BybitWebSocket {
   }
 
   private async processRealtimeSignals(pair: string, price: number, previousPrice: number): Promise<void> {
-  if (previousPrice === price) return;
+    if (previousPrice === price) return ;
 
-  const now = new Date();
+    const now = new Date();
 
-  // Fetch all active signals for this pair in one query
-  const activeSignals = await prisma.signal.findMany({
-    where: {
-      pair,
-      status: 'active',
-    },
-  });
+    // Fetch all active signals for this pair in one query
+    const activeSignals = await prisma.signal.findMany({
+      where: {
+        pair,
+        status: 'active',
+      },
+    });
 
-  if (activeSignals.length === 0) return;
+    if (activeSignals.length === 0) return ;
 
-  for (const signal of activeSignals) {
-    const agent = agentManager.getSingleAgent(signal.agentId);
-    if (!agent) continue;
+    
 
-    const triggers = signal.triggers as any;
+    for (const signal of activeSignals) {
+      const agent = agentManager.getSingleAgent(signal.agentId);
+      if (!agent) continue;
 
-    // ── 1. PENDING_ENTRY — check expiry first, then entry hit ──
-    // Only signals with a direction (LONG/SHORT) and entry price
-    if (
-      signal.action !== 'NO_TRADE' &&
-      signal.entry !== null &&
-      signal.entryExpiry !== null
-    ) {
-      // Expiry transition happens here on the realtime path so the signal
-      // lifecycle stays in lockstep with the countdown the user sees —
-      // instead of waiting for the next 5m candle close. Marks the signal
-      // 'expired' in DB and returns the agent to IDLE the moment the
-      // deadline passes.
-      if (new Date(signal.entryExpiry) <= now) {
-        const claimed = claimTriggers(signal.agentId);
-        if (!claimed) continue;
 
-        await prisma.signal.update({
-          where: { id: signal.id },
-          data:  {
-            status:      'expired',
-            triggeredBy: 'EXPIRY',
-            triggeredAt: new Date(),
-          },
-        });
-        agent.setState('IDLE');
+      const triggers = signal.triggers as any;
 
-        logger.info('Pending entry expired in realtime', {
-          agentId:     agent.id,
-          pair,
-          entryExpiry: signal.entryExpiry,
-        });
+      // ── 1. PENDING_ENTRY — check expiry first, then entry hit ──
+      // Only signals with a direction (LONG/SHORT) and entry price
+      if (
+        signal.action !== 'NO_TRADE' &&
+        signal.entry !== null &&
+        signal.entryExpiry !== null
+      ) {
 
-        await notifications.sendExpiryAlert(agent, signal);
-        continue;
-      }
+        // Expiry transition happens here on the realtime path so the signal
+        // lifecycle stays in lockstep with the countdown the user sees —
+        // instead of waiting for the next 5m candle close. Marks the signal
+        // 'expired' in DB and returns the agent to IDLE the moment the
+        // deadline passes.
+        if (new Date(signal.entryExpiry) <= now) {
+          const claimed = claimTriggers(signal.agentId);
+          if (!claimed) continue;
 
-      const entry       = signal.entry;
-
-      // Touch-based detection: trigger when price crosses the entry level from
-      // either direction. The bot uses entry as a "price threshold reached"
-      // signal, not as a one-sided limit order. Matches the candle-close path
-      // (range overlap) so both detection paths behave the same.
-      const crossedUp   = previousPrice < entry && price >= entry;
-      const crossedDown = previousPrice > entry && price <= entry;
-      const atEntry     = previousPrice === entry;     // already sitting at level
-      const entryHit    = crossedUp || crossedDown || atEntry;
-
-      if (entryHit) {
-        // Atomic claim — synchronously remove from the in-memory store before
-        // any await. If another realtime invocation, or the candle-close path,
-        // already claimed this signal, we bail. This is the only protection
-        // against double-executing while executeEntry is in flight (200-500ms
-        // API round-trip leaves a wide window otherwise).
-        const claimed = claimTriggers(signal.agentId);
-        if (!claimed) {
-          continue;
-        }
-
-        logger.info('Entry triggered in realtime', {
-          pair,
-          entry,
-          price,
-          direction: signal.action,
-        });
-
-        const rawSignal = signal.rawSignal as unknown as EntrySignal;
-
-        // Re-validate risk — drawdown / cooldown / circuit-breaker state may
-        // have shifted between signal creation and entry hit (e.g. a different
-        // trade hit SL hard in between). Matches the candle-close and catch-up
-        // paths which both re-validate.
-        // Challenge-aware: when the agent has an active challenge, size against
-        // the challenge sandbox and apply challenge-relative drawdown gates,
-        // not the global portfolio — otherwise the realtime path bypasses the
-        // sandbox the candle-close path enforces.
-        const challengeSession = await getActiveChallenge(agent.id);
-        const challengeRisk    = challengeSession
-          ? await buildChallengeRiskContext(challengeSession)
-          : null;
-        const portfolio = challengeSession
-          ? await getChallengePortfolio(challengeSession)
-          : await getPortfolio();
-        const riskAgent = challengeSession
-          ? {
-              ...agent.toPromptAgent(),
-              allocationPercent: 100,
-              riskPercent:       challengeSession.riskPercent ?? agent.riskPercent,
-              leverage:          challengeSession.leverage    ?? agent.leverage,
-            }
-          : agent.toPromptAgent();
-        const validation = await validateEntrySignal(
-          rawSignal,
-          riskAgent,
-          { cooldownUntil: agent.cooldownUntil } as any,
-          portfolio,
-          challengeRisk,
-        );
-
-        if (!validation.approved) {
-          logger.warn('Realtime entry blocked by risk', {
-            agentId: agent.id,
-            reason: validation.blockReason,
-          });
           await prisma.signal.update({
             where: { id: signal.id },
-            data:  {
-              status:      'cancelled',
-              triggeredBy: 'RISK_BLOCKED',
+            data: {
+              status: 'expired',
+              triggeredBy: 'EXPIRY',
               triggeredAt: new Date(),
             },
           });
           agent.setState('IDLE');
+
+          logger.info('Pending entry expired in realtime', {
+            agentId: agent.id,
+            pair,
+            entryExpiry: signal.entryExpiry,
+          });
+
+          await notifications.sendExpiryAlert(agent, signal);
           continue;
         }
 
-        const execResult = await executionEngine.executeEntry(
-          agent,
-          rawSignal,
-          validation.positionSize!,
-          price,
-        );
+        const entry = signal.entry;
 
-        await prisma.signal.update({
-          where: { id: signal.id },
-          data:  {
-            status:      execResult.success ? 'executed' : 'failed',
-            triggeredBy: 'ENTRY_HIT',
-            triggeredAt: new Date(),
-          },
-        });
+        // Touch-based detection: trigger when price crosses the entry level from
+        // either direction. The bot uses entry as a "price threshold reached"
+        // signal, not as a one-sided limit order. Matches the candle-close path
+        // (range overlap) so both detection paths behave the same.
+        const crossedUp = previousPrice < entry && price >= entry;
+        const crossedDown = previousPrice > entry && price <= entry;
+        const atEntry = previousPrice === entry || price === entry;     // already sitting at level
+        const entryHit = crossedUp || crossedDown || atEntry;
 
-        if (execResult.success && execResult.orderId) {
-          // executeEntry already attached the trade with the correct effective
-          // mode (challenge override aware). Only re-attach here if it didn't
-          // — keeps trade.mode in sync with the actual routing path.
-          if (!agent.currentTrade) {
-            agent.attachTrade({
-              id:             execResult.orderId,
-              agentId:        agent.id,
-              pair:           agent.pair,
-              direction:      signal.action as 'LONG' | 'SHORT',
-              entryPrice:     execResult.fillPrice ?? entry,
-              currentTp:      signal.tp!,
-              currentSl:      signal.sl!,
-              positionSize:   validation.positionSize!,
-              positionValue:  validation.positionSize! * entry,
-              unrealisedPnl:  0,
-              unrealisedPct:  0,
-              openedAt:       new Date(),
-              entryReasoning: signal.reasoning ?? '',
-              mode:           getEffectiveExecutionMode(agent.mode, challengeSession),
-            });
+        // console.log(entryHit,"Checking", { pair, price, previousPrice, entry, crossedUp, crossedDown, atEntry });
+        
+
+        if (entryHit) {
+          // Atomic claim — synchronously remove from the in-memory store before
+          // any await. If another realtime invocation, or the candle-close path,
+          // already claimed this signal, we bail. This is the only protection
+          // against double-executing while executeEntry is in flight (200-500ms
+          // API round-trip leaves a wide window otherwise).
+          const claimed = claimTriggers(signal.agentId);
+          if (!claimed) {
+            continue;
           }
-        } else {
-          agent.setState('IDLE');
+
+          logger.info('Entry triggered in realtime', {
+            pair,
+            entry,
+            price,
+            direction: signal.action,
+          });
+
+          const rawSignal = signal.rawSignal as unknown as EntrySignal;
+
+          // Re-validate risk — drawdown / cooldown / circuit-breaker state may
+          // have shifted between signal creation and entry hit (e.g. a different
+          // trade hit SL hard in between). Matches the candle-close and catch-up
+          // paths which both re-validate.
+          // Challenge-aware: when the agent has an active challenge, size against
+          // the challenge sandbox and apply challenge-relative drawdown gates,
+          // not the global portfolio — otherwise the realtime path bypasses the
+          // sandbox the candle-close path enforces.
+          const challengeSession = await getActiveChallenge(agent.id);
+          const challengeRisk = challengeSession
+            ? await buildChallengeRiskContext(challengeSession)
+            : null;
+          const portfolio = challengeSession
+            ? await getChallengePortfolio(challengeSession)
+            : await getPortfolio();
+          const riskAgent = challengeSession
+            ? {
+              ...agent.toPromptAgent(),
+              allocationPercent: 100,
+              riskPercent: challengeSession.riskPercent ?? agent.riskPercent,
+              leverage: challengeSession.leverage ?? agent.leverage,
+            }
+            : agent.toPromptAgent();
+          const validation = await validateEntrySignal(
+            rawSignal,
+            riskAgent,
+            { cooldownUntil: agent.cooldownUntil } as any,
+            portfolio,
+            challengeRisk,
+          );
+
+          if (!validation.approved) {
+            logger.warn('Realtime entry blocked by risk', {
+              agentId: agent.id,
+              reason: validation.blockReason,
+            });
+            await prisma.signal.update({
+              where: { id: signal.id },
+              data: {
+                status: 'cancelled',
+                triggeredBy: 'RISK_BLOCKED',
+                triggeredAt: new Date(),
+              },
+            });
+            agent.setState('IDLE');
+            continue;
+          }
+
+          const execResult = await executionEngine.executeEntry(
+            agent,
+            rawSignal,
+            validation.positionSize!,
+            price,
+          );
+
+          await prisma.signal.update({
+            where: { id: signal.id },
+            data: {
+              status: execResult.success ? 'executed' : 'failed',
+              triggeredBy: 'ENTRY_HIT',
+              triggeredAt: new Date(),
+            },
+          });
+
+          if (execResult.success && execResult.orderId) {
+            // executeEntry already attached the trade with the correct effective
+            // mode (challenge override aware). Only re-attach here if it didn't
+            // — keeps trade.mode in sync with the actual routing path.
+            if (!agent.currentTrade) {
+              agent.attachTrade({
+                id: execResult.orderId,
+                agentId: agent.id,
+                pair: agent.pair,
+                direction: signal.action as 'LONG' | 'SHORT',
+                entryPrice: execResult.fillPrice ?? entry,
+                currentTp: signal.tp!,
+                currentSl: signal.sl!,
+                positionSize: validation.positionSize!,
+                positionValue: validation.positionSize! * entry,
+                unrealisedPnl: 0,
+                unrealisedPct: 0,
+                openedAt: new Date(),
+                entryReasoning: signal.reasoning ?? '',
+                mode: getEffectiveExecutionMode(agent.mode, challengeSession),
+                leverage: challengeSession?.leverage ?? agent.leverage ?? 10,
+              });
+            }
+          } else {
+            agent.setState('IDLE');
+          }
+
+          continue; // entry hit — skip trigger checks for this signal
         }
 
-        continue; // entry hit — skip trigger checks for this signal
+        // Entry expiry is enforced by the outer filter (signal.entryExpiry > now);
+        // an expired signal never reaches this inner block. Expiry transitions are
+        // handled by checkTriggers on candle close.
       }
 
-      // Entry expiry is enforced by the outer filter (signal.entryExpiry > now);
-      // an expired signal never reaches this inner block. Expiry transitions are
-      // handled by checkTriggers on candle close.
-    }
+      // ── 2. WATCHING or IN_TRADE — check price_up / price_down ──
+      // Use in-memory state as a one-shot guard: store.delete inside clearTriggers
+      // is synchronous, so after the first firing clears the store, any concurrent
+      // ticker calls see null and skip — avoiding double-fires without a mutex.
+      // Non-directional check (price >= level) replaces the strict cross condition
+      // so we don't miss triggers when price was already at/above the level on
+      // reconnect or when a gap skips over the exact cross point.
+      const memState = getTriggerState(signal.agentId);
 
-    // ── 2. WATCHING or IN_TRADE — check price_up / price_down ──
-    // Use in-memory state as a one-shot guard: store.delete inside clearTriggers
-    // is synchronous, so after the first firing clears the store, any concurrent
-    // ticker calls see null and skip — avoiding double-fires without a mutex.
-    // Non-directional check (price >= level) replaces the strict cross condition
-    // so we don't miss triggers when price was already at/above the level on
-    // reconnect or when a gap skips over the exact cross point.
-    const memState = getTriggerState(signal.agentId);
+      if (triggers.price_up != null && price >= triggers.price_up && memState?.triggers.price_up != null) {
+        logger.info('Price up trigger hit', { pair, price_up: triggers.price_up, price });
 
-    if (triggers.price_up != null && price >= triggers.price_up && memState?.triggers.price_up != null) {
-      logger.info('Price up trigger hit', { pair, price_up: triggers.price_up, price });
+        await clearTriggers(signal.agentId, { status: 'triggered', triggeredBy: 'PRICE_UP' });
 
-      await clearTriggers(signal.agentId, { status: 'triggered', triggeredBy: 'PRICE_UP' });
-
-      if (agent.state === 'IN_TRADE') {
-        agent.needsManagementReanalysis = true;
-      } else {
-        agent.setState('IDLE');
-        agent.needsReanalysis = true;
+        if (agent.state === 'IN_TRADE') {
+          agent.needsManagementReanalysis = true;
+        } else {
+          agent.setState('IDLE');
+          agent.needsReanalysis = true;
+        }
       }
-    }
 
-    if (triggers.price_down != null && price <= triggers.price_down && memState?.triggers.price_down != null) {
-      logger.info('Price down trigger hit', { pair, price_down: triggers.price_down, price });
+      if (triggers.price_down != null && price <= triggers.price_down && memState?.triggers.price_down != null) {
+        logger.info('Price down trigger hit', { pair, price_down: triggers.price_down, price });
 
-      await clearTriggers(signal.agentId, { status: 'triggered', triggeredBy: 'PRICE_DOWN' });
+        await clearTriggers(signal.agentId, { status: 'triggered', triggeredBy: 'PRICE_DOWN' });
 
-      if (agent.state === 'IN_TRADE') {
-        agent.needsManagementReanalysis = true;
-      } else {
-        agent.setState('IDLE');
-        agent.needsReanalysis = true;
+        if (agent.state === 'IN_TRADE') {
+          agent.needsManagementReanalysis = true;
+        } else {
+          agent.setState('IDLE');
+          agent.needsReanalysis = true;
+        }
       }
     }
   }
-}
 
   private async saveCandle(candle: any): Promise<void> {
     await prisma.candle.upsert({

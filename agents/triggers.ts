@@ -8,6 +8,7 @@ import { getCandleBuffer } from '../markets/websocket';
 import { detectRegime } from '../markets/regime';
 import { getNewsContextForPrompt } from '../markets/news';
 import { notifications } from '../utils/notifications';
+import { getActiveChallenge } from '../challenge';
 
 // ─────────────────────────────────────────────
 // Types
@@ -73,6 +74,10 @@ export async function setTriggers(
     entryExpiry,
   });
 
+  const agent = agentManager.getSingleAgent(agentId);
+  const challenge = agent ? await getActiveChallenge(agent.id) : null;
+  const leverage = challenge?.leverage ?? agent?.leverage ?? 10;
+
   // Persist to DB — survive restarts
   await prisma.signal.create({
     data: {
@@ -90,7 +95,8 @@ export async function setTriggers(
       triggers:       triggers as any,
       status:         'active',
       rawSignal,
-      positionSize
+      positionSize,
+      leverage,
     },
   });
 

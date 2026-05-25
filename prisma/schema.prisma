@@ -84,6 +84,7 @@ model Trade {
   realizedPnL   Float?
   closeReason   String?
   duration      Int?     // in seconds or minutes
+  leverage      Float    @default(10.0)
 
   entrySnapshot Json?    // { regime, rsi, volumeRatio, news } captured at executeEntry, read by post-mortem
 
@@ -182,6 +183,7 @@ model Signal {
   rawSignal     Json
   triggeredBy   String?   // ENTRY_HIT | PRICE_UP | PRICE_DOWN | TIMEOUT | EXPIRY
   triggeredAt   DateTime?
+  leverage      Float?    @default(10.0)
   createdAt     DateTime  @default(now())
 
   agent         Agent     @relation(fields: [agentId], references: [id], onDelete: Cascade)

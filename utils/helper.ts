@@ -26,6 +26,7 @@ export function mapToOpenTrade(dbTrade: any): OpenTrade {
     unrealisedPnl: 0,
 
     entryReasoning: dbTrade.entryReasoning || '', 
+    leverage: dbTrade.leverage ?? 10,
   };
 }
 
