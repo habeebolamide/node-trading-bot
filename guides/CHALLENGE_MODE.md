@@ -12,7 +12,7 @@ This guide explains what it is, how to start one, the math behind the bucket, ev
 2. [Quick start](#2-quick-start)
 3. [The bucket model](#3-the-bucket-model)
 4. [Position sizing inside the bucket](#4-position-sizing-inside-the-bucket)
-5. [The seven pre-flight checks](#5-the-seven-pre-flight-checks)
+5. [The eight pre-flight checks](#5-the-eight-pre-flight-checks)
 6. [Mid-session failure modes](#6-mid-session-failure-modes)
 7. [Reading the session row](#7-reading-the-session-row)
 8. [Realistic expectations: fees, funding, min notional](#8-realistic-expectations-fees-funding-min-notional)
@@ -69,7 +69,7 @@ Set `challengeMode = true` on the same agent row. Save.
 
 Within one tick the bot's reconciler will:
 
-1. Run pre-flight checks (see [§5](#5-the-seven-pre-flight-checks)).
+1. Run pre-flight checks (see [§5](#5-the-eight-pre-flight-checks)).
 2. If everything passes, insert a `ChallengeSession` row, populate `currentChallengeSessionId`, fire a notification, and start trading.
 3. If anything fails, flip `challengeMode` back to false and notify you which check failed.
 
@@ -177,7 +177,7 @@ This is the whole point of "flipping" — the bucket grows geometrically when yo
 
 ---
 
-## 5. The seven pre-flight checks
+## 5. The eight pre-flight checks
 
 These all run inside `startChallenge()` **before** any session row is created. If any one fails, `challengeMode` flips back to false and you get a notification.
 
@@ -189,11 +189,31 @@ These all run inside `startChallenge()` **before** any session row is created. I
 | 4 | `target ≤ startingCapital` | `INVALID_TARGET` | `target=4, start=4` | Target has to be strictly greater than start. |
 | 5 | `target > startingCapital × 12` | `TARGET_EXCEEDS_MAX_MULTIPLIER` | `start=4, target=50` (>$48) | The max multiplier is 12×. $4 → max $48. Lower the target. |
 | 6 | `durationDays < 1` | `INVALID_DURATION` | `durationDays=0` | Set at least 1 day. |
-| 7 | Another active session for this agent | `SESSION_ALREADY_ACTIVE` | You already have one running | End the active session first (toggle off, or wait for it to terminate). |
+| 7 | Duration too short for target (>10%/day) | `DURATION_TOO_SHORT_FOR_TARGET` | `start=4, target=48, days=15` (~18%/day) | Lengthen `durationDays` or lower `targetCapital`. See min-duration table below. |
+| 8 | Another active session for this agent | `SESSION_ALREADY_ACTIVE` | You already have one running | End the active session first (toggle off, or wait for it to terminate). |
 
 > **Why min start of $4?** Below this the bucket can't realistically clear Bybit's $5 min notional even at 10× leverage, and trading fees swamp the math. $5 is the eventual floor; $4 is a temporary lower bound for initial testing.
 >
 > **Why 12× max multiplier?** Past 12× the required win rate becomes unrealistic — even a perfect Kelly-sized bot wouldn't have edge enough. The cap is intentional friction against picking unwinnable targets.
+>
+> **Why a 10% daily growth cap?** Even the best documented crypto traders rarely sustain 5% per day for long stretches. 10% per day is already gambling-tier optimism — but it's the line where "ambitious challenge" becomes "lottery ticket." The cap exists to protect you from picking a duration that's mathematically impossible regardless of skill.
+
+### Minimum duration per multiplier (at the 10% daily cap)
+
+```
+minDays = ceil( ln(target/start) / ln(1 + 0.10) )
+```
+
+| Multiplier | Required daily growth at 30 days | Min days at 10% cap |
+|------------|----------------------------------|---------------------|
+| 2×  | 2.3% | 8 days  |
+| 4×  | 4.7% | 15 days |
+| 6×  | 6.2% | 19 days |
+| 8×  | 7.2% | 22 days |
+| 10× | 8.0% | 25 days |
+| 12× | 8.6% | 27 days |
+
+If your target/duration combination requires more than 10% daily compound growth, the pre-flight will reject with `DURATION_TOO_SHORT_FOR_TARGET` and tell you the actual rate it computed. Either lengthen the duration or lower the target.
 
 ---
 
@@ -289,17 +309,17 @@ For pairs like BTC/USDT or ETH/USDT, slippage on $40 notional is essentially not
 
 ## 9. Safety: paper mode first
 
-Before you point this at real money, run the 17-step smoke test in paper mode. The full list is in the implementation plan (`.claude/plans/let-s-go-into-plan-resilient-nebula.md`), but the critical ones:
+Before you point this at real money, run the 18-step smoke test in paper mode. The full list is in the implementation plan (`.claude/plans/let-s-go-into-plan-resilient-nebula.md`), but the critical ones:
 
 1. **Migration** completed cleanly.
-2. **All seven pre-flight rejections** trigger correctly (test each one with a deliberately bad config).
+2. **All eight pre-flight rejections** trigger correctly (test each one with a deliberately bad config).
 3. **Full-account challenge** ($4 → $20 with `INITIAL_CAPITAL=4`) works — main pool correctly shows $0.
 4. **Slice challenge** ($4 → $20 with `INITIAL_CAPITAL=20`) works — main pool correctly shows $16.
 5. **Pass / fail / expired / cancelled** — all four terminal states fire correctly.
 6. **Mode routing** — a paper-mode challenge on a live-mode agent does not place real orders. **Verify before going live.**
 7. **Restart safety** — kill the bot mid-session, restart, confirm reconciler resumes the existing session without duplicating it.
 
-Only after all 17 pass should you flip `challengeMode = true` on a real live agent.
+Only after all 18 pass should you flip `challengeMode = true` on a real live agent.
 
 ---
 
