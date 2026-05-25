@@ -12,7 +12,7 @@ This guide explains what it is, how to start one, the math behind the bucket, ev
 2. [Quick start](#2-quick-start)
 3. [The bucket model](#3-the-bucket-model)
 4. [Position sizing inside the bucket](#4-position-sizing-inside-the-bucket)
-5. [The seven pre-flight checks](#5-the-seven-pre-flight-checks)
+5. [The eight pre-flight checks](#5-the-eight-pre-flight-checks)
 6. [Mid-session failure modes](#6-mid-session-failure-modes)
 7. [Reading the session row](#7-reading-the-session-row)
 8. [Realistic expectations: fees, funding, min notional](#8-realistic-expectations-fees-funding-min-notional)
@@ -40,7 +40,7 @@ While the session is active, that agent only trades within the bucket. Its P&L, 
 **Bad reasons to use it:**
 
 - You're trying to "make trading more fun" — challenges are still real risk.
-- You expect 10× returns to be the norm — they're statistically rare; the cap is 12× by design.
+- You expect huge returns to be the norm — they're statistically rare; the cap is 10× by design.
 
 ---
 
@@ -65,11 +65,15 @@ Open Prisma Studio (`npx prisma studio`) or edit the DB directly. On the agent y
 
 Set `challengeMode = true` on the same agent row. Save.
 
+> If the agent's `status` is `paused`, it will be auto-resumed to `active` as part of session start. You don't need to unpause manually.
+>
+> If the agent currently has an **open non-challenge trade**, the start will be rejected (`AGENT_HAS_OPEN_TRADE`) — wait for that trade to close first.
+
 ### Step 3 — let the bot do its thing
 
 Within one tick the bot's reconciler will:
 
-1. Run pre-flight checks (see [§5](#5-the-seven-pre-flight-checks)).
+1. Run pre-flight checks (see [§5](#5-the-eight-pre-flight-checks)).
 2. If everything passes, insert a `ChallengeSession` row, populate `currentChallengeSessionId`, fire a notification, and start trading.
 3. If anything fails, flip `challengeMode` back to false and notify you which check failed.
 
@@ -177,7 +181,7 @@ This is the whole point of "flipping" — the bucket grows geometrically when yo
 
 ---
 
-## 5. The seven pre-flight checks
+## 5. The eight pre-flight checks
 
 These all run inside `startChallenge()` **before** any session row is created. If any one fails, `challengeMode` flips back to false and you get a notification.
 
@@ -187,13 +191,14 @@ These all run inside `startChallenge()` **before** any session row is created. I
 | 2 | `accountTotal < startingCapital` | `INSUFFICIENT_FUNDS` | $2 in Bybit, challenge wants $4 | Top up Bybit, or lower `startingCapital`. Equal is fine ($4 + $4 = full-account challenge). |
 | 3 | `startingCapital × leverage < $5` | `BUCKET_TOO_SMALL_FOR_LEVERAGE` | $0.40 × 10× = $4 < $5 min notional | Raise `startingCapital` or `leverage` so their product clears the $5 floor. |
 | 4 | `target ≤ startingCapital` | `INVALID_TARGET` | `target=4, start=4` | Target has to be strictly greater than start. |
-| 5 | `target > startingCapital × 12` | `TARGET_EXCEEDS_MAX_MULTIPLIER` | `start=4, target=50` (>$48) | The max multiplier is 12×. $4 → max $48. Lower the target. |
+| 5 | `target > startingCapital × 10` | `TARGET_EXCEEDS_MAX_MULTIPLIER` | `start=4, target=45` (>$40) | The max multiplier is 10×. $4 → max $40. Lower the target. |
 | 6 | `durationDays < 1` | `INVALID_DURATION` | `durationDays=0` | Set at least 1 day. |
 | 7 | Another active session for this agent | `SESSION_ALREADY_ACTIVE` | You already have one running | End the active session first (toggle off, or wait for it to terminate). |
+| 8 | Agent has an open non-challenge trade | `AGENT_HAS_OPEN_TRADE` | Agent state is `IN_TRADE` with a main-pool position | Wait for the open trade to close (naturally or manually), then toggle on. Prevents weird accounting where the old trade closes into main while the bucket runs separately. |
 
 > **Why min start of $4?** Below this the bucket can't realistically clear Bybit's $5 min notional even at 10× leverage, and trading fees swamp the math. $5 is the eventual floor; $4 is a temporary lower bound for initial testing.
 >
-> **Why 12× max multiplier?** Targets above 12× are unrealistic enough that the system stops you from picking one. The 12× cap is the only gate on how ambitious the target can be — duration is left entirely to you. A challenge is *aspirational*, so if you want to point the bot at $4 → $48 in a short window and let it try its best, that's allowed. Hitting the target isn't compulsory; failing is a normal outcome.
+> **Why 10× max multiplier?** Targets above 10× are unrealistic enough that the system stops you from picking one. The 10× cap is the only gate on how ambitious the target can be — duration is left entirely to you. A challenge is *aspirational*, so if you want to point the bot at $4 → $40 in a short window and let it try its best, that's allowed. Hitting the target isn't compulsory; failing is a normal outcome.
 
 ---
 
@@ -207,7 +212,11 @@ Bucket equity reaches `targetCapital` (realised + open). Triggered on each trade
 
 ### Fail by drawdown — `status: 'failed', failReason: 'Drawdown floor breached'`
 
-Bucket equity drops below `startingCapital × (1 - maxDdPct)`. Default 50% → $2 floor on a $4 bucket. Triggered on each close and each hourly tick.
+Bucket equity (**realized + unrealized**) drops below `startingCapital × (1 - maxDdPct)`. Default 50% → $2 floor on a $4 bucket.
+
+This is evaluated **live**, not just on close. If the open trade's unrealized P&L drops the bucket below the floor, the trade is **force-closed immediately at market** with reason `DRAWDOWN_FLOOR` and the session flips to `failed`. The bucket cannot bleed past the floor even within a single losing trade.
+
+Checked on every price update for the open trade's symbol (piggybacks on the existing TP/SL check path), plus on each trade close and each hourly tick as a backstop.
 
 ### Fail by unwinnable equity — `status: 'failed', failReason: 'Below minimum viable equity'`
 
@@ -289,17 +298,17 @@ For pairs like BTC/USDT or ETH/USDT, slippage on $40 notional is essentially not
 
 ## 9. Safety: paper mode first
 
-Before you point this at real money, run the 17-step smoke test in paper mode. The full list is in the implementation plan (`.claude/plans/let-s-go-into-plan-resilient-nebula.md`), but the critical ones:
+Before you point this at real money, run the 20-step smoke test in paper mode. The full list is in the implementation plan (`.claude/plans/let-s-go-into-plan-resilient-nebula.md`), but the critical ones:
 
 1. **Migration** completed cleanly.
-2. **All seven pre-flight rejections** trigger correctly (test each one with a deliberately bad config).
+2. **All eight pre-flight rejections** trigger correctly (test each one with a deliberately bad config).
 3. **Full-account challenge** ($4 → $20 with `INITIAL_CAPITAL=4`) works — main pool correctly shows $0.
 4. **Slice challenge** ($4 → $20 with `INITIAL_CAPITAL=20`) works — main pool correctly shows $16.
 5. **Pass / fail / expired / cancelled** — all four terminal states fire correctly.
 6. **Mode routing** — a paper-mode challenge on a live-mode agent does not place real orders. **Verify before going live.**
 7. **Restart safety** — kill the bot mid-session, restart, confirm reconciler resumes the existing session without duplicating it.
 
-Only after all 17 pass should you flip `challengeMode = true` on a real live agent.
+Only after all 20 pass should you flip `challengeMode = true` on a real live agent.
 
 ---
 
@@ -323,9 +332,9 @@ The challenge bucket's accounting equity is unaffected — it's still tracking i
 
 Below this, the bucket can't reliably clear Bybit's $5 min notional even at high leverage, and fees swamp the bucket too fast to leave any real strategy edge. The eventual floor will be $5; $4 is a transitional lower bound during initial testing.
 
-### Why a 12× max multiplier?
+### Why a 10× max multiplier?
 
-A 12× target on a 30-day timer requires roughly 9% compounded daily growth. That's already aggressive for a real strategy. Anything above 12× is in "delusional" territory and the system enforces the cap to stop you from picking a target you can't hit.
+A 10× target on a 30-day timer requires roughly 8% compounded daily growth. That's already aggressive for a real strategy. Anything above 10× is in "delusional" territory and the system enforces the cap to stop you from picking a target you can't hit.
 
 ### Can I change the duration, target, or risk percent mid-session?
 
