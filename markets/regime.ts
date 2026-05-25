@@ -1,6 +1,6 @@
-import { Candle, Indicators, MarketRegime, RegimeAnalysis } from '../types/market.types';
-import logger from '../utils/logger';
-import { calculateIndicators, calculateEMASlope } from './indicators';
+import type { Candle, Indicators, MarketRegime, RegimeAnalysis } from '../types/market.types.js';
+import logger from '../utils/logger.js';
+import { calculateIndicators, calculateEMASlope } from './indicators.js';
 
 // ─────────────────────────────────────────────
 // Thresholds — tune these after backtesting

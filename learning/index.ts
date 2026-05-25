@@ -1,11 +1,11 @@
-import logger from '../utils/logger';
-import { getPostMortem, getSynthesis } from '../claude/client';
-import { buildPostMortemPrompt, buildSynthesisPrompt } from '../claude/prompts';
-import { ClosedTrade } from '../types/trade.types';
-import { PostMortemResult } from '../types/claude.types';
-import { RelevantLesson, TradeLessonInput } from '../types/risk.types';
-import { prisma } from '../lib/prisma';
-import { LearnedRule } from '../types/agent.types';
+import logger from '../utils/logger.js';
+import { getPostMortem, getSynthesis } from '../claude/client.js';
+import { buildPostMortemPrompt, buildSynthesisPrompt } from '../claude/prompts.js';
+import type { ClosedTrade } from '../types/trade.types.js';
+import type { PostMortemResult } from '../types/claude.types.js';
+import type { RelevantLesson, TradeLessonInput } from '../types/risk.types.js';
+import { prisma } from '../lib/prisma.js';
+import type { LearnedRule } from '../types/agent.types.js';
 
 
 // ─────────────────────────────────────────────

@@ -6,7 +6,7 @@ import {
   ADX,
   ATR,
 } from 'technicalindicators';
-import { BollingerResult, Candle, Indicators, MacdResult, VolumeResult } from '../types/market.types';
+import type { BollingerResult, Candle, Indicators, MacdResult, VolumeResult } from '../types/market.types.js';
 
 // ─────────────────────────────────────────────
 // Main export — call this with a candle buffer

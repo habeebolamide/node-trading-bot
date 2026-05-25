@@ -1,5 +1,5 @@
-import { Candle } from "./market.types";
-import { OpenTrade } from "./trade.types";
+import type { Candle } from "./market.types.js";
+import type { OpenTrade } from "./trade.types.js";
 
 export type AgentStatus = 'active' | 'paused' | 'stopped';
 

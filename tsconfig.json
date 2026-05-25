@@ -2,8 +2,8 @@
   "compilerOptions": {
     /* Base Options */
     "target": "ES2023",
-    "module": "ESNext",
-    "moduleResolution": "node", // Changed from 'bundler' for better Node compatibility
+    "module": "NodeNext", // Changed from 'ESNext' for better Node compatibility
+    "moduleResolution": "nodenext", // Changed from 'bundler' for better Node compatibility
     "lib": ["ES2023"],
     "types": ["node"],
     "skipLibCheck": true,
@@ -31,6 +31,22 @@
     /* React Support (Keeping this for your React Dashboard compatibility) */
     "jsx": "react-jsx"
   },
-  "include": ["src/**/*", "prisma/**/*.ts", "prisma.config.ts"],
-  "exclude": ["node_modules"]
+  "include": [
+    "index.ts",
+    "agents/**/*.ts",
+    "backtest/**/*.ts",
+    "capital/**/*.ts",
+    "claude/**/*.ts",
+    "execution/**/*.ts",
+    "learning/**/*.ts",
+    "lib/**/*.ts",
+    "markets/**/*.ts",
+    "risk/**/*.ts",
+    "scripts/**/*.ts",
+    "types/**/*.ts",
+    "utils/**/*.ts",
+    "prisma/**/*.ts",
+    "prisma.config.ts"
+  ],
+  "exclude": ["node_modules", "dist", "generated", "logs"]
 }

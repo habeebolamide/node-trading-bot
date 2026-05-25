@@ -1,15 +1,14 @@
 import 'dotenv/config';
-import logger from './utils/logger';
-import { getNewsContextForPrompt, hasRecentHighImpactNews, startNewsMonitor, stopNewsMonitor } from './markets/news';
-import { agentManager } from './agents';
-import { BybitWebSocket, candleBuffers, getCandleBuffer, onCandle, seedCandleBuffers } from "./markets/websocket";
-import { Candle, CandleInterval } from './types/market.types';
-import { detectRegime, isSignificantCandle } from './markets/regime';
-import { buildMtfData } from './markets/mtf';
-import { clearTriggers, getTriggerState, hasTriggers, startTimeoutChecker } from './agents/triggers';
-import { synthesiseLessons } from './learning';
-import { prisma } from './lib/prisma';
-import { tickActiveChallenges } from './challenge';
+import { getNewsContextForPrompt, hasRecentHighImpactNews, startNewsMonitor, stopNewsMonitor } from './markets/news.js';
+import { agentManager } from './agents/index.js';
+import { BybitWebSocket, candleBuffers, getCandleBuffer, onCandle, seedCandleBuffers } from "./markets/websocket.js";
+import type { Candle, CandleInterval } from './types/market.types.js';
+import { detectRegime, isSignificantCandle } from './markets/regime.js';
+import { buildMtfData } from './markets/mtf.js';
+import { clearTriggers, getTriggerState, hasTriggers, startTimeoutChecker } from './agents/triggers.js';
+import { synthesiseLessons } from './learning/index.js';
+import { prisma } from './lib/prisma.js';
+import logger from './utils/logger.js';
 
 declare global {
   var lastAiCall: Record<string, number>;
@@ -64,7 +63,6 @@ async function main(): Promise<void> {
   // Cadence is anchored to Agent.lastSynthesisAt (DB-persisted), so restarts
   // don't reset the clock. Hourly tick re-evaluates each agent's due-ness.
   startSynthesisRunner();
-  startChallengeChecker();
 
   // 3c. Wire up immediate reanalysis handlers — fires the moment needsReanalysis
   // or needsManagementReanalysis flips to true (e.g. realtime ticker hit).
@@ -257,11 +255,6 @@ async function tickSynthesis(): Promise<void> {
 function startSynthesisRunner(): void {
   void tickSynthesis();
   setInterval(() => { void tickSynthesis(); }, SYNTHESIS_CHECK_MS);
-}
-
-function startChallengeChecker(): void {
-  void tickActiveChallenges();
-  setInterval(() => { void tickActiveChallenges(); }, SYNTHESIS_CHECK_MS);
 }
 
 main().catch((error) => {

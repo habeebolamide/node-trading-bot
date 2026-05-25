@@ -1,7 +1,7 @@
-import { prisma } from '../lib/prisma';
-import logger from '../utils/logger';
-import { Candle, CandleInterval } from '../types/market.types';
-import { candleBuffers } from '../markets/websocket';
+import { prisma } from '../lib/prisma.js';
+import logger from '../utils/logger.js';
+import type { Candle, CandleInterval } from '../types/market.types.js';
+import { candleBuffers } from '../markets/websocket.js';
 
 // ─────────────────────────────────────────────
 // Bybit REST API — kline endpoint

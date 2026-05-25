@@ -1,5 +1,5 @@
-import logger from '../utils/logger';
-import { EconomicEvent, NewsItem } from '../types/market.types';
+import logger from '../utils/logger.js';
+import type { EconomicEvent, NewsItem } from '../types/market.types.js';
 
 // ─────────────────────────────────────────────
 // Config
@@ -137,7 +137,7 @@ async function fetchNews(): Promise<void> {
       return;
     }
 
-    const data = await res.json();
+    const data = await res.json() as { articles?: any[] };
 
     // logger.info({ data: data.articles });
 

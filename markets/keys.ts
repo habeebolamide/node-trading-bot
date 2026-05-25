@@ -3,7 +3,7 @@
 // Types
 // ─────────────────────────────────────────────
 
-import { Candle } from "../types/market.types";
+import type { Candle } from "../types/market.types.js";
 
 export interface KeyLevel {
   price:    number;
@@ -106,6 +106,7 @@ function findSwingLevels(candles: Candle[]): KeyLevel[] {
 
   for (let i = n; i < candles.length - n; i++) {
     const c = candles[i];
+    if (!c) continue;
 
     // Check swing high
     const isSwingHigh = candles
@@ -269,12 +270,14 @@ function clusterLevels(levels: KeyLevel[], currentPrice: number): KeyLevel[] {
 
   // Sort by price
   const sorted = [...levels].sort((a, b) => a.price - b.price);
+  const first = sorted[0]!;
   const clusters: KeyLevel[][] = [];
-  let   currentCluster: KeyLevel[] = [sorted[0]];
+  let   currentCluster: KeyLevel[] = [first];
 
   for (let i = 1; i < sorted.length; i++) {
     const prev    = sorted[i - 1];
     const current = sorted[i];
+    if (!prev || !current) continue;
     const diff    = Math.abs(current.price - prev.price) / prev.price;
 
     if (diff <= ZONE_THRESHOLD) {
@@ -298,7 +301,8 @@ function clusterLevels(levels: KeyLevel[], currentPrice: number): KeyLevel[] {
     // Prefer swing and volume node sources over round numbers
     const source = cluster.find(l => l.source === 'swing')?.source
       ?? cluster.find(l => l.source === 'volume_node')?.source
-      ?? cluster[0].source;
+      ?? cluster[0]?.source
+      ?? 'swing';
 
     return {
       price:    round(avgPrice),

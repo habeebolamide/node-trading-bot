@@ -11,3 +11,4 @@ node_modules
 /generated/prisma
 logs/*.log
 /prisma/migrations
+/dist

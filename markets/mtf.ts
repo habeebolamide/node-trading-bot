@@ -1,9 +1,9 @@
 // src/market/mtf.ts
 
-import { getCandleBuffer }     from './websocket';
-import { calculateIndicators } from './indicators';
-import { detectRegime }        from './regime';
-import { CandleInterval, MultiTimeframeData, TimeframeSnapshot } from '../types/market.types';
+import { getCandleBuffer }     from './websocket.js';
+import { calculateIndicators } from './indicators.js';
+import { detectRegime }        from './regime.js';
+import type { CandleInterval, MultiTimeframeData, TimeframeSnapshot } from '../types/market.types.js';
 ;
 
 export function buildMtfData(pair: string): MultiTimeframeData | null {

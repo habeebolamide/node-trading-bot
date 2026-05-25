@@ -1,9 +1,8 @@
 // src/infra/notifications.ts
 import TelegramBot from 'node-telegram-bot-api';
-import { Agent } from '../types/agent.types';
-import { ClosedTrade, OpenTrade } from '../types/trade.types';
-import { EntrySignal } from '../types/claude.types';
-import type { ChallengeSessionRecord } from '../types/challenge.types';
+import type { Agent } from '../types/agent.types.js';
+import type { ClosedTrade, OpenTrade } from '../types/trade.types.js';
+import type { EntrySignal } from '../types/claude.types.js';
 
 const bot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN!, { polling: false });
 const CHAT_ID = process.env.TELEGRAM_CHAT_ID!;
@@ -145,48 +144,5 @@ export const notifications = {
 
   async sendSystem(message: string): Promise<void> {
     await bot.sendMessage(CHAT_ID, `ℹ️ ${message}`);
-  },
-
-  async sendChallengeStarted(
-    agentName: string,
-    session: ChallengeSessionRecord,
-  ): Promise<void> {
-    const message =
-      `🏁 <b>CHALLENGE STARTED</b>\n\n` +
-      `Agent: <b>${agentName}</b>\n` +
-      `Start: <b>$${session.startingCapital.toFixed(2)}</b>\n` +
-      `Target: <b>$${session.targetCapital.toFixed(2)}</b>\n` +
-      `Mode: <b>${session.executionMode.toUpperCase()}</b>\n` +
-      `Ends: ${session.endsAt.toUTCString()}\n` +
-      `Max drawdown: ${(session.maxDrawdownPct * 100).toFixed(0)}%`;
-
-    try {
-      await bot.sendMessage(CHAT_ID, message, { parse_mode: 'HTML' });
-    } catch (error) {
-      console.error('Failed to send challenge started alert:', error);
-    }
-  },
-
-  async sendChallengeEnded(
-    agentName: string,
-    session: ChallengeSessionRecord,
-    reason: string,
-  ): Promise<void> {
-    const emoji =
-      session.status === 'passed' ? '🎉' :
-      session.status === 'failed' ? '💀' : '⏱️';
-
-    const message =
-      `${emoji} <b>CHALLENGE ${session.status.toUpperCase()}</b>\n\n` +
-      `Agent: <b>${agentName}</b>\n` +
-      `Final equity: <b>$${(session.finalEquity ?? 0).toFixed(2)}</b>\n` +
-      `Return: <b>${(session.finalReturnPct ?? 0).toFixed(1)}%</b>\n` +
-      `Reason: ${reason}`;
-
-    try {
-      await bot.sendMessage(CHAT_ID, message, { parse_mode: 'HTML' });
-    } catch (error) {
-      console.error('Failed to send challenge ended alert:', error);
-    }
   },
 };

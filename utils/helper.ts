@@ -1,6 +1,6 @@
-import { TradingStyle } from "../types/agent.types";
-import { EntrySignal } from "../types/claude.types";
-import { OpenTrade } from "../types/trade.types";
+import type { TradingStyle } from "../types/agent.types.js";
+import type { EntrySignal } from "../types/claude.types.js";
+import type { OpenTrade } from "../types/trade.types.js";
 
 export function mapToOpenTrade(dbTrade: any): OpenTrade {
   return {

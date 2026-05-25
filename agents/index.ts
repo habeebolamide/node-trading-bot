@@ -1,30 +1,23 @@
-import { getEntrySignal, getManagementDecision } from "../claude/client";
-import { buildEntryPrompt, buildManagementPrompt, buildSystemPrompt } from "../claude/prompts";
-import { prisma } from "../lib/prisma";
-import { getDrawdownState, validateEntrySignal, validateManagementDecision } from "../risk";
-import {
-  getActiveChallenge,
-  evaluateChallenge,
-  buildChallengeRiskContext,
-  buildChallengePromptContext,
-} from "../challenge";
-import { Agent, AgentState, LearnedRule } from "../types/agent.types";
-import { EntrySignal, ManagementDecision } from "../types/claude.types";
-import { Candle, MultiTimeframeData, RegimeAnalysis } from "../types/market.types";
-import { OpenTrade } from "../types/trade.types";
-import logger from "../utils/logger";
-import { getRelevantLessons } from '../learning';
-import { notifications } from "../utils/notifications";
-import { executionEngine } from "../execution";
-import { getPortfolio, getChallengePortfolio } from "../capital";
+import { buildEntryPrompt, buildManagementPrompt, buildSystemPrompt } from "../claude/prompts.js";
+import { prisma } from "../lib/prisma.js";
+import { getDrawdownState, validateEntrySignal, validateManagementDecision } from "../risk/index.js";
+import type { Agent, AgentState, LearnedRule } from "../types/agent.types.js";
+import type { EntrySignal, ManagementDecision } from "../types/claude.types.js";
+import type { Candle, MultiTimeframeData, RegimeAnalysis } from "../types/market.types.js";
+import type { OpenTrade } from "../types/trade.types.js";
+import logger from "../utils/logger.js";
+import { getRelevantLessons } from '../learning/index.js';
+import { notifications } from "../utils/notifications.js";
+import { executionEngine } from "../execution/index.js";
+import { getPortfolio } from "../capital/index.js";
 import {
   calculateManagementTimeout,
   clampMinutes,
   entryExpiryMinutesForStyle,
   mapToOpenTrade,
   WATCH_TIMEOUT_DEFAULT_MINUTES,
-} from "../utils/helper";
-import { getCandleBuffer } from "../markets/websocket";
+} from "../utils/helper.js";
+import { getCandleBuffer } from "../markets/websocket.js";
 
 import {
   setTriggers,
@@ -35,7 +28,8 @@ import {
   hasTriggers,
   updateTriggers,
   setTriggersMemory,
-} from './triggers';
+} from './triggers.js';
+import { getEntrySignal,getManagementDecision } from "../claude/client.js";
 
 
 // ====================== RUNTIME AGENT CLASS ======================
@@ -260,11 +254,11 @@ export class AgentManager {
       const stale = await prisma.signal.updateMany({
         where: {
           agentId: agent.id,
-          status:  'active',
-          id:      { not: activeSignal.id },
+          status: 'active',
+          id: { not: activeSignal.id },
         },
         data: {
-          status:      'cancelled',
+          status: 'cancelled',
           triggeredBy: 'STALE_ON_RESTART',
           triggeredAt: new Date(),
         },
@@ -275,8 +269,8 @@ export class AgentManager {
     } else {
       // No surviving active signal at all — sweep any leftovers too.
       await prisma.signal.updateMany({
-        where:  { agentId: agent.id, status: 'active' },
-        data:   { status: 'cancelled', triggeredBy: 'STALE_ON_RESTART', triggeredAt: new Date() },
+        where: { agentId: agent.id, status: 'active' },
+        data: { status: 'cancelled', triggeredBy: 'STALE_ON_RESTART', triggeredAt: new Date() },
       });
     }
 
@@ -349,15 +343,15 @@ export class AgentManager {
       if (agent.state !== 'PENDING_ENTRY') continue;
 
       const signal = await prisma.signal.findFirst({
-        where:   { agentId: agent.id, status: 'active' },
+        where: { agentId: agent.id, status: 'active' },
         orderBy: { createdAt: 'desc' },
       });
 
       if (!signal || signal.entry === null || signal.action === 'NO_TRADE') continue;
 
-      const buffer  = getCandleBuffer(agent.pair, '5');
+      const buffer = getCandleBuffer(agent.pair, '5');
       const setAtMs = signal.createdAt.getTime();
-      const entry   = signal.entry;
+      const entry = signal.entry;
 
       const hitCandle = buffer.find(c =>
         c.openTime >= setAtMs &&
@@ -373,8 +367,8 @@ export class AgentManager {
       logger.warn(`[${agent.name}] Entry hit during downtime — running catch-up`, {
         entry,
         hitCandleOpen: new Date(hitCandle.openTime).toISOString(),
-        hitHigh:       hitCandle.high,
-        hitLow:        hitCandle.low,
+        hitHigh: hitCandle.high,
+        hitLow: hitCandle.low,
       });
 
       // Re-validate risk — drawdown / circuit-breaker state may have shifted
@@ -412,8 +406,8 @@ export class AgentManager {
         // wrong reason. Memory cleanup only.
         await prisma.signal.update({
           where: { id: signal.id },
-          data:  {
-            status:      'executed',
+          data: {
+            status: 'executed',
             triggeredBy: 'ENTRY_HIT_CATCHUP',
             triggeredAt: new Date(),
           },
@@ -445,12 +439,6 @@ export class AgentManager {
         agent.checkCooldown();
 
         if (agent.status !== 'active') continue;
-
-        const activeChallenge = await getActiveChallenge(agent.id);
-        if (activeChallenge) {
-          const challengeStatus = await evaluateChallenge(activeChallenge);
-          if (challengeStatus !== 'active') continue;
-        }
 
         if (agent.state === 'BLOCKED' || agent.state === 'COOLDOWN') continue;
 
@@ -605,7 +593,7 @@ export class AgentManager {
         // 'triggered' (a level fired and we're now re-analysing); pending
         // entries hijacked by an unexpected price-trigger end as 'cancelled'.
         await clearTriggers(agent.id, {
-          status:      agent.state === 'PENDING_ENTRY' ? 'cancelled' : 'triggered',
+          status: agent.state === 'PENDING_ENTRY' ? 'cancelled' : 'triggered',
           triggeredBy: reason,
         });
 
@@ -633,15 +621,7 @@ export class AgentManager {
     newsContext: string,
   ): Promise<void> {
 
-    const challengeSession = await getActiveChallenge(agent.id);
-    const challengeRisk    = challengeSession
-      ? await buildChallengeRiskContext(challengeSession)
-      : null;
-    const challengePrompt  = challengeSession
-      ? await buildChallengePromptContext(challengeSession)
-      : null;
-
-    const drawdown = await getDrawdownState(agent.id, challengeRisk);
+    const drawdown = await getDrawdownState(agent.id);
     const performanceMode = drawdown.performanceMode;
     const systemPrompt = buildSystemPrompt(agent.toPromptAgent());
 
@@ -657,14 +637,7 @@ export class AgentManager {
       new Date().getDay(),
     );
 
-    const riskAgent = challengeSession
-      ? {
-          ...agent.toPromptAgent(),
-          allocationPercent: 100,
-          riskPercent:       challengeSession.riskPercent ?? agent.riskPercent,
-          leverage:          challengeSession.leverage ?? agent.leverage,
-        }
-      : agent.toPromptAgent();
+    const riskAgent = agent.toPromptAgent();
 
     const entryPrompt = buildEntryPrompt(
       riskAgent,
@@ -674,7 +647,6 @@ export class AgentManager {
       lessons,
       drawdown.monthlyPnlPct * 100,
       performanceMode,
-      challengePrompt,
     );
 
     const claudeResult = await getEntrySignal(systemPrompt, entryPrompt, agent.id);
@@ -696,12 +668,12 @@ export class AgentManager {
       const watchTimeout = new Date(Date.now() + watchMinutes * 60_000).toISOString();
 
       const watchTriggers = {
-        price_up: triggers.price_up ?? null,
-        price_down: triggers.price_down ?? null,
-        timeout: watchTimeout,
+        price_up:  null,
+        price_down: null,
+        timeout: null,
       };
 
-      setTriggers(agent.id, watchTriggers, null, null,claudeResult.data, null);
+      setTriggers(agent.id, watchTriggers, null, null, claudeResult.data, null);
       agent.setState('WATCHING');                  // ← WATCHING not IDLE
 
       logger.info(`[${agent.name}] NO_TRADE — watching`, {
@@ -721,15 +693,12 @@ export class AgentManager {
     }
 
     // ── LONG or SHORT — validate risk ──
-    const portfolio = challengeSession
-      ? await getChallengePortfolio(challengeSession)
-      : await getPortfolio();
+    const portfolio = await getPortfolio();
     const riskResult = await validateEntrySignal(
       signal,
       riskAgent,
       { cooldownUntil: agent.cooldownUntil } as any,
       portfolio,
-      challengeRisk,
     );
 
     if (!riskResult.approved) {
@@ -739,10 +708,18 @@ export class AgentManager {
 
     // ── Set pending entry triggers — entry_expiry only ──
     // price_up/price_down not relevant here — we already decided to trade
+
+    const watchMinutes = clampMinutes(
+      triggers.timeout_minutes,
+      WATCH_TIMEOUT_DEFAULT_MINUTES,
+      { min: 5, maxMultiplier: 4 },   // up to ~2h
+    );
+    const watchTimeout = new Date(Date.now() + watchMinutes * 60_000).toISOString();
+
     const pendingTriggers = {
-      price_up: null,                            // ← null for pending entry
-      price_down: null,                            // ← null for pending entry
-      timeout: null,                            // ← timeout via entry_expiry instead
+      price_up: triggers.price_up ?? null,
+      price_down: triggers.price_down ?? null,
+      timeout: watchTimeout,
     };
 
     // LLM emits entry_expiry_minutes (a duration). Server clamps to safe bounds

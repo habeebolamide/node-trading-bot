@@ -1,11 +1,11 @@
 import OpenAI from 'openai';
-import logger from '../utils/logger';
-import {
+import logger from '../utils/logger.js';
+import type {
   EntrySignal,
   ManagementDecision,
   PostMortemResult,
   ClaudeCallResult,
-} from '../types/claude.types';
+} from '../types/claude.types.js';
 
 const deepseek = new OpenAI({
   baseURL: 'https://api.deepseek.com',
@@ -43,7 +43,11 @@ const PRICING_BY_MODEL: Record<string, ModelPricing> = {
   },
 };
 
-const DEFAULT_PRICING = PRICING_BY_MODEL['deepseek-v4-flash'];
+const DEFAULT_PRICING: ModelPricing = PRICING_BY_MODEL['deepseek-v4-flash'] ?? {
+  inputCacheHitPerM: 0.0028,
+  inputCacheMissPerM: 0.14,
+  outputPerM: 0.28,
+};
 
 export async function getEntrySignal(
   systemPrompt: string,

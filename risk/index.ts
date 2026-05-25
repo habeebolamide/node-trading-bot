@@ -1,9 +1,8 @@
-import { Agent, AgentRuntimeState } from '../types/agent.types';
-import { EntrySignal, ManagementDecision } from '../types/claude.types';
-import { CircuitBreakerState, CorrelationSnapshot, DrawdownState, PerformanceMode, Portfolio, ValidationResult } from '../types/risk.types';
-import type { ChallengeRiskContext } from '../types/challenge.types';
-import logger from '../utils/logger';
-import { prisma } from "../lib/prisma";
+import type { Agent, AgentRuntimeState } from '../types/agent.types.js';
+import type { EntrySignal, ManagementDecision } from '../types/claude.types.js';
+import type { CircuitBreakerState, CorrelationSnapshot, DrawdownState, PerformanceMode, Portfolio, ValidationResult } from '../types/risk.types.js';
+import logger from '../utils/logger.js';
+import { prisma } from "../lib/prisma.js";
 
 
 
@@ -71,7 +70,6 @@ export async function validateEntrySignal(
   agent: Agent,
   runtime: AgentRuntimeState,
   portfolio: Portfolio,
-  challenge?: ChallengeRiskContext | null,
 ): Promise<ValidationResult> {
 
   // ── 1. Circuit breaker ──
@@ -109,33 +107,16 @@ export async function validateEntrySignal(
     return block('LOW_CONFIDENCE', `Confidence ${signal.confidence} below minimum ${LIMITS.minConfidence}`);
   }
 
-  const drawdown = challenge
-    ? getChallengeDrawdownState(agent.id, challenge)
-    : await getDrawdownState(agent.id);
+  const drawdown = await getDrawdownState(agent.id);
 
-  if (challenge) {
-    const lossPct = challenge.startingCapital > 0
-      ? (challenge.startingCapital - challenge.equity) / challenge.startingCapital
-      : 0;
-    if (lossPct >= challenge.maxDrawdownPct) {
-      return block('CHALLENGE_FAILED', `Challenge drawdown ${(lossPct * 100).toFixed(1)}% hit cap`);
-    }
-    if (challenge.equity >= challenge.targetCapital) {
-      return block('CHALLENGE_TARGET_HIT', 'Challenge target already reached');
-    }
-    if (new Date() >= challenge.endsAt) {
-      return block('CHALLENGE_ENDED', 'Challenge time limit reached');
-    }
-  } else {
-    // ── 4. Monthly drawdown cap ──
-    if (drawdown.monthlyPnlPct <= -LIMITS.monthlyDrawdownCap) {
-      return block('MONTHLY_CAP_HIT', `Monthly drawdown ${(drawdown.monthlyPnlPct * 100).toFixed(1)}% hit cap`);
-    }
+  // ── 4. Monthly drawdown cap ──
+  if (drawdown.monthlyPnlPct <= -LIMITS.monthlyDrawdownCap) {
+    return block('MONTHLY_CAP_HIT', `Monthly drawdown ${(drawdown.monthlyPnlPct * 100).toFixed(1)}% hit cap`);
+  }
 
-    // ── 5. Daily drawdown cap ──
-    if (drawdown.dailyPnlPct <= -LIMITS.dailyDrawdownCap) {
-      return block('DAILY_CAP_HIT', `Daily drawdown ${(drawdown.dailyPnlPct * 100).toFixed(1)}% hit cap`);
-    }
+  // ── 5. Daily drawdown cap ──
+  if (drawdown.dailyPnlPct <= -LIMITS.dailyDrawdownCap) {
+    return block('DAILY_CAP_HIT', `Daily drawdown ${(drawdown.dailyPnlPct * 100).toFixed(1)}% hit cap`);
   }
 
   // ── 6. Correlation guard ──
@@ -327,48 +308,9 @@ export function calculatePositionSize(
 // Reads from DB — accurate across restarts
 // ─────────────────────────────────────────────
 
-export function getChallengeDrawdownState(
-  agentId: string,
-  challenge: ChallengeRiskContext,
-): DrawdownState {
-  const returnPct = challenge.returnPct;
-  const performanceMode = resolveChallengePerformanceMode(
-    returnPct,
-    challenge.progressToTarget,
-    challenge.daysLeft,
-    challenge.maxDrawdownPct,
-  );
-
-  return {
-    agentId,
-    dailyPnlPct:        returnPct,
-    monthlyPnlPct:      returnPct,
-    peakPortfolioValue: challenge.equity,
-    currentDrawdown:    Math.min(0, returnPct),
-    maxDrawdownHit:     Math.min(0, returnPct),
-    performanceMode,
-  };
-}
-
-export function resolveChallengePerformanceMode(
-  returnPct: number,
-  progressToTarget: number,
-  daysLeft: number,
-  maxDrawdownPct: number,
-): PerformanceMode {
-  if (returnPct <= -maxDrawdownPct * 0.5) return 'RECOVERY';
-  if (progressToTarget < 0.25 && daysLeft < 7) return 'CONSERVATIVE';
-  if (returnPct >= 0.2 || progressToTarget >= 0.5) return 'GROWTH';
-  return 'NORMAL';
-}
-
 export async function getDrawdownState(
   agentId: string,
-  challenge?: ChallengeRiskContext | null,
 ): Promise<DrawdownState> {
-  if (challenge) {
-    return getChallengeDrawdownState(agentId, challenge);
-  }
   const now = new Date();
   const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
   const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);

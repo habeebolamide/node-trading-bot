@@ -1,11 +1,11 @@
 import OpenAI from 'openai';
-import logger from '../utils/logger';
-import {
+import logger from '../utils/logger.js';
+import type {
   EntrySignal,
   ManagementDecision,
   PostMortemResult,
   ClaudeCallResult
-} from '../types/claude.types';
+} from '../types/claude.types.js';
 
 const openrouter = new OpenAI({
   baseURL: "https://openrouter.ai/api/v1",

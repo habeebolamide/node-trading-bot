@@ -1,24 +1,23 @@
 import ccxt            from 'ccxt';
 import WebSocket        from 'ws';
-import { prisma }       from '../lib/prisma';
-import logger           from '../utils/logger';
-import { agentManager } from '../agents';
-import { notifications } from '../utils/notifications';
-import { getCandleBuffer } from '../markets/websocket';
-import { detectRegime } from '../markets/regime';
-import { calculateIndicators } from '../markets/indicators';
-import { getNewsContextForPrompt } from '../markets/news';
-import { runPostMortem } from '../learning';
-import { getActiveChallenge, getEffectiveExecutionMode, evaluateChallenge, getChallengeById } from '../challenge';
-import type { AgentRuntime } from '../agents';
-import type { EntrySignal, ManagementDecision } from '../types/claude.types';
+import { prisma }       from '../lib/prisma.js';
+import logger           from '../utils/logger.js';
+import { agentManager } from '../agents/index.js';
+import { notifications } from '../utils/notifications.js';
+import { getCandleBuffer } from '../markets/websocket.js';
+import { detectRegime } from '../markets/regime.js';
+import { calculateIndicators } from '../markets/indicators.js';
+import { getNewsContextForPrompt } from '../markets/news.js';
+import { runPostMortem } from '../learning/index.js';
+import type { AgentRuntime } from '../agents/index.js';
+import type { EntrySignal, ManagementDecision } from '../types/claude.types.js';
 import type {
   ClosedTrade,
   OpenTrade,
   OrderRequest,
   OrderResult,
   TradeDirection,
-} from '../types/trade.types';
+} from '../types/trade.types.js';
 
 // ─────────────────────────────────────────────
 // Entry snapshot — captured at executeEntry, read at close for post-mortem
@@ -71,9 +70,8 @@ export async function executeEntry(
   positionSize: number,
   currentPrice: number,
 ): Promise<OrderResult> {
-  const challenge   = await getActiveChallenge(agent.id);
-  const execMode    = getEffectiveExecutionMode(agent.mode, challenge);
-  const leverage    = challenge?.leverage ?? agent.leverage ?? 10;
+  const execMode    = agent.mode === 'backtest' ? 'paper' : agent.mode;
+  const leverage    = agent.leverage ?? 10;
 
   const request: OrderRequest = {
     agentId:      agent.id,
@@ -107,7 +105,6 @@ export async function executeEntry(
         size:          positionSize,
         status:        'open',
         entrySnapshot: entrySnapshot as any,
-        challengeId:   challenge?.id ?? null,
         leverage,
       },
     });
@@ -147,7 +144,6 @@ export async function executeEntry(
       sl:        request.sl,
       size:      positionSize,
       mode:      execMode,
-      challengeId: challenge?.id,
     });
   }
 
@@ -252,8 +248,7 @@ export async function checkPaperTpSl(
   for (const agent of agents) {
     if (agent.state !== 'IN_TRADE') continue;
     if (!agent.currentTrade)       continue;
-    // Trade-level mode — a challenge can run paper on a live agent (or vice
-    // versa). Falls back to agent.mode for legacy trades without trade.mode.
+    // Trade-level mode — falls back to agent.mode for legacy trades without trade.mode.
     if ((agent.currentTrade.mode ?? agent.mode) !== 'paper') continue;
 
     const trade = agent.currentTrade;
@@ -449,13 +444,6 @@ export async function closeTrade(
     outcome,
     closeReason,
   });
-
-  if (closed.challengeId) {
-    const session = await getChallengeById(closed.challengeId);
-    if (session) {
-      void evaluateChallenge(session);
-    }
-  }
 
   // Post-mortem: only on losses. Uses snapshot stored at executeEntry.
   if (realisedPnl < 0) {

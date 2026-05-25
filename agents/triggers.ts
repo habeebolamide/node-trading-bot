@@ -1,14 +1,13 @@
-import logger from '../utils/logger';
-import type { Candle }        from '../types/market.types';
-import type { EntrySignal }   from '../types/claude.types';
-import { prisma } from '../lib/prisma';
-import { agentManager } from '.';
-import { buildMtfData } from '../markets/mtf';
-import { getCandleBuffer } from '../markets/websocket';
-import { detectRegime } from '../markets/regime';
-import { getNewsContextForPrompt } from '../markets/news';
-import { notifications } from '../utils/notifications';
-import { getActiveChallenge } from '../challenge';
+import logger from '../utils/logger.js';
+import type { Candle }        from '../types/market.types.js';
+import type { EntrySignal }   from '../types/claude.types.js';
+import { prisma } from '../lib/prisma.js';
+import { agentManager } from './index.js';
+import { buildMtfData } from '../markets/mtf.js';
+import { getCandleBuffer } from '../markets/websocket.js';
+import { detectRegime } from '../markets/regime.js';
+import { getNewsContextForPrompt } from '../markets/news.js';
+import { notifications } from '../utils/notifications.js';
 
 // ─────────────────────────────────────────────
 // Types
@@ -75,8 +74,7 @@ export async function setTriggers(
   });
 
   const agent = agentManager.getSingleAgent(agentId);
-  const challenge = agent ? await getActiveChallenge(agent.id) : null;
-  const leverage = challenge?.leverage ?? agent?.leverage ?? 10;
+  const leverage = agent?.leverage ?? 10;
 
   // Persist to DB — survive restarts
   await prisma.signal.create({
@@ -97,6 +95,7 @@ export async function setTriggers(
       rawSignal,
       positionSize,
       leverage,
+      pair: agent?.pair ?? 'unknown',
     },
   });
 

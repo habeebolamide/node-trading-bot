@@ -1,16 +1,16 @@
-import logger from '../utils/logger';
-import { getEntrySignal, getManagementDecision } from '../claude/client';
-import { buildEntryPrompt, buildManagementPrompt, buildSystemPrompt } from '../claude/prompts';
-import { validateEntrySignal } from '../risk';
-import { getRelevantLessons } from '../learning';
-import { Agent } from '../types/agent.types';
-import { BacktestConfig, BacktestResult, BacktestTrade, MonthlyReturn } from '../types/risk.types';
-import { Candle, CandleInterval, MultiTimeframeData, TimeframeSnapshot } from '../types/market.types';
-import { OpenTrade } from '../types/trade.types';
-import { EntrySignal, ManagementDecision } from '../types/claude.types';
-import { detectRegime } from '../markets/regime';
-import { calculateIndicators } from '../markets/indicators';
-import { prisma } from '../lib/prisma';
+import logger from '../utils/logger.js';
+import { getEntrySignal, getManagementDecision } from '../claude/client.js';
+import { buildEntryPrompt, buildManagementPrompt, buildSystemPrompt } from '../claude/prompts.js';
+import { validateEntrySignal } from '../risk/index.js';
+import { getRelevantLessons } from '../learning/index.js';
+import type { Agent } from '../types/agent.types.js';
+import type { BacktestConfig, BacktestResult, BacktestTrade, MonthlyReturn } from '../types/risk.types.js';
+import type { Candle, CandleInterval, MultiTimeframeData, TimeframeSnapshot } from '../types/market.types.js';
+import type { OpenTrade } from '../types/trade.types.js';
+import type { EntrySignal, ManagementDecision } from '../types/claude.types.js';
+import { detectRegime } from '../markets/regime.js';
+import { calculateIndicators } from '../markets/indicators.js';
+import { prisma } from '../lib/prisma.js';
 
 
 // ─────────────────────────────────────────────
@@ -41,16 +41,20 @@ export async function runBacktest(
     config.endDate,
   );
 
-  if (candles['60'].length < MIN_CANDLES_REQUIRED) {
+  const candles1h  = candles['60']  ?? [];
+  const candles4h  = candles['240'] ?? [];
+  const candles15m = candles['15']  ?? [];
+
+  if (candles1h.length < MIN_CANDLES_REQUIRED) {
     throw new Error(
-      `Not enough historical data. Need ${MIN_CANDLES_REQUIRED} candles, got ${candles['60'].length}`
+      `Not enough historical data. Need ${MIN_CANDLES_REQUIRED} candles, got ${candles1h.length}`
     );
   }
 
   logger.info('Historical data loaded', {
-    candles1h:  candles['60'].length,
-    candles4h:  candles['240'].length,
-    candles15m: candles['15'].length,
+    candles1h:  candles1h.length,
+    candles4h:  candles4h.length,
+    candles15m: candles15m.length,
   });
 
   // Run the simulation
@@ -83,7 +87,7 @@ async function simulate(
   candles: Record<string, Candle[]>,
 ): Promise<BacktestTrade[]> {
   const trades:     BacktestTrade[]  = [];
-  const candles1h   = candles['60'];
+  const candles1h   = candles['60'] ?? [];
 
   let openTrade:    OpenTrade | null = null;
   let state:        'IDLE' | 'IN_TRADE' = 'IDLE';
@@ -93,6 +97,7 @@ async function simulate(
   for (let i = MIN_CANDLES_REQUIRED; i < candles1h.length; i++) {
 
     const currentCandle = candles1h[i];
+    if (!currentCandle) continue;
 
     // ── Check if open trade TP/SL was hit ──
     if (state === 'IN_TRADE' && openTrade) {
@@ -192,7 +197,7 @@ async function simulate(
     if (!mtfData) continue;
 
     const regime = detectRegime(
-      candles['60'].slice(Math.max(0, i - 200), i)
+      candles1h.slice(Math.max(0, i - 200), i)
     );
     if (!regime) continue;
 
@@ -334,16 +339,21 @@ function buildMtfSnapshot(
   candles: Record<string, Candle[]>,
   index1h: number,
 ): MultiTimeframeData | null {
-  const slice1h  = candles['60'].slice(Math.max(0, index1h - 200), index1h);
+  const candles1h  = candles['60']  ?? [];
+  const candles4h  = candles['240'] ?? [];
+  const candles15m = candles['15']  ?? [];
+  const candles5m  = candles['5']   ?? [];
+
+  const slice1h  = candles1h.slice(Math.max(0, index1h - 200), index1h);
 
   // Approximate indices for other timeframes
   const index4h  = Math.floor(index1h / 4);
   const index15m = index1h * 4;
   const index5m  = index1h * 12;
 
-  const slice4h  = candles['240'].slice(Math.max(0, index4h  - 200), index4h);
-  const slice15m = candles['15'].slice(Math.max(0,  index15m - 200), index15m);
-  const slice5m  = candles['5'].slice(Math.max(0,   index5m  - 200), index5m);
+  const slice4h  = candles4h.slice(Math.max(0, index4h  - 200), index4h);
+  const slice15m = candles15m.slice(Math.max(0,  index15m - 200), index15m);
+  const slice5m  = candles5m.slice(Math.max(0,   index5m  - 200), index5m);
 
   if (slice1h.length < 50) return null;
 
@@ -358,7 +368,7 @@ function buildMtfSnapshot(
   });
 
   return {
-    pair:  candles['60'][index1h]?.pair ?? '',
+    pair:  candles1h[index1h]?.pair ?? '',
     tf4h:  buildSnapshot(slice4h,  '240'),
     tf1h:  buildSnapshot(slice1h,  '60'),
     tf15m: buildSnapshot(slice15m, '15'),

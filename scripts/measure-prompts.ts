@@ -2,8 +2,8 @@ import {
   buildSystemPrompt,
   buildEntryPrompt,
   buildManagementPrompt,
-} from '../claude/prompts';
-import type { Agent } from '../types/agent.types';
+} from '../claude/prompts.js';
+import type { Agent } from '../types/agent.types.js';
 import type {
   Candle,
   Indicators,
@@ -11,8 +11,8 @@ import type {
   RegimeAnalysis,
   TimeframeSnapshot,
   CandleInterval,
-} from '../types/market.types';
-import type { OpenTrade } from '../types/trade.types';
+} from '../types/market.types.js';
+import type { OpenTrade } from '../types/trade.types.js';
 
 const ANTHROPIC_CACHE_MIN = 1024;
 

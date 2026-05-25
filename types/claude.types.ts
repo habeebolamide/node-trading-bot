@@ -2,8 +2,8 @@
 // Claude types
 // ─────────────────────────────────────────────
 
-import type { MarketRegime }  from './market.types';
-import type { TradeDirection } from './trade.types';
+import type { MarketRegime }  from './market.types.js';
+import type { TradeDirection } from './trade.types.js';
 
 export type ClaudeModel = 'claude-sonnet-4-5' | 'claude-haiku-4-5-20251001';
 

@@ -7,8 +7,9 @@
   "scripts": {
     "dev": "tsx watch index.ts",
     "start": "tsx index.ts",
+    "build": "prisma generate && tsc",
+    "typecheck": "tsc --noEmit",
     "generate": "prisma generate",
-    "challenge": "tsx scripts/start-challenge.ts",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "repository": {

@@ -1,18 +1,13 @@
 import WebSocket from 'ws';
-import logger from '../utils/logger';
-import { prisma } from '../lib/prisma';
-import { agentManager } from '../agents';
-import { executionEngine, updateLivePnl } from '../execution';
-import { EntrySignal } from '../types/claude.types';
-import { clearTriggers, getTriggerState, claimTriggers } from '../agents/triggers';
-import { validateEntrySignal } from '../risk';
-import { getPortfolio, getChallengePortfolio } from '../capital';
-import {
-  getActiveChallenge,
-  buildChallengeRiskContext,
-  getEffectiveExecutionMode,
-} from '../challenge';
-import { notifications } from '../utils/notifications';
+import logger from '../utils/logger.js';
+import { prisma } from '../lib/prisma.js';
+import { agentManager } from '../agents/index.js';
+import { executionEngine, updateLivePnl } from '../execution/index.js';
+import type { EntrySignal } from '../types/claude.types.js';
+import { clearTriggers, getTriggerState, claimTriggers } from '../agents/triggers.js';
+import { validateEntrySignal } from '../risk/index.js';
+import { getPortfolio } from '../capital/index.js';
+import { notifications } from '../utils/notifications.js';
 
 const BUFFER_SIZE = 200;
 const PING_INTERVAL = 20_000;
@@ -145,9 +140,9 @@ export class BybitWebSocket {
 
     // initialise buffers for each pair + timeframe
     uniquePairs.forEach(pair => {
-      if (!candleBuffers[pair]) candleBuffers[pair] = {};  // only if missing
+      const pairBuffers = candleBuffers[pair] ?? (candleBuffers[pair] = {});
       TIMEFRAMES.forEach(tf => {
-        if (!candleBuffers[pair][tf]) candleBuffers[pair][tf] = []; // only if missing
+        if (!pairBuffers[tf]) pairBuffers[tf] = []; // only if missing
       });
     });
 
@@ -269,7 +264,7 @@ export class BybitWebSocket {
   }
 
   private async processRealtimeSignals(pair: string, price: number, previousPrice: number): Promise<void> {
-    if (previousPrice === price) return ;
+    if (previousPrice === price) return;
 
     const now = new Date();
 
@@ -281,9 +276,9 @@ export class BybitWebSocket {
       },
     });
 
-    if (activeSignals.length === 0) return ;
+    if (activeSignals.length === 0) return;
 
-    
+
 
     for (const signal of activeSignals) {
       const agent = agentManager.getSingleAgent(signal.agentId);
@@ -305,6 +300,14 @@ export class BybitWebSocket {
         // instead of waiting for the next 5m candle close. Marks the signal
         // 'expired' in DB and returns the agent to IDLE the moment the
         // deadline passes.
+
+        // console.log("Time Check Local:", {
+        //   pair,
+        //   entryExpiry: new Date(signal.entryExpiry).toLocaleString(),
+        //   now: now.toLocaleString()
+        // });
+
+
         if (new Date(signal.entryExpiry) <= now) {
           const claimed = claimTriggers(signal.agentId);
           if (!claimed) continue;
@@ -340,8 +343,8 @@ export class BybitWebSocket {
         const atEntry = previousPrice === entry || price === entry;     // already sitting at level
         const entryHit = crossedUp || crossedDown || atEntry;
 
-        // console.log(entryHit,"Checking", { pair, price, previousPrice, entry, crossedUp, crossedDown, atEntry });
-        
+        console.log(entryHit, "Checking", { pair, price, previousPrice, entry, crossedUp, crossedDown, atEntry });
+
 
         if (entryHit) {
           // Atomic claim — synchronously remove from the in-memory store before
@@ -367,31 +370,14 @@ export class BybitWebSocket {
           // have shifted between signal creation and entry hit (e.g. a different
           // trade hit SL hard in between). Matches the candle-close and catch-up
           // paths which both re-validate.
-          // Challenge-aware: when the agent has an active challenge, size against
-          // the challenge sandbox and apply challenge-relative drawdown gates,
-          // not the global portfolio — otherwise the realtime path bypasses the
-          // sandbox the candle-close path enforces.
-          const challengeSession = await getActiveChallenge(agent.id);
-          const challengeRisk = challengeSession
-            ? await buildChallengeRiskContext(challengeSession)
-            : null;
-          const portfolio = challengeSession
-            ? await getChallengePortfolio(challengeSession)
-            : await getPortfolio();
-          const riskAgent = challengeSession
-            ? {
-              ...agent.toPromptAgent(),
-              allocationPercent: 100,
-              riskPercent: challengeSession.riskPercent ?? agent.riskPercent,
-              leverage: challengeSession.leverage ?? agent.leverage,
-            }
-            : agent.toPromptAgent();
+          const portfolio = await getPortfolio();
+          const riskAgent = agent.toPromptAgent();
+
           const validation = await validateEntrySignal(
             rawSignal,
             riskAgent,
             { cooldownUntil: agent.cooldownUntil } as any,
             portfolio,
-            challengeRisk,
           );
 
           if (!validation.approved) {
@@ -428,8 +414,7 @@ export class BybitWebSocket {
           });
 
           if (execResult.success && execResult.orderId) {
-            // executeEntry already attached the trade with the correct effective
-            // mode (challenge override aware). Only re-attach here if it didn't
+            // executeEntry already attached the trade. Only re-attach here if it didn't
             // — keeps trade.mode in sync with the actual routing path.
             if (!agent.currentTrade) {
               agent.attachTrade({
@@ -446,8 +431,8 @@ export class BybitWebSocket {
                 unrealisedPct: 0,
                 openedAt: new Date(),
                 entryReasoning: signal.reasoning ?? '',
-                mode: getEffectiveExecutionMode(agent.mode, challengeSession),
-                leverage: challengeSession?.leverage ?? agent.leverage ?? 10,
+                mode: agent.mode === 'backtest' ? 'paper' : agent.mode,
+                leverage: agent.leverage ?? 10,
               });
             }
           } else {
@@ -497,6 +482,7 @@ export class BybitWebSocket {
         }
       }
     }
+
   }
 
   private async saveCandle(candle: any): Promise<void> {
