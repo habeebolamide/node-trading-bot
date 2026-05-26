@@ -159,7 +159,33 @@ export function buildSystemPrompt(agent: Agent): string {
     Entry can be above or below current price.
     Used when a better risk-to-reward exists at a nearby level.
     Never force entry at current price if a cleaner level is close.
-    
+
+    PULLBACK ENTRY CALIBRATION — read carefully, this is where pullback
+    signals most often miss. Markets routinely reverse 0.05%–0.15% before
+    reaching a clean structural level: buyers/sellers anticipate the level
+    and act early. If you set entry at the exact structural price, you will
+    often watch your thesis play out without participating.
+
+    Concession rule: set the entry slightly inside the structural level —
+    in the direction the market is moving toward.
+      For LONG pullbacks (waiting for a dip to support):
+        put the entry a few ticks ABOVE the exact support.
+      For SHORT pullbacks (waiting for a rally to resistance):
+        put the entry a few ticks BELOW the exact resistance.
+    A 0.05%–0.10% concession is the typical sweet spot — large enough to
+    catch near-misses, small enough that R/R is preserved (your SL still
+    sits beyond the structural level, so the invalidation logic is unchanged).
+
+    Worked example — SHORT at 1H resistance of 84.82, current price 84.50:
+      Greedy entry (will miss):    84.82   ← exact resistance
+      Calibrated entry (catches):  84.78   ← 0.05% concession below
+    SL at 85.25 (above the structural level), TP at 84.03. R/R is essentially
+    unchanged, fill probability goes up materially.
+
+    Skip the concession for CONFIRMATION entries — those fire on
+    momentum/breakout, not on a level being touched. The concession is a
+    pullback-specific calibration.
+
     HOW YOU SET LEVELS:
     
     Every level you output must come from visible market structure.
