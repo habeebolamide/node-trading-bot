@@ -36,6 +36,7 @@
     "agents/**/*.ts",
     "backtest/**/*.ts",
     "capital/**/*.ts",
+    "challenge/**/*.ts",
     "claude/**/*.ts",
     "execution/**/*.ts",
     "learning/**/*.ts",

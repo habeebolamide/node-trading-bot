@@ -1,6 +1,7 @@
 import type { Agent, AgentRuntimeState } from '../types/agent.types.js';
 import type { EntrySignal, ManagementDecision } from '../types/claude.types.js';
 import type { CircuitBreakerState, CorrelationSnapshot, DrawdownState, PerformanceMode, Portfolio, ValidationResult } from '../types/risk.types.js';
+import type { ChallengeRiskContext } from '../types/challenge.types.js';
 import logger from '../utils/logger.js';
 import { prisma } from "../lib/prisma.js";
 
@@ -70,6 +71,7 @@ export async function validateEntrySignal(
   agent: Agent,
   runtime: AgentRuntimeState,
   portfolio: Portfolio,
+  challengeContext?: ChallengeRiskContext,
 ): Promise<ValidationResult> {
 
   // ── 1. Circuit breaker ──
@@ -107,19 +109,28 @@ export async function validateEntrySignal(
     return block('LOW_CONFIDENCE', `Confidence ${signal.confidence} below minimum ${LIMITS.minConfidence}`);
   }
 
-  const drawdown = await getDrawdownState(agent.id);
+  // ── 4. Drawdown / performance mode — challenge-scoped when in challenge ──
+  // In challenge mode, drawdown is the bucket's shortfall from startingCapital,
+  // not the agent's monthly P&L vs main pool. The session's own maxDrawdownPct
+  // serves as the floor; the monthly/daily caps below are bypassed because the
+  // bucket's drawdown floor (checked live in updateLivePnl) handles that.
+  const drawdown = challengeContext
+    ? buildChallengeDrawdownState(agent.id, challengeContext)
+    : await getDrawdownState(agent.id);
 
-  // ── 4. Monthly drawdown cap ──
-  if (drawdown.monthlyPnlPct <= -LIMITS.monthlyDrawdownCap) {
-    return block('MONTHLY_CAP_HIT', `Monthly drawdown ${(drawdown.monthlyPnlPct * 100).toFixed(1)}% hit cap`);
+  if (!challengeContext) {
+    // ── 4a. Monthly drawdown cap ──
+    if (drawdown.monthlyPnlPct <= -LIMITS.monthlyDrawdownCap) {
+      return block('MONTHLY_CAP_HIT', `Monthly drawdown ${(drawdown.monthlyPnlPct * 100).toFixed(1)}% hit cap`);
+    }
+
+    // ── 4b. Daily drawdown cap ──
+    if (drawdown.dailyPnlPct <= -LIMITS.dailyDrawdownCap) {
+      return block('DAILY_CAP_HIT', `Daily drawdown ${(drawdown.dailyPnlPct * 100).toFixed(1)}% hit cap`);
+    }
   }
 
-  // ── 5. Daily drawdown cap ──
-  if (drawdown.dailyPnlPct <= -LIMITS.dailyDrawdownCap) {
-    return block('DAILY_CAP_HIT', `Daily drawdown ${(drawdown.dailyPnlPct * 100).toFixed(1)}% hit cap`);
-  }
-
-  // ── 6. Correlation guard ──
+  // ── 5. Correlation guard ──
   const correlation = await getCorrelationSnapshot(signal, agent.id, agent.pair);
   if (correlation.activeAgentCount >= LIMITS.maxCorrelatedTrades) {
     return block(
@@ -128,12 +139,12 @@ export async function validateEntrySignal(
     );
   }
 
-  // ── 7. Cooldown after consecutive losses ──
+  // ── 6. Cooldown after consecutive losses ──
   if (runtime.cooldownUntil && new Date() < runtime.cooldownUntil) {
     return block('COOLDOWN_ACTIVE', 'Agent in cooldown after consecutive losses');
   }
 
-  // ── 8. Mode-aware confidence floor (calibration safety net) ──
+  // ── 7. Mode-aware confidence floor (calibration safety net) ──
   const minConfMode = MIN_CONFIDENCE_BY_MODE[drawdown.performanceMode];
   if (signal.confidence < minConfMode) {
     return block(
@@ -142,7 +153,7 @@ export async function validateEntrySignal(
     );
   }
 
-  // ── 9. Risk/reward floor — stricter in degraded performance modes ──
+  // ── 8. Risk/reward floor — stricter in degraded performance modes ──
   const risk   = Math.abs(signal.entry - signal.sl);
   const reward = Math.abs(signal.tp   - signal.entry);
   const rr     = risk > 0 ? reward / risk : 0;
@@ -155,14 +166,33 @@ export async function validateEntrySignal(
     );
   }
 
-  // ── 10. Calculate position size ──
-  const positionSize = calculatePositionSize(signal, agent, portfolio, drawdown.performanceMode);
+  // ── 9. Calculate position size ──
+  const positionSize = calculatePositionSize(
+    signal,
+    agent,
+    portfolio,
+    drawdown.performanceMode,
+    challengeContext,
+  );
 
   if (positionSize <= 0) {
     return block('INSUFFICIENT_CAPITAL', 'Calculated position size is zero');
   }
 
-
+  // ── 10. Per-trade minimum notional (challenge mode) ──
+  // Rejects individual signals whose computed notional falls below the
+  // exchange minimum without killing the session. The session-level
+  // unwinnable-equity check (in evaluateChallenge) handles the case where
+  // the bucket can't ever clear minimum.
+  if (challengeContext) {
+    const notional = positionSize * signal.entry;
+    if (notional < challengeContext.minNotionalFloor) {
+      return block(
+        'INSUFFICIENT_CAPITAL',
+        `Challenge trade notional $${notional.toFixed(2)} below min $${challengeContext.minNotionalFloor}`,
+      );
+    }
+  }
 
   logger.info('Signal approved', {
     agentId: agent.id,
@@ -170,6 +200,7 @@ export async function validateEntrySignal(
     action: signal.action,
     confidence: signal.confidence,
     positionSize,
+    challenge: challengeContext?.sessionId ?? null,
   });
 
   return {
@@ -230,10 +261,9 @@ export function calculatePositionSize(
   agent: Agent,
   portfolio: Portfolio,
   performanceMode: PerformanceMode,
+  challengeContext?: ChallengeRiskContext,
 ): number {
   if (!signal.entry || !signal.sl) return 0;
-
-  const agentCapital = portfolio.totalValue * (agent.allocationPercent / 100);
 
   const sizeMultiplier: Record<PerformanceMode, number> = {
     NORMAL: 1.0,
@@ -242,10 +272,25 @@ export function calculatePositionSize(
     RECOVERY: 0.5,
   };
 
-  const adjustedCapital = agentCapital * sizeMultiplier[performanceMode];
-  const leverage = agent.leverage ?? 1;
+  // ─── Challenge sizing ───
+  // Bucket-scoped sizing replaces the global allocationPercent × totalValue
+  // math. Notional cap = equity × leverage; risk cap = equity × riskPercent.
+  // Performance mode still scales — RECOVERY/CONSERVATIVE shrink the bucket
+  // size proportionally, same as outside challenge.
+  const agentCapital = challengeContext
+    ? challengeContext.equity
+    : portfolio.totalValue * (agent.allocationPercent / 100);
 
-  const maxRisk = adjustedCapital * (agent.riskPercent / 100);
+  const adjustedCapital = agentCapital * sizeMultiplier[performanceMode];
+  const leverage = challengeContext
+    ? challengeContext.leverage
+    : (agent.leverage ?? 1);
+
+  const riskPct = challengeContext
+    ? challengeContext.riskPercent
+    : agent.riskPercent;
+
+  const maxRisk = adjustedCapital * (riskPct / 100);
   const distanceToSl = Math.abs(signal.entry - signal.sl);
 
   if (distanceToSl === 0) return 0;
@@ -500,5 +545,33 @@ function block(
     blockReason: reason,
     positionSize: null,
     message,
+  };
+}
+
+// ─────────────────────────────────────────────
+// Challenge-scoped drawdown state
+// Builds a DrawdownState shaped for the bucket so the rest of
+// validateEntrySignal doesn't need a separate code path. Performance mode
+// here scales off the bucket's drawdown only — never the agent's monthly P&L.
+// ─────────────────────────────────────────────
+
+export function buildChallengeDrawdownState(
+  agentId: string,
+  ctx: ChallengeRiskContext,
+): DrawdownState {
+  // Treat the bucket's shortfall-from-start as the "monthly" pnl pct that
+  // drives mode resolution. drawdownPct is positive (0..1) when behind start.
+  // Use the negative form so existing thresholds (-5%, -7%) line up.
+  const equityPnlPct = -ctx.drawdownPct;
+  const performanceMode = resolvePerformanceMode(equityPnlPct);
+
+  return {
+    agentId,
+    dailyPnlPct:        equityPnlPct,
+    monthlyPnlPct:      equityPnlPct,
+    peakPortfolioValue: ctx.startingCapital,
+    currentDrawdown:    Math.min(0, equityPnlPct),
+    maxDrawdownHit:     Math.min(0, equityPnlPct),
+    performanceMode,
   };
 }

@@ -7,6 +7,7 @@ import { detectRegime, isSignificantCandle } from './markets/regime.js';
 import { buildMtfData } from './markets/mtf.js';
 import { clearTriggers, getTriggerState, hasTriggers, startTimeoutChecker } from './agents/triggers.js';
 import { synthesiseLessons } from './learning/index.js';
+import { reconcileAgentChallengeToggles, tickActiveChallenges } from './challenge/index.js';
 import { prisma } from './lib/prisma.js';
 import logger from './utils/logger.js';
 
@@ -63,6 +64,12 @@ async function main(): Promise<void> {
   // Cadence is anchored to Agent.lastSynthesisAt (DB-persisted), so restarts
   // don't reset the clock. Hourly tick re-evaluates each agent's due-ness.
   startSynthesisRunner();
+
+  // 3c. Challenge mode driver — watches challengeMode toggle flips, evaluates
+  // active sessions for terminal states, expires/passes/fails as needed. The
+  // reconciler runs frequently (every minute) so toggle UX feels responsive;
+  // the hourly tick is a backstop for expiry / unwinnable-equity detection.
+  startChallengeChecker();
 
   // 3c. Wire up immediate reanalysis handlers — fires the moment needsReanalysis
   // or needsManagementReanalysis flips to true (e.g. realtime ticker hit).
@@ -255,6 +262,40 @@ async function tickSynthesis(): Promise<void> {
 function startSynthesisRunner(): void {
   void tickSynthesis();
   setInterval(() => { void tickSynthesis(); }, SYNTHESIS_CHECK_MS);
+}
+
+// ─────────────────────────────────────────────
+// Challenge mode runner
+// Two cadences:
+//   - reconcileAgentChallengeToggles every 60s — picks up challengeMode flips
+//     fast enough that the user doesn't feel a lag between toggling on/off
+//     and the bot reacting. Also runs evaluateChallenge inline.
+//   - tickActiveChallenges hourly — backstop for expiry / unwinnable equity
+//     in case no trade closed recently to trigger a check.
+// ─────────────────────────────────────────────
+
+const CHALLENGE_RECONCILE_MS = 60_000;       // 60s
+const CHALLENGE_HOURLY_MS    = 60 * 60_000;  // 1h
+
+function startChallengeChecker(): void {
+  // Initial run on boot — picks up sessions that should already be active
+  // (e.g. a crash-restart) and immediately flips any state changes the user
+  // made while the bot was down.
+  void reconcileAgentChallengeToggles().catch(err =>
+    logger.error('Initial challenge reconcile failed', { error: err?.message ?? err }),
+  );
+
+  setInterval(() => {
+    reconcileAgentChallengeToggles().catch(err =>
+      logger.error('Challenge reconcile tick failed', { error: err?.message ?? err }),
+    );
+  }, CHALLENGE_RECONCILE_MS);
+
+  setInterval(() => {
+    tickActiveChallenges().catch(err =>
+      logger.error('Challenge hourly tick failed', { error: err?.message ?? err }),
+    );
+  }, CHALLENGE_HOURLY_MS);
 }
 
 main().catch((error) => {

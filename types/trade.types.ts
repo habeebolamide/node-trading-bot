@@ -33,6 +33,16 @@ export interface OpenTrade {
   entryReasoning: string;         // Claude's reasoning at entry
   mode:          'paper' | 'live';
   leverage:      number;
+
+  // ─── Challenge mode (set when this trade was opened inside an active session) ───
+  // challengeBaseline = startingCapital + realised challenge PnL at the moment
+  // this trade was opened. Live bucket equity = challengeBaseline + unrealisedPnl.
+  // challengeFloor    = absolute $ equity at/below which the drawdown floor breaks.
+  // updateLivePnl uses these to fire force-close on breach without re-querying
+  // the DB on every ticker tick.
+  challengeId?:        string;
+  challengeBaseline?:  number;
+  challengeFloor?:     number;
 }
 
 export interface ClosedTrade extends OpenTrade {

@@ -9,6 +9,11 @@ import { detectRegime } from '../markets/regime.js';
 import { calculateIndicators } from '../markets/indicators.js';
 import { getNewsContextForPrompt } from '../markets/news.js';
 import { runPostMortem } from '../learning/index.js';
+import {
+  endChallenge,
+  evaluateChallenge,
+  getActiveChallengeForAgent,
+} from '../challenge/index.js';
 import type { AgentRuntime } from '../agents/index.js';
 import type { EntrySignal, ManagementDecision } from '../types/claude.types.js';
 import type {
@@ -70,8 +75,29 @@ export async function executeEntry(
   positionSize: number,
   currentPrice: number,
 ): Promise<OrderResult> {
-  const execMode    = agent.mode === 'backtest' ? 'paper' : agent.mode;
-  const leverage    = agent.leverage ?? 10;
+  // ─── Challenge mode awareness ───
+  // If the agent has an active session, the trade is tagged with challengeId
+  // and the session's executionMode overrides agent.mode. Leverage from the
+  // session also overrides agent.leverage (typically higher for small buckets).
+  const session = await getActiveChallengeForAgent(agent.id);
+
+  const execMode    = session
+    ? session.executionMode
+    : (agent.mode === 'backtest' ? 'paper' : agent.mode);
+  const leverage    = session?.leverage ?? agent.leverage ?? 10;
+
+  // Pre-compute baseline for the live drawdown-floor check in updateLivePnl.
+  let challengeBaseline: number | undefined;
+  let challengeFloor:    number | undefined;
+  if (session) {
+    const realisedResult = await prisma.trade.aggregate({
+      where:  { challengeId: session.id, status: 'closed' },
+      _sum:   { realizedPnL: true },
+    });
+    const realisedPnL = realisedResult._sum.realizedPnL ?? 0;
+    challengeBaseline = session.startingCapital + realisedPnL;
+    challengeFloor    = session.startingCapital * (1 - session.maxDrawdownPct);
+  }
 
   const request: OrderRequest = {
     agentId:      agent.id,
@@ -106,6 +132,8 @@ export async function executeEntry(
         status:        'open',
         entrySnapshot: entrySnapshot as any,
         leverage,
+        mode:          execMode,
+        challengeId:   session?.id ?? null,
       },
     });
 
@@ -125,6 +153,11 @@ export async function executeEntry(
       entryReasoning: (signal as any).reasoning ?? '',
       mode:           execMode,
       leverage:       trade.leverage,
+      ...(session ? {
+        challengeId:        session.id,
+        challengeBaseline:  challengeBaseline!,
+        challengeFloor:     challengeFloor!,
+      } : {}),
     };
 
     agent.attachTrade(openTrade);
@@ -186,6 +219,11 @@ export async function triggerPendingSignal(
 const PNL_WRITE_THROTTLE_MS = 10_000;
 const lastPnlWriteAt = new Map<string, number>();
 
+// Once a challenge breaches its drawdown floor we fire endChallenge and don't
+// want subsequent ticker ticks to re-fire it before the close lands. Track
+// session IDs we've already triggered; cleared when the session terminates.
+const challengeFloorFired = new Set<string>();
+
 export function updateLivePnl(pair: string, currentPrice: number): void {
   const agents = agentManager.getAgentsForPair(pair);
 
@@ -203,6 +241,43 @@ export function updateLivePnl(pair: string, currentPrice: number): void {
     trade.unrealisedPct = positionValue > 0
       ? Math.round((pnl / positionValue) * trade.leverage * 10_000) / 100
       : 0;
+
+    // ─── Challenge drawdown-floor live check ───
+    // For challenge trades only: if live bucket equity falls at/below the
+    // drawdown floor, end the challenge immediately (force-closing this trade).
+    // baseline + unrealisedPnl gives an accurate live equity without any
+    // additional DB query — both are already in scope. Fire-and-forget.
+    // challengeFloorFired guards against re-firing on subsequent ticks before
+    // the close lands.
+    if (
+      trade.challengeId &&
+      trade.challengeBaseline != null &&
+      trade.challengeFloor != null &&
+      !challengeFloorFired.has(trade.challengeId)
+    ) {
+      const liveEquity = trade.challengeBaseline + trade.unrealisedPnl;
+      if (liveEquity <= trade.challengeFloor) {
+        const sessionId = trade.challengeId;
+        challengeFloorFired.add(sessionId);
+        logger.warn('Challenge drawdown floor breached — force-closing', {
+          agentId:     agent.id,
+          sessionId,
+          liveEquity,
+          floor:       trade.challengeFloor,
+        });
+        endChallenge(
+          sessionId,
+          'failed',
+          `Drawdown floor breached: live equity $${liveEquity.toFixed(2)} <= floor $${trade.challengeFloor.toFixed(2)}`,
+          { forceClose: true },
+        ).catch(err =>
+          logger.error('endChallenge from updateLivePnl failed', {
+            sessionId,
+            error: err?.message ?? err,
+          }),
+        );
+      }
+    }
 
     // Throttled DB flush — makes the row inspectable from Prisma Studio / SQL
     // without writing on every tick. Fire-and-forget; PnL stays accurate in memory
@@ -421,9 +496,32 @@ export async function closeTrade(
 
   agent.clearTrade();
   lastPnlWriteAt.delete(trade.id);
-  
+
   // Update Agent's DB stats (win rate, monthly PnL, total trades)
   void updateAgentDbStats(agent.id);
+
+  // ─── Challenge: post-close evaluation ───
+  // Fast pass/fail/floor detection right after the trade lands, so we don't
+  // wait for the hourly tick. evaluateChallenge is cheap (one session lookup
+  // + one portfolio query); fire-and-forget if it returns terminal.
+  const closedChallengeId = (closed as any).challengeId ?? trade.challengeId;
+  if (closedChallengeId) {
+    evaluateChallenge(closedChallengeId)
+      .then((evalResult) => {
+        if (!evalResult.terminal) return;
+        const forceClose =
+          evalResult.status === 'failed' ? evalResult.forceClose : true;
+        return endChallenge(closedChallengeId, evalResult.status, evalResult.reason, {
+          forceClose,
+        });
+      })
+      .catch(err =>
+        logger.error('Post-close challenge evaluation failed', {
+          challengeId: closedChallengeId,
+          error:       err?.message ?? err,
+        }),
+      );
+  }
 
   // Notification with outcome
   const outcome = realisedPnl >= 0 ? 'WIN' : 'LOSS';

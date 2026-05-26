@@ -4,9 +4,11 @@ import { prisma } from '../lib/prisma.js';
 import { agentManager } from '../agents/index.js';
 import { executionEngine, updateLivePnl } from '../execution/index.js';
 import type { EntrySignal } from '../types/claude.types.js';
+import type { ChallengeSessionRecord } from '../types/challenge.types.js';
 import { clearTriggers, getTriggerState, claimTriggers } from '../agents/triggers.js';
 import { validateEntrySignal } from '../risk/index.js';
-import { getPortfolio } from '../capital/index.js';
+import { getChallengePortfolio, getPortfolio } from '../capital/index.js';
+import { buildChallengeRiskContext } from '../challenge/index.js';
 import { notifications } from '../utils/notifications.js';
 
 const BUFFER_SIZE = 200;
@@ -370,7 +372,19 @@ export class BybitWebSocket {
           // have shifted between signal creation and entry hit (e.g. a different
           // trade hit SL hard in between). Matches the candle-close and catch-up
           // paths which both re-validate.
-          const portfolio = await getPortfolio();
+          // Challenge-aware: a signal stamped with challengeId routes through
+          // the bucket sandbox; otherwise the main pool.
+          const session = signal.challengeId
+            ? await prisma.challengeSession.findUnique({
+                where: { id: signal.challengeId },
+              })
+            : null;
+          const challengeContext = (session && session.status === 'active')
+            ? await buildChallengeRiskContext(session as ChallengeSessionRecord)
+            : null;
+          const portfolio = challengeContext
+            ? (await getChallengePortfolio(session as ChallengeSessionRecord)) as any
+            : await getPortfolio();
           const riskAgent = agent.toPromptAgent();
 
           const validation = await validateEntrySignal(
@@ -378,6 +392,7 @@ export class BybitWebSocket {
             riskAgent,
             { cooldownUntil: agent.cooldownUntil } as any,
             portfolio,
+            challengeContext ?? undefined,
           );
 
           if (!validation.approved) {

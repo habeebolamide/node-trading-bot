@@ -1,6 +1,7 @@
 import ccxt from 'ccxt';
 import { prisma } from '../lib/prisma.js';
 import type { AgentCapital, Portfolio } from '../types/risk.types.js';
+import type { ChallengePortfolio, ChallengeSessionRecord } from '../types/challenge.types.js';
 import logger from '../utils/logger.js';
 
 // ─────────────────────────────────────────────
@@ -54,8 +55,8 @@ export async function fetchBybitBalance(): Promise<number> {
 export async function getPortfolio(): Promise<Portfolio> {
 
   const isTestnet = process.env.BYBIT_TESTNET === 'true';
-  const initialCapital = isTestnet 
-    ? parseFloat(process.env.INITIAL_CAPITAL ?? '1000') 
+  const initialCapital = isTestnet
+    ? parseFloat(process.env.INITIAL_CAPITAL ?? '1000')
     : await fetchBybitBalance();
 
   const agents = await prisma.agent.findMany({
@@ -64,22 +65,46 @@ export async function getPortfolio(): Promise<Portfolio> {
 
   const agentIds = agents.map(a => a.id);
 
+  // ─── Challenge carve-out ───
+  // When a challenge session is active, its starting capital is excluded
+  // from the main pool's totalValue and its realised + open trades are
+  // excluded from main P&L / allocation. Frozen carve-out — main agents
+  // see a stable pool, unaffected by challenge swings. Once a session ends
+  // (status != active), the filter stops applying and the bucket's
+  // realisedPnL folds back into the main pool automatically.
+  const activeSessions = await prisma.challengeSession.findMany({
+    where:  { status: 'active' },
+    select: { id: true, startingCapital: true },
+  });
+
+  const activeSessionIds = activeSessions.map(s => s.id);
+  const carvedOut        = activeSessions.reduce((sum, s) => sum + s.startingCapital, 0);
+
   const result = await prisma.trade.aggregate({
     where: {
       agentId: { in: agentIds },
       status:  'closed',
+      ...(activeSessionIds.length > 0
+        ? { challengeId: { notIn: activeSessionIds } }
+        : {}),
     },
     _sum: { realizedPnL: true },
   });
 
-  const totalPnl   = result._sum.realizedPnL ?? 0;
-  const totalValue = initialCapital + totalPnl;
+  const totalPnl   = result._sum?.realizedPnL ?? 0;
+  // Subtract the frozen carve-out so main agents do not "see" the bucketed capital.
+  // Math.max guard: if user has only $4 and a $4 challenge, main pool is exactly 0
+  // — but a misconfigured Bybit balance below the carve-out shouldn't go negative.
+  const totalValue = Math.max(0, initialCapital + totalPnl - carvedOut);
 
-  // Sum value locked in open trades
+  // Sum value locked in open trades — excluding open challenge trades.
   const openTrades = await prisma.trade.findMany({
     where: {
       agentId: { in: agentIds },
       status:  'open',
+      ...(activeSessionIds.length > 0
+        ? { challengeId: { notIn: activeSessionIds } }
+        : {}),
     },
     select: { size: true, entryPrice: true },
   });
@@ -99,6 +124,73 @@ export async function getPortfolio(): Promise<Portfolio> {
     reserveValue:    round(reserveValue),
     lastUpdatedAt:   new Date(),
   };
+}
+
+// ─────────────────────────────────────────────
+// Challenge portfolio
+// Isolated bucket view scoped to a single session — used by the challenge
+// agent's entry/exit cycle in place of getPortfolio(). No reserve carve-out
+// (every dollar must be deployable inside the bucket). Equity is
+// startingCapital + realised challenge PnL + open challenge trade unrealised.
+// ─────────────────────────────────────────────
+
+export async function getChallengePortfolio(
+  session: ChallengeSessionRecord | { id: string; startingCapital: number },
+): Promise<ChallengePortfolio> {
+  // Realised PnL from closed challenge trades.
+  const realisedResult = await prisma.trade.aggregate({
+    where:  { challengeId: session.id, status: 'closed' },
+    _sum:   { realizedPnL: true },
+  });
+  const realisedPnL = realisedResult._sum?.realizedPnL ?? 0;
+
+  // Open challenge trade (max one per agent given the existing single-trade-
+  // per-agent constraint) — use its in-DB unrealisedPnl which is kept current
+  // by updateLivePnl (throttled writes, accurate within ~10s).
+  const openTrade = await prisma.trade.findFirst({
+    where:  { challengeId: session.id, status: 'open' },
+    select: { size: true, entryPrice: true, unrealisedPnl: true },
+  });
+
+  const unrealisedPnL  = openTrade?.unrealisedPnl ?? 0;
+  const allocatedValue = openTrade ? openTrade.size * openTrade.entryPrice : 0;
+  const equity         = session.startingCapital + realisedPnL + unrealisedPnL;
+
+  // No reserve carve-out — every dollar in the bucket is deployable.
+  const availableValue = Math.max(0, equity - allocatedValue);
+
+  return {
+    sessionId:       session.id,
+    totalValue:      round(equity),
+    availableValue:  round(availableValue),
+    allocatedValue:  round(allocatedValue),
+    reserveValue:    0,
+    startingCapital: round(session.startingCapital),
+    realisedPnL:     round(realisedPnL),
+    unrealisedPnL:   round(unrealisedPnL),
+    lastUpdatedAt:   new Date(),
+  };
+}
+
+// ─────────────────────────────────────────────
+// Raw account total — used by pre-flight INSUFFICIENT_FUNDS check.
+// Bypasses the challenge carve-out filter so it reflects what's actually on
+// Bybit (or INITIAL_CAPITAL in testnet) before deciding whether a new
+// session's startingCapital fits.
+// ─────────────────────────────────────────────
+
+export async function getRawAccountTotal(): Promise<number> {
+  const isTestnet = process.env.BYBIT_TESTNET === 'true';
+  const initialCapital = isTestnet
+    ? parseFloat(process.env.INITIAL_CAPITAL ?? '1000')
+    : await fetchBybitBalance();
+
+  const result = await prisma.trade.aggregate({
+    where: { status: 'closed' },
+    _sum:  { realizedPnL: true },
+  });
+
+  return initialCapital + (result._sum?.realizedPnL ?? 0);
 }
 
 // ─────────────────────────────────────────────

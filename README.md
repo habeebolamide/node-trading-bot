@@ -4,6 +4,8 @@ An autonomous crypto trading bot. LLMs (Claude for entries, DeepSeek for everyth
 
 Each **agent** is bound to a pair (e.g. BTCUSDT), a trading style (scalp/swing/position/auto), a risk %, a leverage, and a mode (`paper` or `live`). The bot ingests candles + ticker from Bybit WebSocket, runs a multi-stage decision loop, persists everything to Postgres, and notifies via Telegram.
 
+**Challenge mode** lets any agent run a time-boxed "flip the bucket" run (e.g. $4 → $40 in 30 days) on an isolated capital carve-out while other agents keep trading normally. Toggle `Agent.challengeMode = true` after creating a pending `ChallengeSession` row. Full details in [guides/CHALLENGE_MODE.md](guides/CHALLENGE_MODE.md).
+
 ---
 
 ## Architecture
@@ -66,8 +68,11 @@ Each **agent** is bound to a pair (e.g. BTCUSDT), a trading style (scalp/swing/p
 | Risk | [risk/index.ts](risk/index.ts) | Drawdown caps, R/R floor, position sizing, circuit breaker |
 | Execution | [execution/index.ts](execution/index.ts) | Paper + live entry / management / close via ccxt + private WS |
 | Learning | [learning/index.ts](learning/index.ts) | Post-mortem, lesson retrieval, weekly synthesis |
-| Capital | [capital/index.ts](capital/index.ts) | Portfolio value resolution |
-| Persistence | [prisma/schema.prisma](prisma/schema.prisma) | Postgres schema: Agent, Trade, Signal, TradeLesson, Candle, BacktestResult |
+| Capital | [capital/index.ts](capital/index.ts) | Portfolio value resolution + challenge-aware carve-out |
+| Challenge | [challenge/index.ts](challenge/index.ts) | Challenge-mode session lifecycle: pre-flight, activation, evaluation, termination |
+| | [types/challenge.types.ts](types/challenge.types.ts) | Challenge session/portfolio/risk-context types |
+| | [guides/CHALLENGE_MODE.md](guides/CHALLENGE_MODE.md) | User-facing guide: bucket model, pre-flight checks, FAQ |
+| Persistence | [prisma/schema.prisma](prisma/schema.prisma) | Postgres schema: Agent, Trade, Signal, TradeLesson, Candle, BacktestResult, ChallengeSession |
 | Utils | [utils/logger.ts](utils/logger.ts) | Winston structured logs |
 | | [utils/notifications.ts](utils/notifications.ts) | Telegram alerts |
 | | [utils/helper.ts](utils/helper.ts) | Trade mapping, timeout calc |
@@ -190,6 +195,31 @@ Weekly synthesis runs in-process via `startSynthesisRunner` ([index.ts](index.ts
 4. The next entry cycle embeds those rules in the system prompt via `buildSystemPrompt`.
 
 Lesson retrieval at entry time ([learning/index.ts:91](learning/index.ts:91)) uses tag matching: `getRelevantLessons` accepts `'LONG' | 'SHORT' | 'UNKNOWN'`. Pre-decision (`'UNKNOWN'`), it surfaces tags that apply for *either* direction so the LLM sees all potentially relevant lessons before choosing a direction.
+
+---
+
+## Challenge mode
+
+Time-boxed "flip the bucket" runs on an isolated capital carve-out. Default shape: **$4 → $40 in 30 days** on a single agent, while other agents keep trading the remaining ~$396.
+
+**Quick path:**
+
+1. Open Prisma Studio (`npx prisma studio`) → `challenge_sessions` → new row. Required fields: `agentId`, `startingCapital`, `targetCapital`. Defaults handle the rest. Leave `status='pending'`.
+2. On the same agent, set `challengeMode = true`. Save.
+3. Within ~60 s the bot's reconciler runs nine pre-flight checks and either activates the session (status `→ active`, `startsAt`/`endsAt` populated, Telegram alert) or rejects it (session status `→ failed` with `failReason`, toggle flipped back to false, start-failed alert).
+4. To stop early: set `challengeMode = false`. Session is `cancelled`, open trade force-closed, capital folds back.
+
+**Key behaviours:**
+
+- **Frozen carve-out**: while a session is active, `mainPool.totalValue = rawAccountTotal − session.startingCapital`. Other agents' position sizing is unaffected by the bucket's swings.
+- **Sizing inside the bucket**: `notional = challengeEquity × leverage`, `risk = challengeEquity × riskPct%`, `positionSize = min(notional / entry, risk / |entry − sl|)`. Compounds with wins.
+- **Live drawdown floor**: bucket equity is evaluated as `realized + unrealized`. If it breaches the floor (default 50%), the open trade is force-closed immediately — the bucket cannot bleed past the floor inside a single losing position.
+- **One challenge per agent at a time** — enforced by the `SESSION_ALREADY_ACTIVE` pre-flight check.
+- **No CLI, no API** — everything is driven by editing rows in `agents` and `challenge_sessions`.
+
+**Defaults:** min starting capital $4 (will rise to $5 after testing), max target multiplier 10×, min notional $5, default duration 30 days, default risk 10%, default drawdown floor 50%.
+
+See [guides/CHALLENGE_MODE.md](guides/CHALLENGE_MODE.md) for the full bucket-model walkthrough, all nine pre-flight rejection codes, fees/funding realism, the 20-step paper-mode smoke test, and FAQ.
 
 ---
 

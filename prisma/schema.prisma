@@ -32,6 +32,13 @@ model Agent {
 
   lastSynthesisAt   DateTime?
 
+  // ─── Challenge mode ───
+  // Toggle only. To run a challenge: create a ChallengeSession row with
+  // status='pending' and the config you want, then flip challengeMode=true.
+  // The reconciler picks up the pending session and activates it.
+  // See guides/CHALLENGE_MODE.md.
+  challengeMode     Boolean       @default(false)
+
   createdAt         DateTime      @default(now())
   updatedAt         DateTime      @updatedAt
 
@@ -39,6 +46,7 @@ model Agent {
   trades            Trade[]
   lessons           TradeLesson[]
   signals           Signal[]
+  challengeSessions ChallengeSession[]
 
   @@map("agents")
 }
@@ -58,11 +66,16 @@ model Trade {
   closeReason   String?
   duration      Int?     // in seconds or minutes
   leverage      Float    @default(10.0)
+  mode          String?  // "paper" | "live" — per-trade override. Falls back to agent.mode when null.
 
   entrySnapshot Json?    // { regime, rsi, volumeRatio, news } captured at executeEntry, read by post-mortem
 
   unrealisedPnl Float?   @default(0)  // updated by updateLivePnl, throttled to 10s, for dashboard visibility
   unrealisedPct Float?   @default(0)
+
+  // Challenge mode — non-null when this trade was opened during an active challenge session.
+  challengeId      String?
+  challengeSession ChallengeSession? @relation(fields: [challengeId], references: [id], onDelete: SetNull)
 
   openedAt      DateTime @default(now())
   closedAt      DateTime?
@@ -154,9 +167,58 @@ model Signal {
   triggeredBy   String?   // ENTRY_HIT | PRICE_UP | PRICE_DOWN | TIMEOUT | EXPIRY
   triggeredAt   DateTime?
   leverage      Float?    @default(10.0)
+
+  // Challenge mode — non-null when this signal was created during an active challenge session.
+  // Required (alongside Trade.challengeId) so the websocket entry-hit re-validation path
+  // routes through the challenge sandbox instead of the main pool.
+  challengeId      String?
+  challengeSession ChallengeSession? @relation(fields: [challengeId], references: [id], onDelete: SetNull)
+
   createdAt     DateTime  @default(now())
 
   agent         Agent     @relation(fields: [agentId], references: [id], onDelete: Cascade)
 
   @@map("signals")
+}
+
+// ─────────────────────────────────────────────
+// Challenge mode session
+// One row per challenge run (active or historical). Active session is
+// pointed to by Agent.currentChallengeSessionId. See guides/CHALLENGE_MODE.md.
+// ─────────────────────────────────────────────
+
+model ChallengeSession {
+  id               String    @id @default(uuid())
+  agentId          String
+
+  // ─── Config — set by user at creation, immutable after activation ───
+  startingCapital  Float
+  targetCapital    Float
+  durationDays     Int       @default(30)
+  maxDrawdownPct   Float     @default(0.5)
+  riskPercent      Float     @default(10.0)
+  leverage         Float     @default(10.0)
+  minNotionalFloor Float     @default(5.0)
+  executionMode    String    @default("paper")  // "paper" | "live"
+
+  // ─── Lifecycle — populated by the bot ───
+  // status flow: pending → active → (passed | failed | expired | cancelled)
+  status           String    @default("pending")
+  startsAt         DateTime?                     // set when status → active
+  endsAt           DateTime?                     // computed at activation as startsAt + durationDays
+  endedAt          DateTime?                     // set on any terminal status
+  finalEquity      Float?
+  finalReturnPct   Float?
+  failReason       String?
+  result           Json?
+
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  agent            Agent     @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  trades           Trade[]
+  signals          Signal[]
+
+  @@index([agentId, status])
+  @@map("challenge_sessions")
 }

@@ -1,15 +1,17 @@
 import { buildEntryPrompt, buildManagementPrompt, buildSystemPrompt } from "../claude/prompts.js";
 import { prisma } from "../lib/prisma.js";
-import { getDrawdownState, validateEntrySignal, validateManagementDecision } from "../risk/index.js";
+import { buildChallengeDrawdownState, getDrawdownState, validateEntrySignal, validateManagementDecision } from "../risk/index.js";
 import type { Agent, AgentState, LearnedRule } from "../types/agent.types.js";
 import type { EntrySignal, ManagementDecision } from "../types/claude.types.js";
 import type { Candle, MultiTimeframeData, RegimeAnalysis } from "../types/market.types.js";
 import type { OpenTrade } from "../types/trade.types.js";
+import type { ChallengeRiskContext, ChallengeSessionRecord } from "../types/challenge.types.js";
 import logger from "../utils/logger.js";
 import { getRelevantLessons } from '../learning/index.js';
 import { notifications } from "../utils/notifications.js";
 import { executionEngine } from "../execution/index.js";
-import { getPortfolio } from "../capital/index.js";
+import { getChallengePortfolio, getPortfolio } from "../capital/index.js";
+import { buildChallengeRiskContext, getActiveChallengeForAgent } from "../challenge/index.js";
 import {
   calculateManagementTimeout,
   clampMinutes,
@@ -237,7 +239,27 @@ export class AgentManager {
     });
 
     if (openTrade) {
-      agent.attachTrade(mapToOpenTrade(openTrade));
+      const mapped = mapToOpenTrade(openTrade);
+
+      // Rehydrate challenge baseline + floor so the live drawdown check in
+      // updateLivePnl resumes working after a restart. Done here because
+      // mapToOpenTrade is sync (no DB access) but the baseline needs one query.
+      if (openTrade.challengeId) {
+        const session = await prisma.challengeSession.findUnique({
+          where: { id: openTrade.challengeId },
+        });
+        if (session && session.status === 'active') {
+          const realised = await prisma.trade.aggregate({
+            where: { challengeId: session.id, status: 'closed' },
+            _sum:  { realizedPnL: true },
+          });
+          mapped.challengeId       = session.id;
+          mapped.challengeBaseline = session.startingCapital + (realised._sum.realizedPnL ?? 0);
+          mapped.challengeFloor    = session.startingCapital * (1 - session.maxDrawdownPct);
+        }
+      }
+
+      agent.attachTrade(mapped);
       logger.info(`[${agent.name}] Restored → IN_TRADE`, { tradeId: openTrade.id });
       return;
     }
@@ -373,13 +395,24 @@ export class AgentManager {
 
       // Re-validate risk — drawdown / circuit-breaker state may have shifted
       // during downtime; do not blindly fire a trade that current risk would reject.
+      // Challenge-aware: a signal stamped with challengeId routes through the
+      // bucket sandbox; otherwise main pool.
       const rawSignal = signal.rawSignal as unknown as EntrySignal;
-      const portfolio = await getPortfolio();
+      const session = signal.challengeId
+        ? await prisma.challengeSession.findUnique({ where: { id: signal.challengeId } })
+        : null;
+      const challengeContext = (session && session.status === 'active')
+        ? await buildChallengeRiskContext(session as ChallengeSessionRecord)
+        : null;
+      const portfolio = challengeContext
+        ? (await getChallengePortfolio(session as ChallengeSessionRecord)) as any
+        : await getPortfolio();
       const validation = await validateEntrySignal(
         rawSignal,
         agent.toPromptAgent(),
         { cooldownUntil: agent.cooldownUntil } as any,
         portfolio,
+        challengeContext ?? undefined,
       );
 
       if (!validation.approved) {
@@ -621,7 +654,15 @@ export class AgentManager {
     newsContext: string,
   ): Promise<void> {
 
-    const drawdown = await getDrawdownState(agent.id);
+    // ─── Challenge mode: swap drawdown + portfolio for bucket-scoped views ───
+    const session = await getActiveChallengeForAgent(agent.id);
+    const challengeContext: ChallengeRiskContext | null = session
+      ? await buildChallengeRiskContext(session)
+      : null;
+
+    const drawdown = challengeContext
+      ? buildChallengeDrawdownState(agent.id, challengeContext)
+      : await getDrawdownState(agent.id);
     const performanceMode = drawdown.performanceMode;
     const systemPrompt = buildSystemPrompt(agent.toPromptAgent());
 
@@ -647,6 +688,7 @@ export class AgentManager {
       lessons,
       drawdown.monthlyPnlPct * 100,
       performanceMode,
+      challengeContext ?? undefined,
     );
 
     const claudeResult = await getEntrySignal(systemPrompt, entryPrompt, agent.id);
@@ -693,12 +735,18 @@ export class AgentManager {
     }
 
     // ── LONG or SHORT — validate risk ──
-    const portfolio = await getPortfolio();
+    // In challenge mode, use the bucket portfolio so allocation math doesn't
+    // accidentally pull from the main pool. Risk validator also takes the
+    // challenge context to swap drawdown / sizing rules.
+    const portfolio = challengeContext
+      ? (await getChallengePortfolio(session!)) as any
+      : await getPortfolio();
     const riskResult = await validateEntrySignal(
       signal,
       riskAgent,
       { cooldownUntil: agent.cooldownUntil } as any,
       portfolio,
+      challengeContext ?? undefined,
     );
 
     if (!riskResult.approved) {
@@ -762,12 +810,22 @@ export class AgentManager {
   ): Promise<void> {
     if (!agent.currentTrade) return;
 
+    // Challenge context for exit decisions — Claude needs days-left / progress
+    // / drawdown-used to lock in wins near target and play defensive near floor.
+    const session = agent.currentTrade.challengeId
+      ? await prisma.challengeSession.findUnique({ where: { id: agent.currentTrade.challengeId } })
+      : null;
+    const challengeContext = (session && session.status === 'active')
+      ? await buildChallengeRiskContext(session as ChallengeSessionRecord)
+      : null;
+
     const systemPrompt = buildSystemPrompt(agent.toPromptAgent());
     const managementPrompt = buildManagementPrompt(
       agent.toPromptAgent(),
       agent.currentTrade,
       mtfData,
       newsContext,
+      challengeContext ?? undefined,
     );
 
     const result = await getManagementDecision(systemPrompt, managementPrompt, agent.id);

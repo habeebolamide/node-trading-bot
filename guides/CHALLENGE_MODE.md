@@ -12,7 +12,7 @@ This guide explains what it is, how to start one, the math behind the bucket, ev
 2. [Quick start](#2-quick-start)
 3. [The bucket model](#3-the-bucket-model)
 4. [Position sizing inside the bucket](#4-position-sizing-inside-the-bucket)
-5. [The eight pre-flight checks](#5-the-eight-pre-flight-checks)
+5. [The nine pre-flight checks](#5-the-nine-pre-flight-checks)
 6. [Mid-session failure modes](#6-mid-session-failure-modes)
 7. [Reading the session row](#7-reading-the-session-row)
 8. [Realistic expectations: fees, funding, min notional](#8-realistic-expectations-fees-funding-min-notional)
@@ -46,44 +46,52 @@ While the session is active, that agent only trades within the bucket. Its P&L, 
 
 ## 2. Quick start
 
-Challenge mode is **per-agent and toggle-based**. There is no CLI. You configure the challenge on the agent row and flip a boolean.
+Challenge config lives on a `ChallengeSession` row. The `Agent` row only carries one field — `challengeMode` — which is the start/stop toggle. Two steps:
 
-### Step 1 — configure the agent
+### Step 1 — create a pending session
 
-Open Prisma Studio (`npx prisma studio`) or edit the DB directly. On the agent you want to run the challenge, set:
+Open Prisma Studio (`npx prisma studio`) → `challenge_sessions` table → New row. Fill in:
 
-| Field                       | Example  | What it does                                            |
-|-----------------------------|----------|---------------------------------------------------------|
-| `challengeStartingCapital`  | `4`      | Dollars the bucket starts with                          |
-| `challengeTargetCapital`    | `40`     | Pass threshold                                          |
-| `challengeDurationDays`     | `30`     | Auto-expire after this many days                        |
-| `challengeRiskPercent`      | `10`     | % of current bucket equity risked per trade             |
-| `challengeLeverage`         | `10`     | Leverage for challenge trades (null = use agent default)|
-| `challengeMaxDdPct`         | `0.5`    | Bucket dies if equity drops by this fraction (50% → $2) |
+| Field             | Required | Example  | What it does                                            |
+|-------------------|----------|----------|---------------------------------------------------------|
+| `agentId`         | yes      | (pick one) | Which agent runs this challenge                        |
+| `startingCapital` | yes      | `4`      | Dollars the bucket starts with                          |
+| `targetCapital`   | yes      | `40`     | Pass threshold                                          |
+| `durationDays`    | no (30)  | `30`     | How long the challenge runs once activated              |
+| `riskPercent`     | no (10)  | `10`     | % of current bucket equity risked per trade             |
+| `leverage`        | no (10)  | `10`     | Leverage for challenge trades                           |
+| `maxDrawdownPct`  | no (0.5) | `0.5`    | Bucket dies if equity drops by this fraction (50% → $2) |
+| `executionMode`   | no (paper) | `paper` or `live` | Paper sim vs real Bybit orders                |
+| `status`          | no (pending) | leave default | New rows default to `pending` — don't change |
+
+Save. The row sits in `pending` state — nothing happens yet.
 
 ### Step 2 — flip the toggle
 
-Set `challengeMode = true` on the same agent row. Save.
+On the agent, set `challengeMode = true`. Save.
 
-> If the agent's `status` is `paused`, it will be auto-resumed to `active` as part of session start. You don't need to unpause manually.
+Within ~60 seconds the bot's reconciler will:
+
+1. Find your latest pending session for that agent.
+2. Run pre-flight checks (see [§5](#5-the-nine-pre-flight-checks)).
+3. If everything passes, flip the session to `status='active'`, set `startsAt` + `endsAt`, send a Telegram alert, and start trading the bucket.
+4. If anything fails, flip the session to `status='failed'` with `failReason` populated, flip `challengeMode` back to false, and send a start-failed alert.
+
+> If the agent's `status` is `paused`, it gets auto-resumed to `active` as part of activation. You don't need to unpause manually.
 >
-> If the agent currently has an **open non-challenge trade**, the start will be rejected (`AGENT_HAS_OPEN_TRADE`) — wait for that trade to close first.
+> If the agent has an **open non-challenge trade**, activation is rejected (`AGENT_HAS_OPEN_TRADE`) — wait for that trade to close first.
 
-### Step 3 — let the bot do its thing
+### Step 3 — end it
 
-Within one tick the bot's reconciler will:
+Three ways:
 
-1. Run pre-flight checks (see [§5](#5-the-eight-pre-flight-checks)).
-2. If everything passes, insert a `ChallengeSession` row, populate `currentChallengeSessionId`, fire a notification, and start trading.
-3. If anything fails, flip `challengeMode` back to false and notify you which check failed.
-
-### Step 4 — end it
-
-Three ways to end a challenge:
-
-- **Auto** — you hit the target (pass), drawdown floor (fail), min-viable equity (fail), or expiry (expired).
-- **Manual** — flip `challengeMode = false` while the session is active. Status becomes `cancelled`.
+- **Auto** — bucket hits the target (pass), drawdown floor (fail), min-viable equity (fail), or expiry.
+- **Manual** — set `challengeMode = false` while the session is active. Status becomes `cancelled`.
 - Either way, the agent gets paused, the bucket's realised P&L folds back into the main account, and the session row stays around in history.
+
+### Running another challenge
+
+Create another `pending` session row (with the same or different config) and toggle `challengeMode=true` again. The old session row stays untouched as history.
 
 ---
 
@@ -181,20 +189,23 @@ This is the whole point of "flipping" — the bucket grows geometrically when yo
 
 ---
 
-## 5. The eight pre-flight checks
+## 5. The nine pre-flight checks
 
 These all run inside `startChallenge()` **before** any session row is created. If any one fails, `challengeMode` flips back to false and you get a notification.
 
 | # | Check | Code | Example | How to fix |
 |---|-------|------|---------|------------|
-| 1 | `startingCapital < $4` | `BELOW_MIN_START` | Configured `startingCapital=3` | Use at least $4. (Floor will rise to $5 once the feature is past initial testing.) |
-| 2 | `accountTotal < startingCapital` | `INSUFFICIENT_FUNDS` | $2 in Bybit, challenge wants $4 | Top up Bybit, or lower `startingCapital`. Equal is fine ($4 + $4 = full-account challenge). |
+| 1 | No pending session row for this agent | `NO_PENDING_SESSION` | You flipped `challengeMode=true` without creating a pending session first | Create a `ChallengeSession` row in Prisma Studio with `status='pending'` and your config, then toggle again. |
+| 2 | `startingCapital < $4` | `BELOW_MIN_START` | Pending session has `startingCapital=3` | Use at least $4. (Floor will rise to $5 once the feature is past initial testing.) |
 | 3 | `startingCapital × leverage < $5` | `BUCKET_TOO_SMALL_FOR_LEVERAGE` | $0.40 × 10× = $4 < $5 min notional | Raise `startingCapital` or `leverage` so their product clears the $5 floor. |
 | 4 | `target ≤ startingCapital` | `INVALID_TARGET` | `target=4, start=4` | Target has to be strictly greater than start. |
 | 5 | `target > startingCapital × 10` | `TARGET_EXCEEDS_MAX_MULTIPLIER` | `start=4, target=45` (>$40) | The max multiplier is 10×. $4 → max $40. Lower the target. |
 | 6 | `durationDays < 1` | `INVALID_DURATION` | `durationDays=0` | Set at least 1 day. |
 | 7 | Another active session for this agent | `SESSION_ALREADY_ACTIVE` | You already have one running | End the active session first (toggle off, or wait for it to terminate). |
 | 8 | Agent has an open non-challenge trade | `AGENT_HAS_OPEN_TRADE` | Agent state is `IN_TRADE` with a main-pool position | Wait for the open trade to close (naturally or manually), then toggle on. Prevents weird accounting where the old trade closes into main while the bucket runs separately. |
+| 9 | `accountTotal < startingCapital` | `INSUFFICIENT_FUNDS` | $2 in Bybit, challenge wants $4 | Top up Bybit, or lower `startingCapital`. Equal is fine ($4 + $4 = full-account challenge). |
+
+> **Note**: when any check 2–9 fails, the pending session row is flipped to `status='failed'` with `failReason` populated — you can see exactly why in Prisma Studio. To retry, create a fresh pending row (or edit the failed one back to `pending` after fixing the issue).
 
 > **Why min start of $4?** Below this the bucket can't realistically clear Bybit's $5 min notional even at 10× leverage, and trading fees swamp the math. $5 is the eventual floor; $4 is a temporary lower bound for initial testing.
 >
@@ -301,7 +312,7 @@ For pairs like BTC/USDT or ETH/USDT, slippage on $40 notional is essentially not
 Before you point this at real money, run the 20-step smoke test in paper mode. The full list is in the implementation plan (`.claude/plans/let-s-go-into-plan-resilient-nebula.md`), but the critical ones:
 
 1. **Migration** completed cleanly.
-2. **All eight pre-flight rejections** trigger correctly (test each one with a deliberately bad config).
+2. **All nine pre-flight rejections** trigger correctly (test each one with a deliberately bad config).
 3. **Full-account challenge** ($4 → $20 with `INITIAL_CAPITAL=4`) works — main pool correctly shows $0.
 4. **Slice challenge** ($4 → $20 with `INITIAL_CAPITAL=20`) works — main pool correctly shows $16.
 5. **Pass / fail / expired / cancelled** — all four terminal states fire correctly.

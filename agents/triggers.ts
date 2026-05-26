@@ -76,6 +76,16 @@ export async function setTriggers(
   const agent = agentManager.getSingleAgent(agentId);
   const leverage = agent?.leverage ?? 10;
 
+  // Stamp the signal with the active challenge session, if any. The websocket
+  // entry-hit re-validation reads challengeId off this row to route through
+  // the bucket sandbox — without this, realtime entries on a challenge agent
+  // would silently fall back to main-pool validation. Critical.
+  const activeSession = await prisma.challengeSession.findFirst({
+    where:  { agentId, status: 'active' },
+    select: { id: true, leverage: true },
+  });
+  const effectiveLeverage = activeSession?.leverage ?? leverage;
+
   // Persist to DB — survive restarts
   await prisma.signal.create({
     data: {
@@ -94,8 +104,9 @@ export async function setTriggers(
       status:         'active',
       rawSignal,
       positionSize,
-      leverage,
-      pair: agent?.pair ?? 'unknown',
+      leverage:       effectiveLeverage,
+      pair:           agent?.pair ?? 'unknown',
+      challengeId:    activeSession?.id ?? null,
     },
   });
 

@@ -145,4 +145,105 @@ export const notifications = {
   async sendSystem(message: string): Promise<void> {
     await bot.sendMessage(CHAT_ID, `ℹ️ ${message}`);
   },
+
+  // ─── Challenge mode notifications ───
+
+  async sendChallengeStarted(
+    agent: { name: string; pair: string },
+    session: {
+      startingCapital: number;
+      targetCapital:   number;
+      endsAt:          Date;
+      leverage:        number;
+      riskPercent:     number;
+      executionMode:   string;
+    },
+  ): Promise<void> {
+    const multiplier = session.targetCapital / session.startingCapital;
+    const daysLeft   = Math.max(0, Math.ceil((session.endsAt.getTime() - Date.now()) / 86_400_000));
+    const message = `🎯 <b>CHALLENGE STARTED</b>
+
+    <b>Agent:</b> ${agent.name}
+    <b>Pair:</b> ${agent.pair}
+    <b>Mode:</b> ${session.executionMode.toUpperCase()}
+
+    <b>Start:</b> $${session.startingCapital.toFixed(2)}
+    <b>Target:</b> $${session.targetCapital.toFixed(2)} (${multiplier.toFixed(1)}×)
+    <b>Duration:</b> ${daysLeft} days
+    <b>Leverage:</b> ${session.leverage}× | <b>Risk:</b> ${session.riskPercent}%/trade
+
+    ⏳ Ends: ${session.endsAt.toUTCString()}
+    `;
+    try {
+      await bot.sendMessage(CHAT_ID, message, { parse_mode: 'HTML' });
+      console.log(`📨 Challenge start alert sent for ${agent.name}`);
+    } catch (error) {
+      console.error('Failed to send challenge-started alert:', error);
+    }
+  },
+
+  async sendChallengeStartFailed(
+    agent: { name: string },
+    reason: string,
+    detail: string,
+  ): Promise<void> {
+    const message = `🚫 <b>CHALLENGE START FAILED</b>
+
+    <b>Agent:</b> ${agent.name}
+    <b>Reason:</b> <code>${reason}</code>
+    <b>Detail:</b> ${detail}
+
+    challengeMode has been toggled back to false. Fix the issue and toggle again.
+    `;
+    try {
+      await bot.sendMessage(CHAT_ID, message, { parse_mode: 'HTML' });
+      console.log(`📨 Challenge start-failed alert sent: ${reason}`);
+    } catch (error) {
+      console.error('Failed to send challenge-start-failed alert:', error);
+    }
+  },
+
+  async sendChallengeEnded(
+    agent: { name: string; pair: string },
+    session: {
+      status:          'passed' | 'failed' | 'expired' | 'cancelled';
+      startingCapital: number;
+      targetCapital:   number;
+      finalEquity:     number | null;
+      finalReturnPct:  number | null;
+      failReason:      string | null;
+    },
+  ): Promise<void> {
+    const emoji =
+      session.status === 'passed'    ? '🏆' :
+      session.status === 'failed'    ? '💀' :
+      session.status === 'expired'   ? '⌛' :
+      /* cancelled */                  '🛑';
+
+    const finalEquityStr = session.finalEquity !== null
+      ? `$${session.finalEquity.toFixed(2)}`
+      : 'unknown';
+    const finalReturnStr = session.finalReturnPct !== null
+      ? `${session.finalReturnPct >= 0 ? '+' : ''}${session.finalReturnPct.toFixed(2)}%`
+      : 'unknown';
+
+    const message = `${emoji} <b>CHALLENGE ${session.status.toUpperCase()}</b>
+
+    <b>Agent:</b> ${agent.name}
+    <b>Pair:</b> ${agent.pair}
+
+    <b>Start:</b> $${session.startingCapital.toFixed(2)} → <b>End:</b> ${finalEquityStr}
+    <b>Target:</b> $${session.targetCapital.toFixed(2)}
+    <b>Return:</b> ${finalReturnStr}
+    ${session.failReason ? `\n    <b>Reason:</b> ${session.failReason}` : ''}
+
+    Agent has been paused. Toggle challengeMode again to start a new run.
+    `;
+    try {
+      await bot.sendMessage(CHAT_ID, message, { parse_mode: 'HTML' });
+      console.log(`📨 Challenge end alert sent for ${agent.name} (${session.status})`);
+    } catch (error) {
+      console.error('Failed to send challenge-ended alert:', error);
+    }
+  },
 };

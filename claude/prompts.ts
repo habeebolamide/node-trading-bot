@@ -12,6 +12,7 @@ import type {
   ClosedTrade,
   OpenTrade
 } from '../types/trade.types.js';
+import type { ChallengeRiskContext } from '../types/challenge.types.js';
 import { findKeyLevels, formatKeyLevelsForPrompt, type KeyLevelsResult } from "../markets/keys.js";
 
 // ─────────────────────────────────────────────
@@ -221,6 +222,7 @@ export function buildEntryPrompt(
   lessons: RelevantLesson[],
   monthlyPnl: number,
   performanceMode: PerformanceMode,
+  challenge?: ChallengeRiskContext,
 ): string {
 
   const now = new Date().toISOString();
@@ -234,6 +236,8 @@ export function buildEntryPrompt(
   // Minimal portfolio context — mode name only, no descriptive text
   // that could bleed into entry logic
   const modeLabel = `Performance mode: ${performanceMode} | Monthly P&L: ${monthlyPnl >= 0 ? '+' : ''}${monthlyPnl.toFixed(2)}%`;
+
+  const challengeBlock = challenge ? buildChallengeBlock(challenge) : '';
 
   const relevantLessons = lessons.length > 0
     ? `
@@ -293,6 +297,7 @@ export function buildEntryPrompt(
 
   return `
     ${modeLabel}
+    ${challengeBlock}
     CURRENT TIME (UTC): ${now}
     CURRENT PRICE: ${currentPrice}
     PAIR: ${agent.pair}
@@ -372,13 +377,18 @@ export function buildManagementPrompt(
   trade: OpenTrade,
   mtfData: MultiTimeframeData,
   newsContext: string,
+  challenge?: ChallengeRiskContext,
 ): string {
   const pnlSign = trade.unrealisedPct >= 0 ? '+' : '';
   const duration = getTimeSince(trade.openedAt);
   const currentPrice = mtfData.tf5m.candles.at(-1)?.close ?? trade.entryPrice;
 
+  const challengeBlock = challenge ? buildChallengeBlock(challenge) : '';
+
   return `
   You have an open ${trade.direction} trade on ${trade.pair}.
+
+  ${challengeBlock}
 
   OPEN TRADE:
   Direction:      ${trade.direction}
@@ -682,4 +692,40 @@ function getTimeSince(date: Date): string {
   return hours < 1
     ? `${Math.round(hours * 60)} minutes`
     : `${hours.toFixed(1)} hours`;
+}
+
+// ─────────────────────────────────────────────
+// Challenge context block — included in BOTH entry and exit prompts when
+// the agent is running inside a session. Gives Claude the equity / target /
+// timer / drawdown awareness needed to lock in wins near target and play
+// defensive near the floor. See guides/CHALLENGE_MODE.md.
+// ─────────────────────────────────────────────
+
+function buildChallengeBlock(ctx: ChallengeRiskContext): string {
+  const target       = ctx.targetCapital;
+  const start        = ctx.startingCapital;
+  const equity       = ctx.equity;
+  const progressPct  = start > 0 ? ((equity - start) / (target - start)) * 100 : 0;
+  const drawdownUsed = ctx.maxDrawdownPct > 0
+    ? (ctx.drawdownPct / ctx.maxDrawdownPct) * 100
+    : 0;
+  const daysLeftMs   = ctx.endsAt.getTime() - Date.now();
+  const daysLeft     = Math.max(0, daysLeftMs / 86_400_000);
+  const floor        = start * (1 - ctx.maxDrawdownPct);
+
+  return `
+  ━━━━━━━━━━━━━━━━━━━━━━━
+  CHALLENGE MODE ACTIVE — flip $${start.toFixed(2)} into $${target.toFixed(2)}:
+
+  Current equity:  $${equity.toFixed(2)}
+  Progress:        ${progressPct.toFixed(1)}% to target
+  Drawdown used:   ${drawdownUsed.toFixed(1)}% of ${(ctx.maxDrawdownPct * 100).toFixed(0)}% budget (floor: $${floor.toFixed(2)})
+  Days remaining:  ${daysLeft.toFixed(1)}
+  Leverage:        ${ctx.leverage}× | Risk per trade: ${ctx.riskPercent}% of equity
+
+  This is an isolated bucket — wins compound, losses shrink the bucket.
+  Near target: consider locking in the win rather than chasing more.
+  Near floor:  play defensive — preserve what's left.
+  Mid-bucket:  trade normally; ambitious but disciplined.
+  ━━━━━━━━━━━━━━━━━━━━━━━`.trim();
 }
