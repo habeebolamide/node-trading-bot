@@ -62,6 +62,14 @@ export async function buildChallengeRiskContext(
   const portfolio = await getChallengePortfolio(session);
   const equity    = portfolio.totalValue;
 
+  // Leverage now lives ONLY on the agent — fetch it here and bubble up
+  // through the risk context. Single source of truth across the bot.
+  const agent = await prisma.agent.findUnique({
+    where:  { id: session.agentId },
+    select: { leverage: true },
+  });
+  const leverage = agent?.leverage ?? 10;
+
   // drawdownPct: shortfall from starting capital, positive when behind.
   // realisedPnLPct: realised gain/loss as fraction of starting capital.
   const drawdownPct   = session.startingCapital > 0
@@ -76,10 +84,11 @@ export async function buildChallengeRiskContext(
     equity,
     startingCapital:  session.startingCapital,
     targetCapital:    session.targetCapital,
-    leverage:         session.leverage,
+    leverage,
     riskPercent:      session.riskPercent,
     maxDrawdownPct:   session.maxDrawdownPct,
     minNotionalFloor: session.minNotionalFloor,
+    maxMarginPct:     (session as { maxMarginPct?: number }).maxMarginPct ?? 0.2,
     // Risk context is only built for ACTIVE sessions, which have non-null
     // endsAt (set during activation). Pending/terminal sessions never reach here.
     endsAt:           session.endsAt ?? new Date(0),
@@ -125,7 +134,13 @@ export async function startChallenge(
   const startingCapital = pending.startingCapital;
   const targetCapital   = pending.targetCapital;
   const durationDays    = pending.durationDays;
-  const leverage        = pending.leverage;
+
+  // Leverage comes from the agent, not the session — single source of truth.
+  const agentRow = await prisma.agent.findUnique({
+    where:  { id: agent.id },
+    select: { leverage: true },
+  });
+  const leverage = agentRow?.leverage ?? 10;
 
   // Cheap config-level checks run before any DB or Bybit calls. Order matters
   // for error feedback: catch misconfiguration before we go to the network.
@@ -326,12 +341,17 @@ export async function evaluateChallenge(
   // ── 4. Unwinnable equity ──
   // If even a fully-leveraged trade can't clear the broker minimum, the bucket
   // can't make a compliant move from here. Fail with a distinct reason so the
-  // user can see why (vs drawdown).
-  if (equity * session.leverage < session.minNotionalFloor) {
+  // user can see why (vs drawdown). Leverage comes from the agent now.
+  const agentForLev = await prisma.agent.findUnique({
+    where:  { id: session.agentId },
+    select: { leverage: true },
+  });
+  const evalLeverage = agentForLev?.leverage ?? 10;
+  if (equity * evalLeverage < session.minNotionalFloor) {
     return {
       terminal:   true,
       status:     'failed',
-      reason:     `Below minimum viable equity: $${equity.toFixed(2)} × ${session.leverage}× < $${session.minNotionalFloor}`,
+      reason:     `Below minimum viable equity: $${equity.toFixed(2)} × ${evalLeverage}× < $${session.minNotionalFloor}`,
       forceClose: portfolio.allocatedValue > 0,
     };
   }

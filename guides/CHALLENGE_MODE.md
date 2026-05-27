@@ -59,7 +59,7 @@ Open Prisma Studio (`npx prisma studio`) → `challenge_sessions` table → New 
 | `targetCapital`   | yes      | `40`     | Pass threshold                                          |
 | `durationDays`    | no (30)  | `30`     | How long the challenge runs once activated              |
 | `riskPercent`     | no (10)  | `10`     | % of current bucket equity risked per trade             |
-| `leverage`        | no (10)  | `10`     | Leverage for challenge trades                           |
+| ~~`leverage`~~    | —        | —        | **Removed** — leverage comes from the agent's `leverage` column. Edit it on the agent before starting the challenge. |
 | `maxDrawdownPct`  | no (0.5) | `0.5`    | Bucket dies if equity drops by this fraction (50% → $2) |
 | `executionMode`   | no (paper) | `paper` or `live` | Paper sim vs real Bybit orders                |
 | `status`          | no (pending) | leave default | New rows default to `pending` — don't change |

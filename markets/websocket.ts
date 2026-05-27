@@ -372,13 +372,28 @@ export class BybitWebSocket {
           // have shifted between signal creation and entry hit (e.g. a different
           // trade hit SL hard in between). Matches the candle-close and catch-up
           // paths which both re-validate.
-          // Challenge-aware: a signal stamped with challengeId routes through
-          // the bucket sandbox; otherwise the main pool.
-          const session = signal.challengeId
+          //
+          // Challenge resolution — TWO lookups, in order:
+          //   1. signal.challengeId (canonical path — set by setTriggers when
+          //      the signal was generated inside an active session)
+          //   2. fall back to agentId + status='active' lookup
+          //
+          // The fallback handles: manually-inserted signals (no challengeId
+          // stamp), legacy signals from before challengeId existed, or any
+          // case where the stamp got lost. executeEntry already does the
+          // agentId lookup unconditionally; without this fallback the
+          // re-validation would size with main-pool math while the trade
+          // itself gets challenge-tagged — exactly the size mismatch we hit.
+          let session = signal.challengeId
             ? await prisma.challengeSession.findUnique({
                 where: { id: signal.challengeId },
               })
             : null;
+          if (!session || session.status !== 'active') {
+            session = await prisma.challengeSession.findFirst({
+              where: { agentId: agent.id, status: 'active' },
+            });
+          }
           const challengeContext = (session && session.status === 'active')
             ? await buildChallengeRiskContext(session as ChallengeSessionRecord)
             : null;

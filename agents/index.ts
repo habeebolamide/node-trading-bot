@@ -13,7 +13,6 @@ import { executionEngine } from "../execution/index.js";
 import { getChallengePortfolio, getPortfolio } from "../capital/index.js";
 import { buildChallengeRiskContext, getActiveChallengeForAgent } from "../challenge/index.js";
 import {
-  calculateManagementTimeout,
   clampMinutes,
   entryExpiryMinutesForStyle,
   mapToOpenTrade,
@@ -28,7 +27,6 @@ import {
   checkTriggers,
   getPendingSignal,
   hasTriggers,
-  updateTriggers,
   setTriggersMemory,
 } from './triggers.js';
 import { getEntrySignal,getManagementDecision } from "../claude/client.js";
@@ -55,6 +53,14 @@ export class AgentRuntime {
   public currentTrade: OpenTrade | null = null;
   public cooldownUntil: Date | null = null;
   public consecutiveLosses: number = 0;
+
+  // Re-entrancy guard for the entry cycle. LLM calls can take 20–60s; during
+  // that window the agent's `state` stays as it was set by the caller (often
+  // IDLE). Without this guard, the candle-close path can race a still-pending
+  // LLM call and trigger a second concurrent entry cycle, resulting in two
+  // active signals saved for the same agent. Setter at the top of runEntryCycle,
+  // cleared in finally so a thrown error doesn't permanently lock the agent out.
+  public entryCycleInFlight: boolean = false;
 
   private _needsReanalysis = false;
   private _needsManagementReanalysis = false;
@@ -188,48 +194,6 @@ export class AgentManager {
   getAllAgents(): AgentRuntime[] {
     return Array.from(this.agents.values());
   }
-
-  // async resumeOpenTrades(): Promise<void> {
-
-  //   const openTrades = await prisma.trade.findMany({
-  //     where: { status: 'open' },
-  //   });
-
-  //   logger.info(`Resuming ${openTrades.length} open trades from database`);
-
-  //   for (const dbTrade of openTrades) {
-
-  //     await this.loadAgents();
-
-
-  //     const agent = this.agents.get(dbTrade.agentId);
-
-  //     if (!agent) {
-  //       logger.info(`No active agent found for open trade ${dbTrade.id} — skipping`);
-  //       continue;
-  //     };
-
-  //     const openTrade: OpenTrade = {
-  //       id: dbTrade.id,
-  //       agentId: dbTrade.agentId,
-  //       pair: dbTrade.pair,
-  //       direction: dbTrade.direction as 'LONG' | 'SHORT',
-  //       entryPrice: dbTrade.entryPrice,
-  //       currentTp: dbTrade.takeProfit ?? 0,
-  //       currentSl: dbTrade.stopLoss,
-  //       positionSize: dbTrade.size,
-  //       positionValue: 0,
-  //       unrealisedPnl: 0,
-  //       unrealisedPct: 0,
-  //       openedAt: dbTrade.openedAt,
-  //       entryReasoning: '',
-  //       mode: agent.mode as 'paper' | 'live',
-  //     };
-
-  //     agent.attachTrade(openTrade);
-  //     logger.info(`Resumed open trade for ${agent.name}`, { tradeId: dbTrade.id });
-  //   }
-  // }
 
   async restoreAgentState(agent: AgentRuntime): Promise<void> {
 
@@ -395,12 +359,20 @@ export class AgentManager {
 
       // Re-validate risk — drawdown / circuit-breaker state may have shifted
       // during downtime; do not blindly fire a trade that current risk would reject.
-      // Challenge-aware: a signal stamped with challengeId routes through the
-      // bucket sandbox; otherwise main pool.
+      //
+      // Challenge resolution — two-step lookup (same as the websocket realtime
+      // path): try signal.challengeId first, fall back to agentId + active.
+      // Catches signals without challengeId stamp (manual inserts, legacy rows)
+      // so sizing matches what executeEntry will actually tag the trade with.
       const rawSignal = signal.rawSignal as unknown as EntrySignal;
-      const session = signal.challengeId
+      let session = signal.challengeId
         ? await prisma.challengeSession.findUnique({ where: { id: signal.challengeId } })
         : null;
+      if (!session || session.status !== 'active') {
+        session = await prisma.challengeSession.findFirst({
+          where: { agentId: agent.id, status: 'active' },
+        });
+      }
       const challengeContext = (session && session.status === 'active')
         ? await buildChallengeRiskContext(session as ChallengeSessionRecord)
         : null;
@@ -452,6 +424,118 @@ export class AgentManager {
       } else {
         logger.error(`[${agent.name}] Catch-up execution failed`, {
           error: execResult.error,
+        });
+      }
+    }
+  }
+
+  // ====================== DOWNTIME CATCH-UP — EXITS ======================
+  // Counterpart to catchUpMissedEntries. Walks every agent's open trade and
+  // checks the 5m candle history since the trade opened — if any candle's
+  // range crossed the configured TP or SL, the trade should have closed
+  // during the downtime. Closes it through executionEngine.closeTrade() so
+  // all downstream hooks fire (winRate / monthlyPnL recompute, active-signal
+  // cleanup, challenge evaluation, Telegram alert, post-mortem on losses).
+  //
+  // Paper-only for now: live trades are TP/SL'd by Bybit server-side; if a
+  // close event was missed because the private WS was offline, recovery
+  // requires querying exchange.fetchPositions() — separate concern, future.
+  async catchUpMissedExits(): Promise<void> {
+    const TF = '5'; // 5m granularity — buffer covers ~16h, enough for most overnight gaps
+
+    for (const agent of this.agents.values()) {
+      if (!agent.currentTrade) continue;
+      const trade = agent.currentTrade;
+
+      if ((trade.mode ?? agent.mode) !== 'paper') {
+        logger.info(`[${agent.name}] Catch-up-exits: skipping live trade (Bybit handles TP/SL server-side)`, {
+          tradeId: trade.id,
+        });
+        continue;
+      }
+
+      const candles = getCandleBuffer(trade.pair, TF);
+      const openedAtMs = trade.openedAt.getTime();
+      const relevant   = candles.filter(c => c.openTime >= openedAtMs);
+
+      if (relevant.length === 0) {
+        logger.info(`[${agent.name}] Catch-up-exits: no candles in buffer since open`, {
+          tradeId:  trade.id,
+          openedAt: trade.openedAt.toISOString(),
+        });
+        continue;
+      }
+
+      const tp = trade.currentTp;
+      const sl = trade.currentSl;
+      const dir = trade.direction;
+
+      let detected: {
+        reason:     'TP_HIT' | 'SL_HIT';
+        exitPrice:  number;
+        candleTime: number;
+      } | null = null;
+
+      for (const c of relevant) {
+        let tpHit = false;
+        let slHit = false;
+
+        if (dir === 'LONG') {
+          tpHit = tp > 0 && c.high >= tp;
+          slHit = sl > 0 && c.low  <= sl;
+        } else {
+          // SHORT
+          tpHit = tp > 0 && c.low  <= tp;
+          slHit = sl > 0 && c.high >= sl;
+        }
+
+        if (tpHit && slHit) {
+          // Both hit in the same candle. Without intra-candle ordering data,
+          // assume the conservative outcome (SL hit) to avoid claiming wins
+          // that may not have actually occurred.
+          detected = { reason: 'SL_HIT', exitPrice: sl, candleTime: c.openTime };
+          break;
+        }
+        if (tpHit) {
+          detected = { reason: 'TP_HIT', exitPrice: tp, candleTime: c.openTime };
+          break;
+        }
+        if (slHit) {
+          detected = { reason: 'SL_HIT', exitPrice: sl, candleTime: c.openTime };
+          break;
+        }
+      }
+
+      if (!detected) {
+        logger.info(`[${agent.name}] Catch-up-exits: trade still valid (no TP/SL crossing)`, {
+          tradeId:        trade.id,
+          candlesChecked: relevant.length,
+        });
+        continue;
+      }
+
+      logger.warn(`[${agent.name}] Catch-up-exits: missed close detected during downtime`, {
+        tradeId:    trade.id,
+        reason:     detected.reason,
+        exitPrice:  detected.exitPrice,
+        candleTime: new Date(detected.candleTime).toISOString(),
+      });
+
+      // Fire through the standard close path so EVERY downstream hook
+      // runs — agent stats, signal cleanup, challenge evaluation, etc.
+      // The `_CATCHUP` suffix on the reason tags it as a recovery in DB
+      // (and in the Telegram alert) so you can spot it in history.
+      try {
+        await executionEngine.closeTrade(
+          agent,
+          trade,
+          `${detected.reason}_CATCHUP`,
+          detected.exitPrice,
+        );
+      } catch (err: any) {
+        logger.error(`[${agent.name}] Catch-up-exits: closeTrade failed`, {
+          tradeId: trade.id,
+          error:   err?.message ?? err,
         });
       }
     }
@@ -654,6 +738,19 @@ export class AgentManager {
     newsContext: string,
   ): Promise<void> {
 
+    // Re-entrancy guard. LLM calls inside this function can take 20-60s;
+    // during that time the agent's `state` may still be IDLE (because the
+    // caller — timeout, trigger handler, candle-close, reanalysis flag —
+    // sets state synchronously before awaiting). Without this guard, two
+    // concurrent callers would each launch a full entry cycle (two LLM
+    // calls, two signal rows). Seen in production 2026-05-27 08:19:38.
+    if (agent.entryCycleInFlight) {
+      logger.info(`[${agent.name}] Entry cycle already in flight — skipping concurrent invocation`);
+      return;
+    }
+    agent.entryCycleInFlight = true;
+
+    try {
     // ─── Challenge mode: swap drawdown + portfolio for bucket-scoped views ───
     const session = await getActiveChallengeForAgent(agent.id);
     const challengeContext: ChallengeRiskContext | null = session
@@ -664,7 +761,12 @@ export class AgentManager {
       ? buildChallengeDrawdownState(agent.id, challengeContext)
       : await getDrawdownState(agent.id);
     const performanceMode = drawdown.performanceMode;
-    const systemPrompt = buildSystemPrompt(agent.toPromptAgent());
+    // System prompt carries leverage, risk model, and the challenge block
+    // (if active). Entry prompt is per-candle market data only.
+    const systemPrompt = buildSystemPrompt(
+      agent.toPromptAgent(),
+      challengeContext ?? undefined,
+    );
 
     console.log("Performance Mode:", performanceMode);
 
@@ -688,7 +790,6 @@ export class AgentManager {
       lessons,
       drawdown.monthlyPnlPct * 100,
       performanceMode,
-      challengeContext ?? undefined,
     );
 
     const claudeResult = await getEntrySignal(systemPrompt, entryPrompt, agent.id);
@@ -710,15 +811,15 @@ export class AgentManager {
       const watchTimeout = new Date(Date.now() + watchMinutes * 60_000).toISOString();
 
       const watchTriggers = {
-        price_up:  null,
-        price_down: null,
-        timeout: null,
+        price_up:  triggers.price_up ?? null,
+        price_down: triggers.price_down ?? null,
+        timeout: watchTimeout,
       };
 
       setTriggers(agent.id, watchTriggers, null, null, claudeResult.data, null);
       agent.setState('WATCHING');                  // ← WATCHING not IDLE
 
-      logger.info(`[${agent.name}] NO_TRADE — watching`, {
+      logger.info(`[${agent.name}] NO_TRADE — WATCHING`, {
         price_up: watchTriggers.price_up,
         price_down: watchTriggers.price_down,
         timeout: watchTimeout,
@@ -754,20 +855,24 @@ export class AgentManager {
       return;
     }
 
-    // ── Set pending entry triggers — entry_expiry only ──
-    // price_up/price_down not relevant here — we already decided to trade
+    // ── Set pending entry triggers — entry-hit + expiry only ──
 
-    const watchMinutes = clampMinutes(
-      triggers.timeout_minutes,
-      WATCH_TIMEOUT_DEFAULT_MINUTES,
-      { min: 5, maxMultiplier: 4 },   // up to ~2h
-    );
-    const watchTimeout = new Date(Date.now() + watchMinutes * 60_000).toISOString();
-
+    // PENDING_ENTRY only needs two things to work:
+    //   - entry-hit detection on the realtime ticker (driven by signal.entry
+    //     directly, NOT by triggers.price_up/price_down)
+    //   - entry expiry (driven by signal.entryExpiry, NOT by triggers.timeout)
+    //
+    // The LLM-provided price_up/price_down used to be wired here as "kill
+    // levels" — if a structural level broke before entry hit, the bot would
+    // cancel the pending entry and re-analyse. In practice this fired on
+    // small moves, cancelled legitimate entries, then the re-analysis
+    // returned NO_TRADE (because the market had just moved). Net: more LLM
+    // cost, fewer fills. Drop them — if the thesis genuinely invalidates,
+    // the next 5m candle close picks it up.
     const pendingTriggers = {
-      price_up: triggers.price_up ?? null,
-      price_down: triggers.price_down ?? null,
-      timeout: watchTimeout,
+      price_up: null,
+      price_down: null,
+      timeout: null,
     };
 
     // LLM emits entry_expiry_minutes (a duration). Server clamps to safe bounds
@@ -800,6 +905,11 @@ export class AgentManager {
       expiry: entryExpiry,
       expiry_minutes: expiryMinutes,
     });
+    } finally {
+      // Always release the guard — even if the LLM call threw or the signal
+      // save crashed, we don't want the agent permanently locked out.
+      agent.entryCycleInFlight = false;
+    }
   }
 
   // ====================== MANAGEMENT CYCLE ======================
@@ -810,6 +920,17 @@ export class AgentManager {
   ): Promise<void> {
     if (!agent.currentTrade) return;
 
+    // Same re-entrancy guard as runEntryCycle — management LLM calls take
+    // tens of seconds and can be triggered from multiple paths (candle
+    // close, ticker-fired re-analysis). Without the guard, two concurrent
+    // calls could ADJUST the same trade twice with conflicting decisions.
+    if (agent.entryCycleInFlight) {
+      logger.info(`[${agent.name}] Cycle already in flight — skipping concurrent management invocation`);
+      return;
+    }
+    agent.entryCycleInFlight = true;
+
+    try {
     // Challenge context for exit decisions — Claude needs days-left / progress
     // / drawdown-used to lock in wins near target and play defensive near floor.
     const session = agent.currentTrade.challengeId
@@ -819,13 +940,28 @@ export class AgentManager {
       ? await buildChallengeRiskContext(session as ChallengeSessionRecord)
       : null;
 
-    const systemPrompt = buildSystemPrompt(agent.toPromptAgent());
+    // Pull the original Signal row to surface what_invalidates at exit time.
+    // The most recent executed/triggered/active signal for this agent is the
+    // one that produced the open trade — entry sets status='executed' on the
+    // matching signal row when the trade fills.
+    const originatingSignal = await prisma.signal.findFirst({
+      where:  { agentId: agent.id, status: { in: ['executed', 'triggered', 'active'] } },
+      orderBy: { createdAt: 'desc' },
+      select: { whatInvalidates: true },
+    });
+
+    // System prompt carries the challenge block (if active) — single source
+    // of truth across entry and management.
+    const systemPrompt = buildSystemPrompt(
+      agent.toPromptAgent(),
+      challengeContext ?? undefined,
+    );
     const managementPrompt = buildManagementPrompt(
       agent.toPromptAgent(),
       agent.currentTrade,
       mtfData,
       newsContext,
-      challengeContext ?? undefined,
+      originatingSignal?.whatInvalidates ?? undefined,
     );
 
     const result = await getManagementDecision(systemPrompt, managementPrompt, agent.id);
@@ -833,23 +969,20 @@ export class AgentManager {
 
     const decision = result.data as ManagementDecision;
 
-    // ── AI provides price triggers — system provides timeout ──
-    const aiTriggers = (decision as any).triggers ?? {};
-    const systemTimeout = calculateManagementTimeout(agent.tradingStyle);
-
-    // Update the SAME signal record — never create a new one
-    await updateTriggers(agent.id, {
-      price_up: aiTriggers.price_up ?? null,
-      price_down: aiTriggers.price_down ?? null,
-      timeout: systemTimeout,                   // system always controls this
-    });
-
+    // Management decisions used to also write `price_up`/`price_down`/`timeout`
+    // triggers on the originating signal so the bot could re-analyse fast on a
+    // structural break. Two problems with that:
+    //   1. CLOSE writes triggers that immediately become stale (trade is gone) —
+    //      they re-fired later and cancelled legitimate new entries.
+    //   2. Even for HOLD/ADJUST the trigger fires were causing extra LLM calls
+    //      with marginal benefit over candle-close cadence (5m max latency
+    //      between re-analyses, plus the existing significance/breakout/time
+    //      fallback gates in handleCandle).
+    // Bybit's exchange-side TP/SL still handles the critical exits autonomously.
+    // The candle-close path covers the rest.
     logger.info(`[${agent.name}] Management cycle`, {
-      action: decision.action,
+      action:  decision.action,
       urgency: decision.urgency,
-      price_up: aiTriggers.price_up,
-      price_down: aiTriggers.price_down,
-      timeout: systemTimeout,
     });
 
     if (decision.action === 'HOLD') return;
@@ -870,6 +1003,9 @@ export class AgentManager {
     }
 
     await executionEngine.executeManagement(agent, decision, agent.currentTrade);
+    } finally {
+      agent.entryCycleInFlight = false;
+    }
   }
 }
 

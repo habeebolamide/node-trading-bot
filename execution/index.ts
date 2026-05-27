@@ -1,5 +1,6 @@
 import ccxt            from 'ccxt';
 import WebSocket        from 'ws';
+import { createHmac }   from 'node:crypto';
 import { prisma }       from '../lib/prisma.js';
 import logger           from '../utils/logger.js';
 import { agentManager } from '../agents/index.js';
@@ -84,7 +85,9 @@ export async function executeEntry(
   const execMode    = session
     ? session.executionMode
     : (agent.mode === 'backtest' ? 'paper' : agent.mode);
-  const leverage    = session?.leverage ?? agent.leverage ?? 10;
+  // Leverage is sourced only from the agent now — challenge sessions no
+  // longer carry a leverage column (single source of truth).
+  const leverage    = agent.leverage ?? 10;
 
   // Pre-compute baseline for the live drawdown-floor check in updateLivePnl.
   let challengeBaseline: number | undefined;
@@ -282,19 +285,26 @@ export function updateLivePnl(pair: string, currentPrice: number): void {
     // Throttled DB flush — makes the row inspectable from Prisma Studio / SQL
     // without writing on every tick. Fire-and-forget; PnL stays accurate in memory
     // even if a write transiently fails.
-    // realizedPnL is also flushed to mirror the live amount (the "what am I
-    // making right now" number you see on the Bybit app) so it stays current
-    // while the trade is open. closeTrade() overwrites it with the final PnL.
+    //
+    // IMPORTANT — only flush UNREALIZED fields. Earlier this also wrote
+    // realizedPnL = unrealisedPnl as a "Bybit-app-style live number," but that
+    // raced with closeTrade(): an in-flight throttled write could land AFTER
+    // closeTrade's final realizedPnL set, overwriting the true close value with
+    // the stale live one. Downstream (updateAgentDbStats, dashboards) then read
+    // the wrong realizedPnL.
+    //
+    // The conditional `where status:'open'` is the belt-and-braces guard: if a
+    // close lands while this update is queued, the updateMany matches zero
+    // rows and the write becomes a no-op rather than clobbering the closed row.
     const now = Date.now();
     const lastWrite = lastPnlWriteAt.get(trade.id) ?? 0;
     if (now - lastWrite >= PNL_WRITE_THROTTLE_MS) {
       lastPnlWriteAt.set(trade.id, now);
-      prisma.trade.update({
-        where: { id: trade.id },
+      prisma.trade.updateMany({
+        where: { id: trade.id, status: 'open' },
         data:  {
           unrealisedPnl: trade.unrealisedPnl,
           unrealisedPct: trade.unrealisedPct,
-          realizedPnL:   trade.unrealisedPnl,
         },
       }).catch(err =>
         logger.error('Failed to persist unrealised PnL', {
@@ -388,8 +398,12 @@ export async function executeManagement(
     }
 
     case 'CLOSE': {
-      const closed = await closeTrade(agent, trade, 'CLAUDE_CLOSE');
-      await notifications.sendTradeAlert(agent, 'CLOSE', closed);
+      // closeTrade fires the close notification internally with the proper
+      // ClosedTrade shape. Earlier this dispatched a second notification
+      // passing the Prisma row (American field names: realizedPnL) into
+      // sendTradeAlert's CLOSE branch which reads British names — the
+      // .toFixed call on undefined was the crash you saw in the logs.
+      await closeTrade(agent, trade, 'CLAUDE_CLOSE');
       break;
     }
 
@@ -427,13 +441,28 @@ async function updateAgentDbStats(agentId: string): Promise<void> {
     const monthlyTrades = allClosedTrades.filter(t => t.closedAt && t.closedAt >= monthStart);
     const monthlyPnlAmount = monthlyTrades.reduce((sum, t) => sum + (t.realizedPnL ?? 0), 0);
 
-    const initialCapital = parseFloat(process.env.INITIAL_CAPITAL ?? '1000');
+    // Pick the correct denominator for the monthly PnL %.
+    // For a challenge agent with an active session, the meaningful denominator
+    // is the bucket's startingCapital — the agent's allocationPercent is
+    // irrelevant inside a challenge. Without this branch, a $5 bucket showing
+    // +$2 PnL would be reported as (2 / 100) = 2% instead of (2 / 5) = 40%.
     const agent = await prisma.agent.findUnique({
       where: { id: agentId },
       select: { allocationPercent: true },
     });
-    const agentCapital = initialCapital * ((agent?.allocationPercent ?? 10) / 100);
-    const monthlyPnL = agentCapital > 0 ? (monthlyPnlAmount / agentCapital) * 100 : 0;
+    const activeSession = await prisma.challengeSession.findFirst({
+      where:  { agentId, status: 'active' },
+      select: { startingCapital: true },
+    });
+
+    let denominator: number;
+    if (activeSession && activeSession.startingCapital > 0) {
+      denominator = activeSession.startingCapital;
+    } else {
+      const initialCapital = parseFloat(process.env.INITIAL_CAPITAL ?? '1000');
+      denominator = initialCapital * ((agent?.allocationPercent ?? 10) / 100);
+    }
+    const monthlyPnL = denominator > 0 ? (monthlyPnlAmount / denominator) * 100 : 0;
 
     await prisma.agent.update({
       where: { id: agentId },
@@ -497,6 +526,26 @@ export async function closeTrade(
   agent.clearTrade();
   lastPnlWriteAt.delete(trade.id);
 
+  // Clear any lingering active signals for this agent. Without this, the
+  // management-cycle triggers set on the originating signal (price_up /
+  // price_down) survive in DB after the trade closes and can re-fire on
+  // the next ticker tick — cancelling the agent's next legitimate signal
+  // and burning an LLM re-analysis. Seen in production logs at 18:26:03
+  // (stale price_down=83.7 firing 6 minutes after the close).
+  await prisma.signal.updateMany({
+    where: { agentId: agent.id, status: 'active' },
+    data: {
+      status:      'cancelled',
+      triggeredBy: 'TRADE_CLOSED',
+      triggeredAt: new Date(),
+    },
+  }).catch(err =>
+    logger.error('Failed to clear active signals after trade close', {
+      agentId: agent.id,
+      error:   err?.message ?? err,
+    }),
+  );
+
   // Update Agent's DB stats (win rate, monthly PnL, total trades)
   void updateAgentDbStats(agent.id);
 
@@ -523,14 +572,30 @@ export async function closeTrade(
       );
   }
 
-  // Notification with outcome
-  const outcome = realisedPnl >= 0 ? 'WIN' : 'LOSS';
-  notifications.sendTradeAlert(agent, closeReason as any, {
+  // Notification with outcome. Use 'CLOSE' as the sendTradeAlert type
+  // (the branch keyword) and surface closeReason via the message body.
+  // Previously this passed closeReason ('CLAUDE_CLOSE', 'TP_HIT' etc.) as
+  // the type, none of which matched any branch in sendTradeAlert — so the
+  // notification silently sent an empty message.
+  const positionValue = trade.entryPrice * trade.positionSize;
+  const realisedPct = positionValue > 0
+    ? (realisedPnl / positionValue) * trade.leverage * 100
+    : 0;
+  const outcome: 'win' | 'loss' | 'breakeven' =
+    realisedPnl > 0 ? 'win' :
+    realisedPnl < 0 ? 'loss' :
+    'breakeven';
+  notifications.sendTradeAlert(agent, 'CLOSE', {
     ...trade,
     exitPrice,
     realisedPnl,
+    realisedPct,
+    closeReason,
     outcome,
-  } as any);
+    closedAt: new Date(),
+    durationHours: duration / 3600,
+    postMortemId: null,
+  } as unknown as ClosedTrade);
 
   logger.info('Trade closed', {
     tradeId:     trade.id,
@@ -544,13 +609,11 @@ export async function closeTrade(
   });
 
   // Post-mortem: only on losses. Uses snapshot stored at executeEntry.
+  // positionValue / realisedPct already computed above for the notification —
+  // reuse them here instead of recomputing.
   if (realisedPnl < 0) {
     const snapshot = (closed as any).entrySnapshot as EntrySnapshot | null;
     if (snapshot) {
-      const positionValue  = trade.entryPrice * trade.positionSize;
-      const realisedPct    = positionValue > 0 ? (realisedPnl / positionValue) * trade.leverage * 100 : 0;
-      const durationHours  = duration / 3600;
-
       const closedTradeForPm = {
         ...trade,
         exitPrice,
@@ -559,7 +622,7 @@ export async function closeTrade(
         closeReason,
         outcome,
         closedAt:      new Date(),
-        durationHours,
+        durationHours: duration / 3600,
         postMortemId:  null,
       } as unknown as ClosedTrade;
 
@@ -827,6 +890,50 @@ async function closeLivePosition(trade: OpenTrade): Promise<number> {
     return order.average ?? order.price ?? trade.entryPrice;
   } catch (error: any) {
     logger.error('Failed to close live position', { tradeId: trade.id, error: error.message });
+
+    // Bybit retCode 110017: "current position is zero, cannot fix
+    // reduce-only order qty" — the position was already closed at the
+    // exchange (TP/SL hit before our close order landed). Recover the real
+    // exit price from recent fills so we don't record PnL = 0 on a trade
+    // that actually completed at TP or SL.
+    const msg = (error?.message ?? '') as string;
+    if (msg.includes('110017') || msg.toLowerCase().includes('position is zero')) {
+      try {
+        const fills = await exchange.fetchMyTrades(trade.pair, undefined, 20);
+        // Pick the most recent fill after this trade opened, on the closing side.
+        const closingSide = trade.direction === 'LONG' ? 'sell' : 'buy';
+        const openedAtMs  = trade.openedAt.getTime();
+        const candidate = (fills as any[])
+          .filter(f =>
+            (f.side?.toLowerCase?.() ?? '') === closingSide &&
+            f.timestamp > openedAtMs &&
+            typeof f.price === 'number',
+          )
+          .sort((a, b) => b.timestamp - a.timestamp)[0];
+
+        if (candidate?.price) {
+          logger.info('Recovered exit price from Bybit fill history', {
+            tradeId:   trade.id,
+            exitPrice: candidate.price,
+            fillId:    candidate.id ?? null,
+          });
+          return candidate.price;
+        }
+
+        logger.warn('Position-zero recovery: no matching fill found', {
+          tradeId: trade.id, fillCount: (fills as any[]).length,
+        });
+      } catch (recoverErr: any) {
+        logger.error('Position-zero recovery failed', {
+          tradeId: trade.id,
+          error:   recoverErr?.message ?? recoverErr,
+        });
+      }
+    }
+
+    // Last resort — still wrong (records 0 PnL) but better than crashing.
+    // Telegram alert will show closeReason; you can reconcile from Bybit
+    // directly if this fires.
     return trade.entryPrice;
   }
 }
@@ -902,9 +1009,9 @@ function calculatePnl(
 // ─────────────────────────────────────────────
 
 function generateSignature(expires: number): string {
-  const crypto = require('crypto');
-  return crypto
-    .createHmac('sha256', process.env.BYBIT_SECRET ?? '')
+  // Use the ESM-imported `createHmac` — `require()` is undefined under
+  // `"type": "module"` and was crashing the private WS auth at runtime.
+  return createHmac('sha256', process.env.BYBIT_SECRET ?? '')
     .update(`GET/realtime${expires}`)
     .digest('hex');
 }

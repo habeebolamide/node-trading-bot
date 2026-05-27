@@ -74,7 +74,9 @@ export async function setTriggers(
   });
 
   const agent = agentManager.getSingleAgent(agentId);
-  const leverage = agent?.leverage ?? 10;
+  // Leverage now comes only from the agent (ChallengeSession.leverage was
+  // dropped in migration 20260526200500). Single source of truth.
+  const effectiveLeverage = agent?.leverage ?? 10;
 
   // Stamp the signal with the active challenge session, if any. The websocket
   // entry-hit re-validation reads challengeId off this row to route through
@@ -82,9 +84,8 @@ export async function setTriggers(
   // would silently fall back to main-pool validation. Critical.
   const activeSession = await prisma.challengeSession.findFirst({
     where:  { agentId, status: 'active' },
-    select: { id: true, leverage: true },
+    select: { id: true },
   });
-  const effectiveLeverage = activeSession?.leverage ?? leverage;
 
   // Persist to DB — survive restarts
   await prisma.signal.create({
@@ -352,9 +353,17 @@ export function startTimeoutChecker(): void {
       // transition with the right (status, triggeredBy) pair. Calling it twice
       // would either double-write or overwrite the explicit transition with
       // a fallback default.
+      //
+      // Previously: also set `agent.needsReanalysis = true` here. But the
+      // setter on AgentRuntime.needsReanalysis FIRES onNeedsReanalysis
+      // SYNCHRONOUSLY (which runs handleTriggerHit('PRICE_UP') internally).
+      // Combined with the explicit `await handleTriggerHit('TIMEOUT')` below,
+      // that triggered TWO concurrent entry cycles per timeout → two parallel
+      // LLM calls → two active signals saved (production log 2026-05-27
+      // 08:19:38). Just flip to IDLE; the awaited handleTriggerHit below is
+      // the one and only entry-cycle trigger.
       if (agent.state === 'WATCHING') {
         agent.setState('IDLE');
-        agent.needsReanalysis = true;
       }
 
       // Build a fake candle just to pass to handleTriggerHit

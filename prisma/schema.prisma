@@ -196,9 +196,24 @@ model ChallengeSession {
   targetCapital    Float
   durationDays     Int       @default(30)
   maxDrawdownPct   Float     @default(0.5)
-  riskPercent      Float     @default(10.0)
-  leverage         Float     @default(10.0)
+  // Per-trade risk cap, expressed as % of the per-trade MARGIN allocation
+  // (NOT % of bucket equity). Nested with maxMarginPct:
+  //   maxMargin   = bucketEquity × maxMarginPct
+  //   maxLossThisTrade = maxMargin × (riskPercent / 100)
+  // e.g. $5 bucket × 30% allocation = $1.50 margin; × 50% risk = $0.75 max loss.
+  // Default 50 = "risk half of the per-trade allocation" which pairs
+  // sensibly with the maxMarginPct default of 20-30%.
+  riskPercent      Float     @default(50.0)
+  // Leverage comes from the agent (Agent.leverage), NOT the session. Keeping
+  // one source of truth avoids drift and avoids the LLM seeing two
+  // potentially different leverage values across system + entry prompts.
   minNotionalFloor Float     @default(5.0)
+  // Cap on margin per trade as a fraction of bucket equity. 0.2 = 20% =
+  // a single trade can lock at most $1 of a $5 bucket. Protects against
+  // tight-stop trades that would otherwise lock the full bucket as margin
+  // (the actual MAX LOSS is still riskPercent, this is the EXPOSURE cap).
+  // Set to 1.0 to disable (whole bucket can be margin, original behaviour).
+  maxMarginPct     Float     @default(0.2)
   executionMode    String    @default("paper")  // "paper" | "live"
 
   // ─── Lifecycle — populated by the bot ───

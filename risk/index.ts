@@ -290,16 +290,32 @@ export function calculatePositionSize(
     ? challengeContext.riskPercent
     : agent.riskPercent;
 
-  const maxRisk = adjustedCapital * (riskPct / 100);
   const distanceToSl = Math.abs(signal.entry - signal.sl);
-
   if (distanceToSl === 0) return 0;
 
   // ─────────────────────────────────────────────
-  // 1. MAX POSSIBLE POSITION (based on margin)
+  // 1. MAX POSITION (constrained by the margin-allocation cap)
   // ─────────────────────────────────────────────
-  const maxPositionValue = adjustedCapital * leverage;
-  const maxPositionSize = maxPositionValue / signal.entry;
+  // Challenge mode: maxMarginPct caps how much of the bucket can be locked
+  // as margin per trade (e.g. 30% of $5 = $1.50 max). Non-challenge agents
+  // default this to 1.0 (no extra cap beyond raw leverage).
+  const marginCapFraction = challengeContext?.maxMarginPct ?? 1.0;
+  const maxMargin         = adjustedCapital * marginCapFraction;
+  const maxPositionValue  = maxMargin * leverage;
+  const maxPositionSize   = maxPositionValue / signal.entry;
+
+  // ─────────────────────────────────────────────
+  // 1b. RISK CAP — semantics depend on mode
+  // ─────────────────────────────────────────────
+  // Challenge mode: riskPct is a fraction of the MARGIN allocated for THIS
+  //   trade. e.g. maxMarginPct=0.30, riskPct=50 → 50% of the $1.50 allocation
+  //   = $0.75 max loss. Nested model the user actually thinks in.
+  // Non-challenge agents: riskPct is a fraction of the agent's adjusted
+  //   capital (legacy behaviour — main-pool risk is sized vs equity, not
+  //   vs margin). Unchanged.
+  const maxRisk = challengeContext
+    ? maxMargin * (riskPct / 100)
+    : adjustedCapital * (riskPct / 100);
 
   // ─────────────────────────────────────────────
   // 2. RISK AT MAX SIZE
@@ -315,6 +331,7 @@ export function calculatePositionSize(
       maxPositionSize,
       riskAtMaxSize,
       maxRisk,
+      marginCapFraction,
     });
 
     return Math.round(maxPositionSize * 10_000) / 10_000;
@@ -322,13 +339,18 @@ export function calculatePositionSize(
 
   // ─────────────────────────────────────────────
   // 4. OTHERWISE → SCALE DOWN TO RISK CAP
+  //    Also re-check the margin cap — risk-scaled size could still exceed it
+  //    if maxMarginPct < 1 (it usually won't because the bigger size was
+  //    already capped above, but defensive math here keeps the invariant).
   // ─────────────────────────────────────────────
-  const safePositionSize = maxRisk / distanceToSl;
+  const riskScaledSize    = maxRisk / distanceToSl;
+  const safePositionSize  = Math.min(riskScaledSize, maxPositionSize);
 
   const safePositionValue = safePositionSize * signal.entry;
-  const requiredMargin = safePositionValue / leverage;
+  const requiredMargin    = safePositionValue / leverage;
 
-  // Safety check (should rarely fail)
+  // Safety check — should never fire because maxPositionSize is already
+  // capped at adjustedCapital × leverage. Defensive only.
   if (requiredMargin > adjustedCapital) {
     logger.warn('Trade rejected — cannot fit within margin even after scaling', {
       agentId: agent.id,
@@ -343,6 +365,8 @@ export function calculatePositionSize(
     safePositionSize,
     actualRisk: safePositionSize * distanceToSl,
     maxRisk,
+    requiredMargin,
+    marginCapFraction,
   });
 
   return Math.round(safePositionSize * 10_000) / 10_000;

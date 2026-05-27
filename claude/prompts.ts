@@ -76,7 +76,10 @@ Use it to size and weigh the decision — not as a wall to clear.
 // System prompt
 // ─────────────────────────────────────────────
 
-export function buildSystemPrompt(agent: Agent): string {
+export function buildSystemPrompt(
+  agent: Agent,
+  challenge?: ChallengeRiskContext,
+): string {
 
   const styleGuide = {
     scalp: `
@@ -104,13 +107,20 @@ export function buildSystemPrompt(agent: Agent): string {
     `.trim(),
   }[agent.tradingStyle ?? 'auto'] ?? '';
 
-  const learnedMistakes = agent.learnedRules?.length > 0
-    ? `
-      ━━━━━━━━━━━━━━━━━━━━━━━
-      LESSONS FROM YOUR PAST LOSSES — never repeat these:
-      ${agent.learnedRules.map((r, i) => `${i + 1}. [${r.patternTag}] ${r.rule}`).join('\n')}
-    `.trim()
-    : '';
+  // Leverage and risk model live here in the system prompt — they're
+  // agent-stable for the duration of a session, and the LLM reads them
+  // alongside its identity rather than as ephemeral per-call data.
+  const leverage = agent.leverage ?? 10;
+  const riskPct  = agent.riskPercent;
+  const riskClause = challenge
+    ? `Risk model (nested cap, NOT a target):
+        ALLOCATION per trade = ${(challenge.maxMarginPct * 100).toFixed(0)}% of bucket = $${(challenge.equity * challenge.maxMarginPct).toFixed(2)} of margin.
+        MAX LOSS per trade  = ${challenge.riskPercent}% of that allocation = $${(challenge.equity * challenge.maxMarginPct * (challenge.riskPercent / 100)).toFixed(2)}.
+        These are CEILINGS the bot enforces, not budgets to spend. Place your stop where the thesis breaks (structural). If that stop happens to risk less than the ceiling, the trade is smaller and that is correct. 
+        NEVER widen a stop to "use up" the risk budget — that's the fastest way to blow the bucket.`
+    : `Risk per trade: up to ${riskPct}% of allocated capital — this is a ceiling, not a target. Tight structural stops produce smaller actual losses, which is correct.`;
+
+  const challengeBlock = challenge ? buildChallengeBlock(challenge) : '';
 
   const testModeBlock = TEST_MODE
     ? `
@@ -118,9 +128,9 @@ export function buildSystemPrompt(agent: Agent): string {
       TEST MODE — ACTIVE:
       You MUST return LONG or SHORT. NO_TRADE is not allowed.
       If the market is unclear choose the most reasonable directional bias.
-      CRITICAL: You are strictly hunting for HIGH-ROI setups (e.g. 100%+ margin ROI equivalent). 
-      Since your leverage is ${agent.leverage ?? 10}x, a 100% margin ROI requires a target price movement of at least ${(100 / (agent.leverage ?? 10)).toFixed(2)}% from entry.
-      Do NOT return low-potential, 20% ROI micro-scalps just to fulfill the trade requirement. 
+      CRITICAL: You are strictly hunting for HIGH-ROI setups (e.g. 100%+ margin ROI equivalent).
+      A 100% margin ROI requires roughly (100 / leverage)% from entry — at ${leverage}× that's ${(100 / leverage).toFixed(2)}%.
+      Do NOT return low-potential, 20% ROI micro-scalps just to fulfill the trade requirement.
       Look further out on the chart for major structural levels that offer massive Risk/Reward.
       Do not invent fake levels. Keep entries logical relative to current price.
       Reflect uncertainty through lower confidence score.
@@ -143,9 +153,11 @@ export function buildSystemPrompt(agent: Agent): string {
     
     YOUR ASSIGNMENT:
     Pair: ${agent.pair}
-    Leverage: ${agent.leverage ?? 10}x
-    Risk per trade: ${agent.riskPercent}% of allocated capital
-    
+    Leverage: ${leverage}x 
+    ${riskClause}
+
+    ${challengeBlock}
+
     ${CORE_PRINCIPLES}
 
     HOW YOU FIND TRADES:
@@ -160,32 +172,6 @@ export function buildSystemPrompt(agent: Agent): string {
     Used when a better risk-to-reward exists at a nearby level.
     Never force entry at current price if a cleaner level is close.
 
-    PULLBACK ENTRY CALIBRATION — read carefully, this is where pullback
-    signals most often miss. Markets routinely reverse 0.05%–0.15% before
-    reaching a clean structural level: buyers/sellers anticipate the level
-    and act early. If you set entry at the exact structural price, you will
-    often watch your thesis play out without participating.
-
-    Concession rule: set the entry slightly inside the structural level —
-    in the direction the market is moving toward.
-      For LONG pullbacks (waiting for a dip to support):
-        put the entry a few ticks ABOVE the exact support.
-      For SHORT pullbacks (waiting for a rally to resistance):
-        put the entry a few ticks BELOW the exact resistance.
-    A 0.05%–0.10% concession is the typical sweet spot — large enough to
-    catch near-misses, small enough that R/R is preserved (your SL still
-    sits beyond the structural level, so the invalidation logic is unchanged).
-
-    Worked example — SHORT at 1H resistance of 84.82, current price 84.50:
-      Greedy entry (will miss):    84.82   ← exact resistance
-      Calibrated entry (catches):  84.78   ← 0.05% concession below
-    SL at 85.25 (above the structural level), TP at 84.03. R/R is essentially
-    unchanged, fill probability goes up materially.
-
-    Skip the concession for CONFIRMATION entries — those fire on
-    momentum/breakout, not on a level being touched. The concession is a
-    pullback-specific calibration.
-
     HOW YOU SET LEVELS:
     
     Every level you output must come from visible market structure.
@@ -196,37 +182,45 @@ export function buildSystemPrompt(agent: Agent): string {
     Take profit = the next meaningful structural level in your favour.
     
     HOW YOU SET TRIGGERS:
-    
-    Triggers tell the system when to re-evaluate.
-    They must be structural — not arbitrary distances.
-    
-    price_up = the nearest resistance above current price where
-    a break would meaningfully change the market structure or your bias.
-    
-    price_down = the nearest support below current price where
-    a break would meaningfully change the market structure or your bias.
-    
-    timeout = how long this analysis remains valid if price does nothing.
-    Base it on your trading style and current volatility.
-    
-    Always provide triggers — even for NO_TRADE.
-    For NO_TRADE — triggers represent where a setup could begin to form.
+
+    Triggers tell the system when to re-evaluate AHEAD of the next candle close.
+    They are ONLY USED FOR NO_TRADE decisions — they represent levels where a
+    setup could begin to form, prompting a fresh look. Must be structural,
+    not arbitrary distances.
+
+    price_up = the nearest resistance above current price where a break
+    would prompt a fresh look (a setup might appear).
+
+    price_down = the nearest support below current price where a break
+    would prompt a fresh look (a setup might appear).
+
+    timeout_minutes = how long this NO_TRADE context stays valid before
+    fresh re-analysis is needed.
+
+    For LONG / SHORT signals: triggers are not used. The bot waits for your
+    entry price to be hit (or expiry to elapse), then management runs on
+    each significant candle close. Just set price_up/price_down to null and
+    do not over-think these fields for directional signals.
+
+    For management decisions (HOLD / ADJUST / CLOSE / PARTIAL_CLOSE):
+    triggers are not used either. The exchange's TP/SL handles critical
+    exits autonomously; management re-runs on each candle close.
     
     CONFIDENCE:
 
-    Confidence reflects the probability the setup plays out — nothing more.
+    Confidence is a probability assessment, not a permission slip. Be honest:
+      8–10 = high conviction. Clean structure, aligned momentum, clear invalidation.
+      6–7  = decent setup with material uncertainty. Tradeable if R/R compensates.
+      <6   = thesis is genuinely unclear. NO_TRADE.
 
-    8+ = high conviction. Clean structure, aligned momentum, clear invalidation.
-    7 = decent setup with some uncertainty. Still tradeable if R/R compensates.
-    Below 7 = thesis genuinely unclear. Usually NO_TRADE — but not automatically.
+    Above the floor: think in expected value. A clean 7 with 2.0R potential
+    is a better trade than an 8 with 1.2R. Do NOT inflate confidence to
+    clear a threshold, do NOT deflate it from over-caution.
 
-    The real question is never "is confidence above X?" — it is:
-    "does confidence × R/R × structure quality give positive expected value?"
-
-    A clean 7 with 2R potential beats a 8 with 1.2R. Think in expected value, not thresholds.
-    Be honest with the number — it informs sizing and conviction, not eligibility.
-    
-    ${learnedMistakes}
+    There IS a hard floor enforced by the risk layer (varies by performance
+    mode — see EFFECTIVE PARAMETERS / mode block in the entry prompt). The
+    entry prompt will show the exact floor for the current call. Signals
+    below it are auto-rejected regardless of how strong the R/R looks.
     
     ${testModeBlock}
     For "LONG" | "SHORT": entry_expiry_minutes = how long the setup remains valid if entry isn't hit (e.g. 30 for a tight scalp, 240 for a swing).
@@ -248,7 +242,6 @@ export function buildEntryPrompt(
   lessons: RelevantLesson[],
   monthlyPnl: number,
   performanceMode: PerformanceMode,
-  challenge?: ChallengeRiskContext,
 ): string {
 
   const now = new Date().toISOString();
@@ -259,11 +252,31 @@ export function buildEntryPrompt(
 
   const atr1h = mtfData.tf1h.indicators?.atr?.toFixed(5) ?? 'unknown';
 
-  // Minimal portfolio context — mode name only, no descriptive text
-  // that could bleed into entry logic
-  const modeLabel = `Performance mode: ${performanceMode} | Monthly P&L: ${monthlyPnl >= 0 ? '+' : ''}${monthlyPnl.toFixed(2)}%`;
+  // Performance mode + the actual auto-reject floors the risk layer enforces
+  // for this mode. Surfaced so the LLM never returns a signal that's
+  // mathematically certain to get bounced. Numbers must stay in sync with
+  // risk/index.ts (MIN_RR_BY_MODE, MIN_CONFIDENCE_BY_MODE, LIMITS).
+  const modeDescriptions: Record<PerformanceMode, string> = {
+    NORMAL:       'Standard operation. Trade good setups as they appear.',
+    GROWTH:       'Monthly floor achieved. Let winners run; selectivity unchanged.',
+    CONSERVATIVE: 'Approaching monthly drawdown cap. Tighten up — fewer trades, higher quality.',
+    RECOVERY:     'In drawdown. Capital preservation first. Only A+ setups.',
+  };
+  const modeFloors: Record<PerformanceMode, { confidence: number; rr: number }> = {
+    NORMAL:       { confidence: 6.0, rr: 1.0 },
+    GROWTH:       { confidence: 6.0, rr: 1.0 },
+    CONSERVATIVE: { confidence: 6.5, rr: 1.8 },
+    RECOVERY:     { confidence: 7.0, rr: 2.5 },
+  };
+  const floors = modeFloors[performanceMode];
 
-  const challengeBlock = challenge ? buildChallengeBlock(challenge) : '';
+  const modeLabel =
+    `Performance mode: ${performanceMode} | Monthly P&L: ${monthlyPnl >= 0 ? '+' : ''}${monthlyPnl.toFixed(2)}%\n` +
+    `    ${modeDescriptions[performanceMode]}\n` +
+    `    AUTO-REJECT FLOORS (this mode): confidence < ${floors.confidence} OR R/R < ${floors.rr.toFixed(1)} → rejected by risk layer before reaching the market.`;
+
+  // Leverage / risk / challenge block all live in the system prompt now —
+  // the entry prompt focuses on per-candle market state only.
 
   const relevantLessons = lessons.length > 0
     ? `
@@ -323,7 +336,6 @@ export function buildEntryPrompt(
 
   return `
     ${modeLabel}
-    ${challengeBlock}
     CURRENT TIME (UTC): ${now}
     CURRENT PRICE: ${currentPrice}
     PAIR: ${agent.pair}
@@ -360,18 +372,22 @@ export function buildEntryPrompt(
     ━━━━━━━━━━━━━━━━━━━━━━━
     BEFORE RESPONDING — sanity checks:
 
-    1. If LONG — is SL below entry? If SHORT — is SL above entry?
-       If no — you have a mechanical error. Fix it.
+    1. SL placement:
+       LONG  → SL strictly BELOW entry. TP strictly ABOVE entry.
+       SHORT → SL strictly ABOVE entry. TP strictly BELOW entry.
+       Anything else is a mechanical error and will be rejected.
 
-    2. Have you been honest about the confidence number?
-       Not "is it above some threshold" — does it genuinely reflect how clean the setup is?
+    2. Mode floors (see AUTO-REJECT FLOORS in this prompt):
+       Is confidence ≥ the mode floor? Is R/R ≥ the mode floor?
+       If either is below the floor — the risk layer auto-rejects regardless
+       of how good the setup looks. Pick NO_TRADE rather than waste the cycle.
 
-    3. Does confidence × R/R make this trade positive expected value?
-       If yes — take it, even if confidence is moderate.
-       If no — NO_TRADE, even if confidence is high but R/R is poor.
+    3. Above the floor — does confidence × R/R × structure quality give
+       genuinely positive expected value? If yes, take it. If no, NO_TRADE.
 
-    4. Would you take this trade with your own money under the conditions shown?
-       If you would hesitate — let that show in confidence, not necessarily NO_TRADE.
+    4. Would you take this trade with your own money under the conditions
+       shown? If you would hesitate, let that show in confidence — not
+       necessarily NO_TRADE, but be honest about uncertainty.
     
     Respond ONLY with this exact JSON:
     {
@@ -403,18 +419,20 @@ export function buildManagementPrompt(
   trade: OpenTrade,
   mtfData: MultiTimeframeData,
   newsContext: string,
-  challenge?: ChallengeRiskContext,
+  /** What the LLM said at entry time would invalidate the thesis. Pulled
+   *  from the originating Signal row by the caller (agents/index.ts).
+   *  Without this, the exit-side LLM has no anchor for what "invalidation"
+   *  actually means for this specific trade. */
+  originalInvalidation?: string,
 ): string {
   const pnlSign = trade.unrealisedPct >= 0 ? '+' : '';
   const duration = getTimeSince(trade.openedAt);
   const currentPrice = mtfData.tf5m.candles.at(-1)?.close ?? trade.entryPrice;
 
-  const challengeBlock = challenge ? buildChallengeBlock(challenge) : '';
+  // Challenge context (if active) is already in the system prompt.
 
   return `
   You have an open ${trade.direction} trade on ${trade.pair}.
-
-  ${challengeBlock}
 
   OPEN TRADE:
   Direction:      ${trade.direction}
@@ -425,6 +443,7 @@ export function buildManagementPrompt(
   Unrealised P&L: ${pnlSign}${trade.unrealisedPct.toFixed(2)}% (${pnlSign}$${trade.unrealisedPnl.toFixed(2)})
   Time open:      ${duration}
   Original read:  "${trade.entryReasoning}"
+  Original "what_invalidates":  "${originalInvalidation ?? '(not recorded)'}"
 
 
 
@@ -492,6 +511,8 @@ export function buildPostMortemPrompt(
 ): string {
   return `
 A trade just closed at a loss. Analyse it with complete honesty.
+Avoid the temptation to blame "the market" — focus on what could have been
+seen at entry time.
 
 TRADE:
 Pair:      ${trade.pair}
@@ -508,14 +529,27 @@ RSI:     ${rsiAtEntry}
 Volume:  ${volumeRatioAtEntry}x average
 News:    ${newsAtEntry}
 
-What actually went wrong?
+VERDICT GUIDE:
+  bad_trade      — the setup itself was flawed; a warning sign was visible at entry.
+  bad_luck       — the setup was reasonable; price did something unusual (gap, news flash).
+  bad_management — the entry was fine but the stop/sizing/exit handling was wrong.
+
+PATTERN TAG: SCREAMING_SNAKE_CASE describing the failure mode. Examples:
+  LONG_INTO_OVERBOUGHT_4H_RSI
+  COUNTER_TREND_AGAINST_STRONG_ADX
+  ENTERED_WITHIN_30MIN_OF_NEWS
+  SHORT_AT_UNCONFIRMED_RESISTANCE
+
+RULE TO ADD: a specific, actionable rule with concrete thresholds.
+  Good: "Skip LONG entries when 4H RSI > 75 even if structure supports."
+  Bad:  "Be careful with overbought."
 
 Respond ONLY with this exact JSON:
 {
   "primaryReason": "<one sentence — the real cause>",
-  "warningSigns": ["<warning sign present at entry>", "<another if applicable>"],
-  "patternTag": "<SCREAMING_SNAKE_CASE>",
-  "ruleToAdd": "<one specific actionable rule to prevent this>",
+  "warningSigns": ["<warning sign visible at entry>", "<another if applicable, else omit>"],
+  "patternTag": "<SCREAMING_SNAKE_CASE — see examples above>",
+  "ruleToAdd": "<specific actionable rule with concrete thresholds where possible>",
   "verdict": "bad_trade" | "bad_luck" | "bad_management",
   "avoidable": <true | false>
 }
@@ -527,22 +561,41 @@ Respond ONLY with this exact JSON:
 // ─────────────────────────────────────────────
 
 export function buildSynthesisPrompt(lessons: any[]): string {
+  // Cap input — without this, ~500 lessons would blow up the prompt.
+  // 50 most recent gives plenty of signal for the top-5 pattern detection;
+  // older lessons are stale relative to current strategy anyway.
+  const SYNTHESIS_MAX_LESSONS = 50;
+  const truncated = lessons.length > SYNTHESIS_MAX_LESSONS
+    ? lessons.slice(-SYNTHESIS_MAX_LESSONS)
+    : lessons;
+  const truncationNote = lessons.length > SYNTHESIS_MAX_LESSONS
+    ? `\n(Showing ${SYNTHESIS_MAX_LESSONS} most recent of ${lessons.length} total — older lessons omitted.)`
+    : '';
+
   return `
-You have ${lessons.length} lessons from losing trades.
+You have ${truncated.length} lessons from losing trades.${truncationNote}
 Find the top 5 most damaging recurring patterns.
 Write one precise actionable rule per pattern.
 Vague rules are worthless.
 
+GOOD rule examples:
+  "Skip entries when 4H RSI > 75 and you're going LONG on a pullback."
+  "Never short into a 4H uptrend if ADX > 30 on 1H."
+
+BAD rule examples (too vague):
+  "Be more careful with overbought conditions."
+  "Wait for confirmation before entering."
+
 LESSONS:
-${JSON.stringify(lessons, null, 2)}
+${JSON.stringify(truncated, null, 2)}
 
 Respond ONLY with this exact JSON:
 {
   "rules": [
     {
-      "patternTag": "<SCREAMING_SNAKE_CASE>",
-      "rule": "<specific actionable rule>",
-      "frequency": <number of occurrences>
+      "patternTag": "<SCREAMING_SNAKE_CASE — e.g. LONG_INTO_4H_RSI_OVERBOUGHT>",
+      "rule": "<specific actionable rule with concrete thresholds where possible>",
+      "frequency": <number of occurrences in the lessons above>
     }
   ]
 }
@@ -690,25 +743,6 @@ function describeCandlePattern(candle: Candle, prev?: Candle): string {
 }
 
 // ─────────────────────────────────────────────
-// Portfolio context block
-// ─────────────────────────────────────────────
-
-function buildPortfolioContext(monthlyPnl: number, mode: PerformanceMode): string {
-  const modeContext = {
-    NORMAL: 'Standard operation.',
-    GROWTH: 'Monthly floor achieved. Focus on letting winners run.',
-    CONSERVATIVE: 'Approaching drawdown limit. Be highly selective.',
-    RECOVERY: 'In drawdown. Capital preservation is the priority.',
-  }[mode] ?? '';
-
-  return `
-PORTFOLIO STATE:
-Monthly P&L: ${monthlyPnl >= 0 ? '+' : ''}${monthlyPnl.toFixed(2)}%
-Mode: ${mode} — ${modeContext}
-  `.trim();
-}
-
-// ─────────────────────────────────────────────
 // Util
 // ─────────────────────────────────────────────
 
@@ -739,6 +773,9 @@ function buildChallengeBlock(ctx: ChallengeRiskContext): string {
   const daysLeft     = Math.max(0, daysLeftMs / 86_400_000);
   const floor        = start * (1 - ctx.maxDrawdownPct);
 
+  const maxMargin = equity * ctx.maxMarginPct;
+  const maxNotionalFromMargin = maxMargin * ctx.leverage;
+
   return `
   ━━━━━━━━━━━━━━━━━━━━━━━
   CHALLENGE MODE ACTIVE — flip $${start.toFixed(2)} into $${target.toFixed(2)}:
@@ -747,7 +784,7 @@ function buildChallengeBlock(ctx: ChallengeRiskContext): string {
   Progress:        ${progressPct.toFixed(1)}% to target
   Drawdown used:   ${drawdownUsed.toFixed(1)}% of ${(ctx.maxDrawdownPct * 100).toFixed(0)}% budget (floor: $${floor.toFixed(2)})
   Days remaining:  ${daysLeft.toFixed(1)}
-  Leverage:        ${ctx.leverage}× | Risk per trade: ${ctx.riskPercent}% of equity
+  Max margin/trade: $${maxMargin.toFixed(2)} (${(ctx.maxMarginPct * 100).toFixed(0)}% of bucket) → notional cap $${maxNotionalFromMargin.toFixed(2)}
 
   This is an isolated bucket — wins compound, losses shrink the bucket.
   Near target: consider locking in the win rather than chasing more.

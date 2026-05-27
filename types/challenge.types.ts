@@ -41,7 +41,9 @@ export interface ChallengeSessionRecord {
   durationDays:     number;
   maxDrawdownPct:   number;
   riskPercent:      number;
-  leverage:         number;
+  // Leverage intentionally NOT on the session — single source of truth is
+  // Agent.leverage. Surfaced at runtime in ChallengeRiskContext.leverage,
+  // populated by buildChallengeRiskContext from the agent row.
   minNotionalFloor: number;
   startsAt:         Date | null;   // null until activated
   endsAt:           Date | null;   // null until activated
@@ -89,6 +91,10 @@ export interface ChallengeRiskContext {
   riskPercent:      number;   // % of equity to risk per trade
   maxDrawdownPct:   number;
   minNotionalFloor: number;
+  // Cap on margin per trade as a fraction of bucket equity. 0.2 = 20%.
+  // The position sizer rejects positions whose required margin would
+  // exceed this. Independent of riskPercent (which caps loss, not exposure).
+  maxMarginPct:     number;
   endsAt:           Date;
   // Used by buildChallengeDrawdownState() to scope mode resolution to the
   // bucket only — never globally.

@@ -104,6 +104,14 @@ async function main(): Promise<void> {
   // Uses the 5m buffer just seeded above; must run AFTER seedCandleBuffers.
   await agentManager.catchUpMissedEntries();
 
+  // 4c. Replay any TP/SL hits on OPEN trades that happened while the bot
+  // was offline. Must run AFTER catchUpMissedEntries in case a trade was
+  // opened AND closed during the same downtime window. Goes through the
+  // standard closeTrade() path, so winRate/monthlyPnL recompute, signal
+  // cleanup, challenge evaluation, Telegram alert, and post-mortem all
+  // fire as if the close had happened in real time.
+  await agentManager.catchUpMissedExits();
+
   uniquePairs.forEach(pair => {
     onCandle(pair, '5', (candle) => handleCandle(candle));
     onCandle(pair, '60', (candle) => handleCandle(candle));
