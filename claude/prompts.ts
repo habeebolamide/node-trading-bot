@@ -51,6 +51,13 @@ Risk-to-reward — favor setups offering at least:
 A thinner R/R is acceptable when the setup is exceptionally clean — but never stretch
 the TP just to hit a ratio. Structure decides the target, not arithmetic.
 
+R/R is the ratio; leverage and SL distance together produce the absolute %
+impact. A 1.5R win on a 0.1% stop at 25× ≈ 3.75% margin ROI; same R/R on a
+1.0% stop at 25× ≈ 37.5%. Same ratio, ten times the impact. Structure still
+picks the stop, but the resulting trade's absolute impact decides whether
+it's worth taking. Under a compounding deadline (a challenge with limited
+days remaining), "clean but tiny" is often better as NO_TRADE.
+
 Timeframe alignment — when 4H and lower-TF momentum agree, you have a tailwind.
 When they diverge, ask which kind of divergence this is:
   Pullback INTO HTF support or resistance — one of the highest-probability setups
@@ -115,7 +122,7 @@ export function buildSystemPrompt(
   const riskClause = challenge
     ? `Risk model (nested cap, NOT a target):
         ALLOCATION per trade = ${(challenge.maxMarginPct * 100).toFixed(0)}% of bucket = $${(challenge.equity * challenge.maxMarginPct).toFixed(2)} of margin.
-        MAX LOSS per trade  = ${challenge.riskPercent}% of that allocation = $${(challenge.equity * challenge.maxMarginPct * (challenge.riskPercent / 100)).toFixed(2)}.
+        MAX risk per trade  = ${challenge.riskPercent}%.
         These are CEILINGS the bot enforces, not budgets to spend. Place your stop where the thesis breaks (structural). If that stop happens to risk less than the ceiling, the trade is smaller and that is correct. 
         NEVER widen a stop to "use up" the risk budget — that's the fastest way to blow the bucket.`
     : `Risk per trade: up to ${riskPct}% of allocated capital — this is a ceiling, not a target. Tight structural stops produce smaller actual losses, which is correct.`;
@@ -382,8 +389,11 @@ export function buildEntryPrompt(
        If either is below the floor — the risk layer auto-rejects regardless
        of how good the setup looks. Pick NO_TRADE rather than waste the cycle.
 
-    3. Above the floor — does confidence × R/R × structure quality give
-       genuinely positive expected value? If yes, take it. If no, NO_TRADE.
+    3. Above the floor — does the setup deliver positive expected value
+       (confidence × R/R × structure quality) AND meaningful absolute %
+       impact under your leverage? See CORE PRINCIPLES for the R/R +
+       leverage math. A clean trade with trivial absolute impact is
+       often the wrong slot to fill — NO_TRADE.
 
     4. Would you take this trade with your own money under the conditions
        shown? If you would hesitate, let that show in confidence — not
@@ -787,8 +797,10 @@ function buildChallengeBlock(ctx: ChallengeRiskContext): string {
   Max margin/trade: $${maxMargin.toFixed(2)} (${(ctx.maxMarginPct * 100).toFixed(0)}% of bucket) → notional cap $${maxNotionalFromMargin.toFixed(2)}
 
   This is an isolated bucket — wins compound, losses shrink the bucket.
-  Near target: consider locking in the win rather than chasing more.
-  Near floor:  play defensive — preserve what's left.
-  Mid-bucket:  trade normally; ambitious but disciplined.
+  You are operating under a compounding deadline (see "Days remaining"
+  above). See CORE PRINCIPLES for how R/R + leverage + SL distance
+  combine into per-trade absolute impact.
+
+  Near target: lock in.   Near floor: play defensive.   Mid-bucket: hunt.
   ━━━━━━━━━━━━━━━━━━━━━━━`.trim();
 }
