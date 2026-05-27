@@ -54,9 +54,23 @@ the TP just to hit a ratio. Structure decides the target, not arithmetic.
 R/R is the ratio; leverage and SL distance together produce the absolute %
 impact. A 1.5R win on a 0.1% stop at 25× ≈ 3.75% margin ROI; same R/R on a
 1.0% stop at 25× ≈ 37.5%. Same ratio, ten times the impact. Structure still
-picks the stop, but the resulting trade's absolute impact decides whether
-it's worth taking. Under a compounding deadline (a challenge with limited
-days remaining), "clean but tiny" is often better as NO_TRADE.
+picks the stop; absolute impact tells you whether a win meaningfully moves
+your capital.
+
+Setup selection (above the R/R + confidence floors):
+
+  PREFER HIGH impact (≥60% margin ROI per win) — compounds fastest.
+
+  Take DECENT (~35-50% margin ROI) when quality is strong and high imapact trade isn't available or doesn't align with your strategy — don't sit
+  out a clean A-grade 30% setup waiting for a 100% unicorn.
+
+  Take LOW (<20% margin ROI) when quality is good AND nothing higher-
+  impact is currently available — a clean trade is better than NO_TRADE
+  indefinitely. If a low-impact trade runs in your favor, management
+  can extend TP to the next structural level (see management prompt) —
+  turning a 20% entry into a 50%+ outcome.
+
+  NO_TRADE only when nothing reasonable exists. Don't force trades.
 
 Timeframe alignment — when 4H and lower-TF momentum agree, you have a tailwind.
 When they diverge, ask which kind of divergence this is:
@@ -389,11 +403,8 @@ export function buildEntryPrompt(
        If either is below the floor — the risk layer auto-rejects regardless
        of how good the setup looks. Pick NO_TRADE rather than waste the cycle.
 
-    3. Above the floor — does the setup deliver positive expected value
-       (confidence × R/R × structure quality) AND meaningful absolute %
-       impact under your leverage? See CORE PRINCIPLES for the R/R +
-       leverage math. A clean trade with trivial absolute impact is
-       often the wrong slot to fill — NO_TRADE.
+    3. Above the floor — does confidence × R/R × structure quality give
+       genuinely positive expected value? If yes, take it. If no, NO_TRADE.
 
     4. Would you take this trade with your own money under the conditions
        shown? If you would hesitate, let that show in confidence — not
@@ -477,6 +488,21 @@ export function buildManagementPrompt(
   A trade being temporarily in loss is normal. Do not close based on that alone.
   Close or adjust only if the thesis is genuinely invalidated or market structure changed.
   You may never move the stop loss further away from entry — only tighten it.
+
+  TP CAN BE EXTENDED when the trade is in profit AND structure supports
+  further movement — e.g. price has cleanly broken your original TP and
+  the next major structural level (next swing, prior reaction zone,
+  liquidity area) is meaningfully further. Use ADJUST with newTp set to
+  the new structural level. Especially useful for trades that entered
+  with a conservative TP and are running strong.
+
+  When extending TP, consider tightening SL — to break-even or the prior
+  swing structure — to lock in what's already been earned. Never widen.
+
+  Don't extend TP on hope or "it might go higher." Extend only when
+  specific structural evidence supports the new target. If the path
+  forward is unclear, HOLD or PARTIAL_CLOSE to bank some and let the
+  rest ride.
 
   After your decision, always provide re-analysis triggers.
   These are price levels where the trade situation changes significantly.
@@ -797,9 +823,10 @@ function buildChallengeBlock(ctx: ChallengeRiskContext): string {
   Max margin/trade: $${maxMargin.toFixed(2)} (${(ctx.maxMarginPct * 100).toFixed(0)}% of bucket) → notional cap $${maxNotionalFromMargin.toFixed(2)}
 
   This is an isolated bucket — wins compound, losses shrink the bucket.
-  You are operating under a compounding deadline (see "Days remaining"
-  above). See CORE PRINCIPLES for how R/R + leverage + SL distance
-  combine into per-trade absolute impact.
+  You are operating under a compounding deadline. The setup selection
+  rules from CORE PRINCIPLES apply with extra urgency — prefer HIGH-
+  impact setups whenever possible to compound the bucket toward target
+  in time.
 
   Near target: lock in.   Near floor: play defensive.   Mid-bucket: hunt.
   ━━━━━━━━━━━━━━━━━━━━━━━`.trim();

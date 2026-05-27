@@ -490,10 +490,40 @@ export class AgentManager {
         }
 
         if (tpHit && slHit) {
-          // Both hit in the same candle. Without intra-candle ordering data,
-          // assume the conservative outcome (SL hit) to avoid claiming wins
-          // that may not have actually occurred.
-          detected = { reason: 'SL_HIT', exitPrice: sl, candleTime: c.openTime };
+          // Both hit in the same candle. Use candle direction as heuristic:
+          // for a LONG, a bullish candle (close > open) almost certainly
+          // crossed TP first then wicked down through SL. A bearish candle
+          // crossed SL first. For SHORT, mirror logic.
+          // Previously this defaulted to SL "conservatively" which was
+          // misreporting clean-TP candles whose lower wick happened to
+          // brush SL.
+          const candleBullish = c.close > c.open;
+          const candleBearish = c.close < c.open;
+          let bothHitChoice: 'TP_HIT' | 'SL_HIT';
+          if (dir === 'LONG') {
+            bothHitChoice = candleBullish ? 'TP_HIT'
+                          : candleBearish ? 'SL_HIT'
+                          : 'SL_HIT';            // doji → conservative
+          } else {
+            bothHitChoice = candleBearish ? 'TP_HIT'
+                          : candleBullish ? 'SL_HIT'
+                          : 'SL_HIT';            // doji → conservative
+          }
+          detected = {
+            reason:     bothHitChoice,
+            exitPrice:  bothHitChoice === 'TP_HIT' ? tp : sl,
+            candleTime: c.openTime,
+          };
+          logger.warn(`[${agent.name}] Catch-up-exits: both TP and SL hit in same candle`, {
+            tradeId:        trade.id,
+            direction:      dir,
+            candleOpen:     c.open,
+            candleClose:    c.close,
+            candleHigh:     c.high,
+            candleLow:      c.low,
+            tp, sl,
+            heuristicPick:  bothHitChoice,
+          });
           break;
         }
         if (tpHit) {

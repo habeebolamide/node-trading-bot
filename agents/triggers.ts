@@ -307,6 +307,9 @@ export function startTimeoutChecker(): void {
       //    until the next 5m candle closed.
       if (state.pendingSignal && state.entryExpiry) {
         const expiryMs = new Date(state.entryExpiry).getTime();
+
+        console.log(`[TimeoutChecker] Agent ${agent.name} has pending entry with expiry at ${state.entryExpiry} (now: ${new Date().toISOString()})`);
+
         if (!isNaN(expiryMs) && Date.now() >= expiryMs) {
           logger.info(`[${agent.name}] Entry expired (timeout checker)`, {
             entryExpiry: state.entryExpiry,

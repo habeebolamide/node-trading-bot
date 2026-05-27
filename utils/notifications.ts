@@ -3,93 +3,145 @@ import TelegramBot from 'node-telegram-bot-api';
 import type { Agent } from '../types/agent.types.js';
 import type { ClosedTrade, OpenTrade } from '../types/trade.types.js';
 import type { EntrySignal } from '../types/claude.types.js';
+import logger from './logger.js';
 
 const bot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN!, { polling: false });
 const CHAT_ID = process.env.TELEGRAM_CHAT_ID!;
+
+// ─────────────────────────────────────────────
+// safeSend — the ONLY place we actually hit Telegram.
+// Catches BOTH async send errors AND any sync error thrown while building
+// the message (e.g. `.toFixed()` on undefined). Never rejects, never throws,
+// never blocks the caller. If Telegram is down or the message is malformed,
+// the bot keeps trading and the failure is logged.
+// ─────────────────────────────────────────────
+
+async function safeSend(
+  build: () => { text: string; options?: TelegramBot.SendMessageOptions },
+  context: string,
+): Promise<void> {
+  let text: string;
+  let options: TelegramBot.SendMessageOptions | undefined;
+  try {
+    const built = build();
+    text = built.text;
+    options = built.options;
+  } catch (buildErr: any) {
+    logger.error('Telegram message build failed', {
+      context,
+      error: buildErr?.message ?? buildErr,
+    });
+    return;
+  }
+
+  try {
+    await bot.sendMessage(CHAT_ID, text, options);
+  } catch (sendErr: any) {
+    // Common cases: 400 (HTML parse error / message too long), 403 (chat
+    // blocked the bot), 429 (rate limit). None of these should block trading.
+    logger.error('Telegram send failed', {
+      context,
+      error: sendErr?.message ?? sendErr,
+      code:  sendErr?.code ?? null,
+    });
+  }
+}
+
+// ─────────────────────────────────────────────
+// Public notification surface. Every method returns a resolved Promise
+// — callers can `await` them safely without risking a throw blocking
+// trade-close paths, etc.
+// ─────────────────────────────────────────────
 
 export const notifications = {
 
   async sendTradeAlert(
     agent: Agent,
-    type: 'PAPER_OPEN' | 'LIVE_OPEN' | 'CLOSE' | 'PARTIAL_CLOSE' | 'ADJUST'| 'TP_HIT'| 'SL_HIT',
-    trade: OpenTrade | ClosedTrade
+    type: 'PAPER_OPEN' | 'LIVE_OPEN' | 'CLOSE' | 'PARTIAL_CLOSE' | 'ADJUST' | 'TP_HIT' | 'SL_HIT',
+    trade: OpenTrade | ClosedTrade,
   ): Promise<void> {
+    await safeSend(() => {
+      let text = '';
 
-    let message = '';
+      if (type === 'PAPER_OPEN' || type === 'LIVE_OPEN') {
+        const isPaper = type === 'PAPER_OPEN';
+        const openTrade = trade as OpenTrade;
+        text =
+          `${isPaper ? '🧪' : '🚀'} [${isPaper ? 'PAPER' : 'LIVE'} TRADE OPENED]\n\n` +
+          `Agent: <b>${agent.name}</b>\n` +
+          `Pair: <b>${openTrade.pair}</b>\n` +
+          `Direction: <b>${openTrade.direction}</b>\n` +
+          `Entry: <b>${openTrade.entryPrice}</b>\n` +
+          `SL: <b>${openTrade.currentSl}</b>\n` +
+          `TP: <b>${openTrade.currentTp}</b>\n` +
+          `Size: <b>${openTrade.positionSize}</b>\n` +
+          `Value: <b>$${(openTrade.positionValue ?? 0).toFixed(2)}</b>\n` +
+          `Mode: ${isPaper ? 'PAPER' : 'LIVE'}`;
+      } else if (type === 'CLOSE') {
+        const closedTrade = trade as ClosedTrade;
+        const emoji = closedTrade.outcome === 'win' ? '✅' : '❌';
+        text =
+          `${emoji} TRADE CLOSED\n\n` +
+          `Agent: <b>${agent.name}</b>\n` +
+          `Pair: <b>${closedTrade.pair}</b>\n` +
+          `Direction: ${closedTrade.direction}\n` +
+          `Entry: ${closedTrade.entryPrice} → Exit: ${closedTrade.exitPrice}\n` +
+          `PnL: <b>${(closedTrade.realisedPnl ?? 0).toFixed(2)} USDT</b> (${(closedTrade.realisedPct ?? 0).toFixed(2)}%)\n` +
+          `Outcome: <b>${(closedTrade.outcome ?? 'unknown').toString().toUpperCase()}</b>\n` +
+          `Reason: ${closedTrade.closeReason}`;
+      } else if (type === 'ADJUST') {
+        text =
+          `🔄 TP/SL ADJUSTED\n\n` +
+          `Agent: <b>${agent.name}</b>\n` +
+          `Pair: ${trade.pair}\n` +
+          `New SL: <b>${trade.currentSl}</b>\n` +
+          `New TP: <b>${trade.currentTp}</b>`;
+      } else {
+        // PARTIAL_CLOSE / TP_HIT / SL_HIT — fallback formatting so we still
+        // get *something* to Telegram instead of an empty message that fails.
+        text =
+          `📊 ${type}\n\n` +
+          `Agent: <b>${agent.name}</b>\n` +
+          `Pair: <b>${trade.pair}</b>\n` +
+          `Direction: ${trade.direction}\n` +
+          `Entry: ${trade.entryPrice}`;
+      }
 
-    if (type === 'PAPER_OPEN' || type === 'LIVE_OPEN') {
-      const isPaper = type === 'PAPER_OPEN';
-      const openTrade = trade as OpenTrade;
-
-      message = `${isPaper ? '🧪' : '🚀'} [${isPaper ? 'PAPER' : 'LIVE'} TRADE OPENED]\n\n` +
-        `Agent: <b>${agent.name}</b>\n` +
-        `Pair: <b>${openTrade.pair}</b>\n` +
-        `Direction: <b>${openTrade.direction}</b>\n` +
-        `Entry: <b>${openTrade.entryPrice}</b>\n` +
-        `SL: <b>${openTrade.currentSl}</b>\n` +
-        `TP: <b>${openTrade.currentTp}</b>\n` +
-        `Size: <b>${openTrade.positionSize}</b>\n` +
-        `Value: <b>$${openTrade.positionValue.toFixed(2)}</b>\n` +
-        `Mode: ${isPaper ? 'PAPER' : 'LIVE'}`;
-    }
-    else if (type === 'CLOSE') {
-      const closedTrade = trade as ClosedTrade;
-
-      const emoji = closedTrade.outcome === 'win' ? '✅' : '❌';
-
-      message = `${emoji} TRADE CLOSED\n\n` +
-        `Agent: <b>${agent.name}</b>\n` +
-        `Pair: <b>${closedTrade.pair}</b>\n` +
-        `Direction: ${closedTrade.direction}\n` +
-        `Entry: ${closedTrade.entryPrice} → Exit: ${closedTrade.exitPrice}\n` +
-        `PnL: <b>${closedTrade.realisedPnl.toFixed(2)} USDT</b> (${closedTrade.realisedPct.toFixed(2)}%)\n` +
-        `Outcome: <b>${closedTrade.outcome.toUpperCase()}</b>\n` +
-        `Reason: ${closedTrade.closeReason}`;
-    }
-    else if (type === 'ADJUST') {
-      message = `🔄 TP/SL ADJUSTED\n\n` +
-        `Agent: <b>${agent.name}</b>\n` +
-        `Pair: ${trade.pair} \n` +
-        `New SL: <b>${trade.currentSl}</b>\n` +
-        `New TP: <b>${trade.currentTp}</b>`;
-    }
-
-    try {
-      await bot.sendMessage(CHAT_ID, message, { parse_mode: 'HTML' });
-      console.log(`📨 Telegram alert sent: ${type}`);
-    } catch (error) {
-      console.error('Failed to send Telegram message:', error);
-    }
+      return { text, options: { parse_mode: 'HTML' } };
+    }, `sendTradeAlert:${type}`);
   },
 
-  async sendNoTradeSignal(agentName: string, pair: string, reason: string, triggers:any): Promise<void> {
-    const message = `⚠️ No trade signal from ${agentName} for ${pair} at this time.\n\n` +
-      `Reason: <b>${reason}</b>.\n\n
-      Triggers:\n
-        Price Up: ${triggers.price_up}
-        Price Down: ${triggers.price_down}
-      `;
-    try {
-      await bot.sendMessage(CHAT_ID, message, { parse_mode: 'HTML' });
-      console.log('📨 Telegram no-signal alert sent');
-    } catch (error) {
-      console.error('Failed to send Telegram message:', error);
-    }
+  async sendNoTradeSignal(
+    agentName: string,
+    pair: string,
+    reason: string,
+    triggers: any,
+  ): Promise<void> {
+    await safeSend(() => ({
+      text:
+        `⚠️ No trade signal from ${agentName} for ${pair} at this time.\n\n` +
+        `Reason: <b>${reason}</b>.\n\n` +
+        `Triggers:\n` +
+        `  Price Up: ${triggers?.price_up ?? 'null'}\n` +
+        `  Price Down: ${triggers?.price_down ?? 'null'}`,
+      options: { parse_mode: 'HTML' },
+    }), 'sendNoTradeSignal');
   },
 
-  async sendSignalAlert(agent: Agent, signal: EntrySignal, positionSize: number): Promise<void> {
-    const directionEmoji = signal.action === 'LONG' ? '🟢' : '🔴';
+  async sendSignalAlert(
+    agent: Agent,
+    signal: EntrySignal,
+    positionSize: number,
+  ): Promise<void> {
+    await safeSend(() => {
+      const directionEmoji = signal.action === 'LONG' ? '🟢' : '🔴';
+      const expiryText = signal.entry_expiry
+        ? new Date(signal.entry_expiry).toUTCString()
+        : 'N/A';
+      const entryPrice = signal.entry ?? 0;
+      const value      = positionSize * entryPrice;
 
-    const expiryText = signal.entry_expiry
-      ? new Date(signal.entry_expiry).toUTCString()
-      : 'N/A';
-
-    // Value = notional USDT exposure at the intended entry. Mirrors how Bybit
-    // displays open positions (size in base units, value in quote).
-    const entryPrice = signal.entry ?? 0;
-    const value      = positionSize * entryPrice;
-
-    const message = `${directionEmoji} <b>SIGNAL GENERATED</b>
+      const text = `${directionEmoji} <b>SIGNAL GENERATED</b>
 
     <b>Agent:</b> ${agent.name}
     <b>Pair:</b> ${agent.pair}
@@ -109,41 +161,31 @@ export const notifications = {
     🧠 <b>Reason:</b>
     ${signal.reasoning || 'No reasoning provided'}
     `;
-
-    try {
-      await bot.sendMessage(CHAT_ID, message, { parse_mode: 'HTML' });
-      console.log(`📨 Signal alert sent for ${agent.name} → ${signal.action} ${agent.pair}`);
-    } catch (error) {
-      console.error('Failed to send signal alert:', error);
-    }
+      return { text, options: { parse_mode: 'HTML' } };
+    }, `sendSignalAlert:${agent.name}`);
   },
 
   async sendExpiryAlert(agent: Agent, signal: any): Promise<void> {
-    const message = `⌛ <b>SIGNAL EXPIRED</b>
+    await safeSend(() => ({
+      text: `⌛ <b>SIGNAL EXPIRED</b>
 
     <b>Agent:</b> ${agent.name}
     <b>Pair:</b> ${agent.pair}
-    <b>Direction:</b> ${signal.action}
-    <b>Entry:</b> ${signal.entry}
+    <b>Direction:</b> ${signal?.action}
+    <b>Entry:</b> ${signal?.entry}
 
     Price never reached entry before the deadline — agent back to IDLE.
-    `;
-
-    try {
-      await bot.sendMessage(CHAT_ID, message, { parse_mode: 'HTML' });
-      console.log(`📨 Expiry alert sent for ${agent.name} → ${signal.action} ${agent.pair}`);
-    } catch (error) {
-      console.error('Failed to send expiry alert:', error);
-    }
+    `,
+      options: { parse_mode: 'HTML' },
+    }), `sendExpiryAlert:${agent.name}`);
   },
 
-  // Extra helper methods
   async sendError(message: string): Promise<void> {
-    await bot.sendMessage(CHAT_ID, `❌ ERROR: ${message}`);
+    await safeSend(() => ({ text: `❌ ERROR: ${message}` }), 'sendError');
   },
 
   async sendSystem(message: string): Promise<void> {
-    await bot.sendMessage(CHAT_ID, `ℹ️ ${message}`);
+    await safeSend(() => ({ text: `ℹ️ ${message}` }), 'sendSystem');
   },
 
   // ─── Challenge mode notifications ───
@@ -159,13 +201,17 @@ export const notifications = {
       executionMode:   string;
     },
   ): Promise<void> {
-    const multiplier = session.targetCapital / session.startingCapital;
-    const daysLeft   = Math.max(0, Math.ceil((session.endsAt.getTime() - Date.now()) / 86_400_000));
-    const message = `🎯 <b>CHALLENGE STARTED</b>
+    await safeSend(() => {
+      const multiplier = session.targetCapital / session.startingCapital;
+      const daysLeft = Math.max(
+        0,
+        Math.ceil((session.endsAt.getTime() - Date.now()) / 86_400_000),
+      );
+      const text = `🎯 <b>CHALLENGE STARTED</b>
 
     <b>Agent:</b> ${agent.name}
     <b>Pair:</b> ${agent.pair}
-    <b>Mode:</b> ${session.executionMode.toUpperCase()}
+    <b>Mode:</b> ${(session.executionMode ?? '').toUpperCase()}
 
     <b>Start:</b> $${session.startingCapital.toFixed(2)}
     <b>Target:</b> $${session.targetCapital.toFixed(2)} (${multiplier.toFixed(1)}×)
@@ -174,12 +220,8 @@ export const notifications = {
 
     ⏳ Ends: ${session.endsAt.toUTCString()}
     `;
-    try {
-      await bot.sendMessage(CHAT_ID, message, { parse_mode: 'HTML' });
-      console.log(`📨 Challenge start alert sent for ${agent.name}`);
-    } catch (error) {
-      console.error('Failed to send challenge-started alert:', error);
-    }
+      return { text, options: { parse_mode: 'HTML' } };
+    }, `sendChallengeStarted:${agent.name}`);
   },
 
   async sendChallengeStartFailed(
@@ -187,20 +229,17 @@ export const notifications = {
     reason: string,
     detail: string,
   ): Promise<void> {
-    const message = `🚫 <b>CHALLENGE START FAILED</b>
+    await safeSend(() => ({
+      text: `🚫 <b>CHALLENGE START FAILED</b>
 
     <b>Agent:</b> ${agent.name}
     <b>Reason:</b> <code>${reason}</code>
     <b>Detail:</b> ${detail}
 
     challengeMode has been toggled back to false. Fix the issue and toggle again.
-    `;
-    try {
-      await bot.sendMessage(CHAT_ID, message, { parse_mode: 'HTML' });
-      console.log(`📨 Challenge start-failed alert sent: ${reason}`);
-    } catch (error) {
-      console.error('Failed to send challenge-start-failed alert:', error);
-    }
+    `,
+      options: { parse_mode: 'HTML' },
+    }), `sendChallengeStartFailed:${agent.name}`);
   },
 
   async sendChallengeEnded(
@@ -214,20 +253,21 @@ export const notifications = {
       failReason:      string | null;
     },
   ): Promise<void> {
-    const emoji =
-      session.status === 'passed'    ? '🏆' :
-      session.status === 'failed'    ? '💀' :
-      session.status === 'expired'   ? '⌛' :
-      /* cancelled */                  '🛑';
+    await safeSend(() => {
+      const emoji =
+        session.status === 'passed'    ? '🏆' :
+        session.status === 'failed'    ? '💀' :
+        session.status === 'expired'   ? '⌛' :
+        /* cancelled */                  '🛑';
 
-    const finalEquityStr = session.finalEquity !== null
-      ? `$${session.finalEquity.toFixed(2)}`
-      : 'unknown';
-    const finalReturnStr = session.finalReturnPct !== null
-      ? `${session.finalReturnPct >= 0 ? '+' : ''}${session.finalReturnPct.toFixed(2)}%`
-      : 'unknown';
+      const finalEquityStr = session.finalEquity !== null
+        ? `$${session.finalEquity.toFixed(2)}`
+        : 'unknown';
+      const finalReturnStr = session.finalReturnPct !== null
+        ? `${session.finalReturnPct >= 0 ? '+' : ''}${session.finalReturnPct.toFixed(2)}%`
+        : 'unknown';
 
-    const message = `${emoji} <b>CHALLENGE ${session.status.toUpperCase()}</b>
+      const text = `${emoji} <b>CHALLENGE ${session.status.toUpperCase()}</b>
 
     <b>Agent:</b> ${agent.name}
     <b>Pair:</b> ${agent.pair}
@@ -239,11 +279,7 @@ export const notifications = {
 
     Agent has been paused. Toggle challengeMode again to start a new run.
     `;
-    try {
-      await bot.sendMessage(CHAT_ID, message, { parse_mode: 'HTML' });
-      console.log(`📨 Challenge end alert sent for ${agent.name} (${session.status})`);
-    } catch (error) {
-      console.error('Failed to send challenge-ended alert:', error);
-    }
+      return { text, options: { parse_mode: 'HTML' } };
+    }, `sendChallengeEnded:${agent.name}`);
   },
 };

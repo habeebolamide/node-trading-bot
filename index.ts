@@ -102,7 +102,7 @@ async function main(): Promise<void> {
 
   // 4b. Replay any entry hits that happened while the bot was offline.
   // Uses the 5m buffer just seeded above; must run AFTER seedCandleBuffers.
-  await agentManager.catchUpMissedEntries();
+  // await agentManager.catchUpMissedEntries();
 
   // 4c. Replay any TP/SL hits on OPEN trades that happened while the bot
   // was offline. Must run AFTER catchUpMissedEntries in case a trade was
@@ -211,13 +211,10 @@ async function handleCandle(candle: Candle): Promise<void> {
       return;
     }
 
-    // 3. Detect regime
-
-
-    // 4. News context
+    // 3. News context
     const newsContext = getNewsContextForPrompt(pair);
 
-    // 5. Process all agents on this pair
+    // 4. Process all agents on this pair
     await agentManager.processSignificantCandle(
       candle,
       mtfData,
