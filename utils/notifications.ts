@@ -111,6 +111,37 @@ export const notifications = {
     }, `sendTradeAlert:${type}`);
   },
 
+  // Dedicated partial-close alert — separate from sendTradeAlert because it
+  // needs values that don't exist on the trade row after mutation (the % and
+  // closed-size are local to partialCloseTrade). Called from there directly.
+  async sendPartialCloseAlert(
+    agent: Agent,
+    trade: OpenTrade,
+    info: {
+      percent:     number;
+      closedSize:  number;
+      remainSize:  number;
+      exitPrice:   number;
+      partialPnl:  number;
+    },
+  ): Promise<void> {
+    await safeSend(() => {
+      const pnlSign = info.partialPnl >= 0 ? '+' : '';
+      const text =
+        `📊 <b>PARTIAL CLOSE</b>\n\n` +
+        `Agent: <b>${agent.name}</b>\n` +
+        `Pair: <b>${trade.pair}</b>\n` +
+        `Direction: ${trade.direction}\n` +
+        `Closed: <b>${info.percent}%</b> (${info.closedSize} ${trade.pair.replace('USDT', '')})\n` +
+        `Remaining: <b>${info.remainSize} ${trade.pair.replace('USDT', '')}</b>\n` +
+        `Exit: ${info.exitPrice}\n` +
+        `Banked PnL: <b>${pnlSign}${info.partialPnl.toFixed(2)} USDT</b>\n` +
+        `New SL: ${trade.currentSl}\n` +
+        `TP: ${trade.currentTp}`;
+      return { text, options: { parse_mode: 'HTML' } };
+    }, `sendPartialCloseAlert:${agent.name}`);
+  },
+
   async sendNoTradeSignal(
     agentName: string,
     pair: string,

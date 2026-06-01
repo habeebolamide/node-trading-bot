@@ -10,6 +10,7 @@ import { detectRegime } from '../markets/regime.js';
 import { calculateIndicators } from '../markets/indicators.js';
 import { getNewsContextForPrompt } from '../markets/news.js';
 import { runPostMortem } from '../learning/index.js';
+import { quantizePosition, getLotSpec } from '../risk/index.js';
 import {
   endChallenge,
   evaluateChallenge,
@@ -227,6 +228,15 @@ const lastPnlWriteAt = new Map<string, number>();
 // session IDs we've already triggered; cleared when the session terminates.
 const challengeFloorFired = new Set<string>();
 
+// Trade IDs currently undergoing a PARTIAL close (reduceOnly order in flight).
+// Bybit's execution WS fires for both partial and full close fills with
+// side='Sell'/closedSize>0 — indistinguishable from the data alone. Without
+// this set, handleExecutionUpdate would treat the partial fill as a full close
+// (closing the trade in DB while half the position is still open on Bybit).
+// Added by partialCloseTrade before order submission, removed after the local
+// state update completes. Backstop timeout in case the WS never fires.
+const partialCloseInFlight = new Set<string>();
+
 export function updateLivePnl(pair: string, currentPrice: number): void {
   const agents = agentManager.getAgentsForPair(pair);
 
@@ -408,8 +418,9 @@ export async function executeManagement(
     }
 
     case 'PARTIAL_CLOSE': {
+      // Notification is fired from inside partialCloseTrade — it has the
+      // close %, sizes, and partial PnL that aren't accessible from here.
       await partialCloseTrade(agent, trade, decision.closePercent ?? 50);
-      await notifications.sendTradeAlert(agent, 'PARTIAL_CLOSE', trade);
       break;
     }
 
@@ -502,12 +513,25 @@ export async function closeTrade(
       : await getLatestPrice(agent.pair);
   }
 
-  const realisedPnl = calculatePnl(
+  // PnL on the REMAINING position only — partial closes that ran earlier
+  // already booked their PnL onto this row's realizedPnL via partialCloseTrade.
+  // We add the final-exit PnL on top so totals reflect entry + every partial.
+  const finalExitPnl = calculatePnl(
     trade.direction,
     trade.entryPrice,
     exitPrice,
     trade.positionSize,
   );
+
+  // Read whatever partial PnL has already been accumulated, then sum.
+  // Using a separate read (vs prisma.increment) so realisedPnl is available
+  // for downstream logic in this function (notifications, post-mortem, etc.)
+  // without an extra round-trip.
+  const priorPartial = (await prisma.trade.findUnique({
+    where:  { id: trade.id },
+    select: { realizedPnL: true },
+  }))?.realizedPnL ?? 0;
+  const realisedPnl = Math.round((priorPartial + finalExitPnl) * 100) / 100;
 
   const duration = Math.round((Date.now() - trade.openedAt.getTime()) / 1000);
 
@@ -734,6 +758,50 @@ async function handleExecutionUpdate(executions: any[]): Promise<void> {
       if (!agent.currentTrade)       continue;
       if ((agent.currentTrade.mode ?? agent.mode) !== 'live') continue;
 
+      // ─── Distinguish entry fills from exit fills ───
+      // Bybit fires execType='Trade' for BOTH the limit order fill that OPENS
+      // the position and the order that CLOSES it. Without this guard the
+      // entry fill (~10-30s after placement for a limit order) was being
+      // treated as a close — triggering a bogus close notification while
+      // the position was still open on Bybit.
+      //
+      // Two signals identify a closing fill (use either; we check both for
+      // robustness across Bybit's slightly-inconsistent payload shapes):
+      //   1. exec.side opposes the trade direction (LONG closes via Sell,
+      //      SHORT closes via Buy).
+      //   2. exec.closedSize > 0 — Bybit sets this only on reducing fills.
+      const trade = agent.currentTrade;
+      const closingSide = trade.direction === 'LONG' ? 'Sell' : 'Buy';
+      const execSide   = (exec.side ?? '').toString();
+      const closedSize = parseFloat(exec.closedSize ?? '0');
+      const isClosingFill =
+        execSide === closingSide || closedSize > 0;
+
+      if (!isClosingFill) {
+        logger.info('Private WS: entry fill (not a close) — ignoring', {
+          agentId: agent.id,
+          pair,
+          execSide,
+          tradeDirection: trade.direction,
+          closedSize,
+          execPrice: exec.execPrice,
+        });
+        continue;
+      }
+
+      // PARTIAL close in flight — this WS event is the fill of the partial
+      // reduceOnly order, NOT a full close. partialCloseTrade handles the
+      // book-keeping itself. Skip so we don't blow away the trade row.
+      if (partialCloseInFlight.has(trade.id)) {
+        logger.info('Private WS: partial close fill — handled by partialCloseTrade', {
+          agentId:  agent.id,
+          tradeId:  trade.id,
+          closedSize,
+          execPrice: exec.execPrice,
+        });
+        continue;
+      }
+
       const exitPrice = parseFloat(exec.execPrice);
 
       let closeReason = 'LIVE_CLOSE';
@@ -745,9 +813,11 @@ async function handleExecutionUpdate(executions: any[]): Promise<void> {
         pair,
         exitPrice,
         closeReason,
+        execSide,
+        closedSize,
       });
 
-      await closeTrade(agent, agent.currentTrade, closeReason, exitPrice);
+      await closeTrade(agent, trade, closeReason, exitPrice);
     }
   }
 }
@@ -947,11 +1017,41 @@ async function partialCloseTrade(
   trade:   OpenTrade,
   percent: number,
 ): Promise<void> {
-  const closeSize  = trade.positionSize * (percent / 100);
-  const remainSize = trade.positionSize - closeSize;
+  // ─── Lot-size aware partial sizing ───
+  // Bybit rejects orders below the pair's lot step (e.g. ETH=0.01). Raw
+  // percent math (0.025 × 30% = 0.0075) sits below that → 400 reject. Also
+  // guard against leaving a sub-min "stranded" remainder that can't ever
+  // be closed later. If either side of the split is infeasible, fall back
+  // to a FULL close — the LLM's intent ("bank some profit") is preserved
+  // and we don't strand capital in a dead position.
+  const lot = getLotSpec(trade.pair);
+  const rawClose = trade.positionSize * (percent / 100);
+  let   closeSize  = quantizePosition(trade.pair, rawClose);
+  let   remainSize = quantizePosition(trade.pair, trade.positionSize - closeSize);
+
+  if (closeSize <= 0 || remainSize < lot.minQty) {
+    logger.warn('Partial close infeasible at this position size — converting to full close', {
+      tradeId:        trade.id,
+      positionSize:   trade.positionSize,
+      percent,
+      rawClose,
+      quantizedClose: closeSize,
+      remainSize,
+      minQty:         lot.minQty,
+    });
+    await closeTrade(agent, trade, 'PARTIAL_CONVERTED_TO_FULL');
+    return;
+  }
+
   let   exitPrice  = 0;
 
   if ((trade.mode ?? agent.mode) === 'live') {
+    // Tag the trade as "partial close in flight" BEFORE submitting so the
+    // private WS handler can skip the fill event when it arrives. Removed in
+    // finally; backstop setTimeout clears it after 30s in case the WS never
+    // delivers (so the tag doesn't suppress legitimate future closes).
+    partialCloseInFlight.add(trade.id);
+    const tagTimeout = setTimeout(() => partialCloseInFlight.delete(trade.id), 30_000);
     try {
       const side  = trade.direction === 'LONG' ? 'sell' : 'buy';
       const order = await exchange.createOrder(
@@ -960,7 +1060,17 @@ async function partialCloseTrade(
       exitPrice = order.average ?? order.price ?? trade.entryPrice;
     } catch (error: any) {
       logger.error('Partial close failed', { error: error.message });
+      clearTimeout(tagTimeout);
+      partialCloseInFlight.delete(trade.id);
       return;
+    } finally {
+      // Keep the tag for ~3s so the WS event (typically arrives within 1s)
+      // is suppressed even if it lands AFTER createOrder resolves but BEFORE
+      // we finish the local book-keeping below.
+      setTimeout(() => {
+        clearTimeout(tagTimeout);
+        partialCloseInFlight.delete(trade.id);
+      }, 3_000);
     }
   } else {
     exitPrice = await getLatestPrice(agent.pair);
@@ -968,10 +1078,29 @@ async function partialCloseTrade(
 
   const partialPnl = calculatePnl(trade.direction, trade.entryPrice, exitPrice, closeSize);
 
-  await prisma.trade.update({ where: { id: trade.id }, data: { size: remainSize } });
+  // Accumulate realised PnL on the OPEN row so it isn't lost when the
+  // remainder finally closes. closeTrade() reads realizedPnL back and ADDS
+  // the final-exit PnL on top — partial + final stays consistent across
+  // any number of partials. Prisma `increment` is atomic; safe even if two
+  // partials raced (they don't today, but defensive).
+  await prisma.trade.update({
+    where: { id: trade.id },
+    data: {
+      size:        remainSize,
+      realizedPnL: { increment: Math.round(partialPnl * 100) / 100 },
+    },
+  });
   trade.positionSize = remainSize;
 
   logger.info('Partial close', { tradeId: trade.id, closeSize, remainSize, exitPrice, partialPnl });
+
+  await notifications.sendPartialCloseAlert(agent, trade, {
+    percent,
+    closedSize: closeSize,
+    remainSize,
+    exitPrice,
+    partialPnl,
+  });
 }
 
 // ─────────────────────────────────────────────

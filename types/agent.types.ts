@@ -23,6 +23,7 @@ export interface Agent {
   createdAt:         Date;
   updatedAt:         Date;
   leverage:          number;
+  maxMarginPct:      number;       // fraction 0..1 — max % of allocated capital as margin per trade
 }
 
 export interface AgentRuntimeState {

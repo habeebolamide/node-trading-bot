@@ -12,8 +12,8 @@ import { prisma } from "../lib/prisma.js";
 // ─────────────────────────────────────────────
 
 const LIMITS = {
-  monthlyDrawdownCap: 0.10,  // 10% — all agents pause beyond this
-  dailyDrawdownCap: 0.05,  // 5%  — agent pauses for rest of day
+  monthlyDrawdownCap: 0.15,  // 15% — all agents pause beyond this
+  dailyDrawdownCap: 0.08,  // 8%  — agent pauses for rest of day
   maxCorrelatedTrades: 2,     // max agents in same direction same pair
   minConfidence: 6,     // Claude confidence below this = blocked
   maxSpreadPct: 0.005, // 0.5% spread — market too illiquid
@@ -45,6 +45,36 @@ const MIN_CONFIDENCE_BY_MODE: Record<PerformanceMode, number> = {
   CONSERVATIVE: 6.5,
   RECOVERY:     7.0,
 };
+
+// ─────────────────────────────────────────────
+// Bybit linear perpetual lot sizes (qty step + min order qty)
+// Source: bybit.com/derivatives/en/contract-rules
+// Position sizing FLOORS to lotStep, then rejects if below minQty —
+// rounding up could exceed the risk cap.
+// ─────────────────────────────────────────────
+
+interface LotSpec { lotStep: number; minQty: number; }
+const LOT_SPECS: Record<string, LotSpec> = {
+  BTCUSDT:  { lotStep: 0.001,  minQty: 0.001  },
+  ETHUSDT:  { lotStep: 0.01,   minQty: 0.01   },
+  SOLUSDT:  { lotStep: 0.1,    minQty: 0.1    },
+  XRPUSDT:  { lotStep: 1,      minQty: 1      },
+  DOGEUSDT: { lotStep: 1,      minQty: 1      },
+};
+const DEFAULT_LOT: LotSpec = { lotStep: 0.0001, minQty: 0.0001 };
+
+export function getLotSpec(pair: string): LotSpec {
+  return LOT_SPECS[pair] ?? DEFAULT_LOT;
+}
+
+export function quantizePosition(pair: string, size: number): number {
+  const spec = LOT_SPECS[pair] ?? DEFAULT_LOT;
+  const stepped = Math.floor(size / spec.lotStep) * spec.lotStep;
+  // Floating-point cleanup — multiplying back can leave 0.0099999...
+  const decimals = Math.max(0, -Math.floor(Math.log10(spec.lotStep)));
+  const clean = Math.round(stepped * 10 ** decimals) / 10 ** decimals;
+  return clean < spec.minQty ? 0 : clean;
+}
 
 // ─────────────────────────────────────────────
 // In-memory circuit breaker state
@@ -299,7 +329,7 @@ export function calculatePositionSize(
   // Challenge mode: maxMarginPct caps how much of the bucket can be locked
   // as margin per trade (e.g. 30% of $5 = $1.50 max). Non-challenge agents
   // default this to 1.0 (no extra cap beyond raw leverage).
-  const marginCapFraction = challengeContext?.maxMarginPct ?? 1.0;
+  const marginCapFraction = challengeContext?.maxMarginPct ?? (agent.maxMarginPct ?? 1.0);
   const maxMargin         = adjustedCapital * marginCapFraction;
   const maxPositionValue  = maxMargin * leverage;
   const maxPositionSize   = maxPositionValue / signal.entry;
@@ -313,9 +343,7 @@ export function calculatePositionSize(
   // Non-challenge agents: riskPct is a fraction of the agent's adjusted
   //   capital (legacy behaviour — main-pool risk is sized vs equity, not
   //   vs margin). Unchanged.
-  const maxRisk = challengeContext
-    ? maxMargin * (riskPct / 100)
-    : adjustedCapital * (riskPct / 100);
+  const maxRisk = maxMargin * (riskPct / 100);
 
   // ─────────────────────────────────────────────
   // 2. RISK AT MAX SIZE
@@ -334,7 +362,7 @@ export function calculatePositionSize(
       marginCapFraction,
     });
 
-    return Math.round(maxPositionSize * 10_000) / 10_000;
+    return quantizePosition(agent.pair, maxPositionSize);
   }
 
   // ─────────────────────────────────────────────
@@ -369,7 +397,7 @@ export function calculatePositionSize(
     marginCapFraction,
   });
 
-  return Math.round(safePositionSize * 10_000) / 10_000;
+  return quantizePosition(agent.pair, safePositionSize);
 }
 
 // ─────────────────────────────────────────────

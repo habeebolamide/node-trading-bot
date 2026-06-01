@@ -29,7 +29,8 @@ import {
   hasTriggers,
   setTriggersMemory,
 } from './triggers.js';
-import { getEntrySignal,getManagementDecision } from "../claude/client.js";
+import { getEntrySignal, getManagementDecision } from "../claude/client.js";
+// import { getEntrySignal,getManagementDecision } from "../.claude/index.js";
 
 
 // ====================== RUNTIME AGENT CLASS ======================
@@ -47,6 +48,7 @@ export class AgentRuntime {
   public createdAt: Date;
   public updatedAt: Date;
   public leverage: number
+  public maxMarginPct: number
 
   // Runtime-only
   public state: AgentState = 'IDLE';
@@ -106,6 +108,7 @@ export class AgentRuntime {
     this.createdAt = dbData.createdAt;
     this.updatedAt = dbData.updatedAt;
     this.leverage = dbData.leverage ?? 10;
+    this.maxMarginPct = dbData.maxMarginPct ?? 1.0;
 
     this.learnedRules = dbData.learnedRules
       ? (typeof dbData.learnedRules === 'string'
@@ -128,7 +131,8 @@ export class AgentRuntime {
       learnedRules: this.learnedRules,
       createdAt: this.createdAt,
       updatedAt: this.updatedAt,
-      leverage: this.leverage
+      leverage: this.leverage,
+      maxMarginPct: this.maxMarginPct,
     };
   }
 
@@ -846,7 +850,7 @@ export class AgentManager {
         timeout: watchTimeout,
       };
 
-      setTriggers(agent.id, watchTriggers, null, null, claudeResult.data, null);
+      setTriggers(agent.id, watchTriggers, signal, null, claudeResult.data, null);
       agent.setState('WATCHING');                  // ← WATCHING not IDLE
 
       logger.info(`[${agent.name}] NO_TRADE — WATCHING`, {

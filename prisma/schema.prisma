@@ -23,6 +23,7 @@ model Agent {
   tradingStyle      String
   status            String        @default("active")
   leverage          Float         @default(10.0)
+  maxMarginPct      Float         @default(1.0)
 
   learnedRules      Json?
 

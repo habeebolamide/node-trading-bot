@@ -102,7 +102,11 @@ async function main(): Promise<void> {
 
   // 4b. Replay any entry hits that happened while the bot was offline.
   // Uses the 5m buffer just seeded above; must run AFTER seedCandleBuffers.
-  // await agentManager.catchUpMissedEntries();
+  // If this is skipped, agents stay in PENDING_ENTRY on startup even when
+  // price clearly crossed the entry level mid-downtime (the user-visible
+  // symptom: "Restored → PENDING_ENTRY" log on restart when the trade
+  // should have already been open).
+  await agentManager.catchUpMissedEntries();
 
   // 4c. Replay any TP/SL hits on OPEN trades that happened while the bot
   // was offline. Must run AFTER catchUpMissedEntries in case a trade was

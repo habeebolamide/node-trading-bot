@@ -74,8 +74,6 @@ export async function setTriggers(
   });
 
   const agent = agentManager.getSingleAgent(agentId);
-  // Leverage now comes only from the agent (ChallengeSession.leverage was
-  // dropped in migration 20260526200500). Single source of truth.
   const effectiveLeverage = agent?.leverage ?? 10;
 
   // Stamp the signal with the active challenge session, if any. The websocket
@@ -91,15 +89,15 @@ export async function setTriggers(
   await prisma.signal.create({
     data: {
       agentId,
-      action:         pendingSignal?.action ?? 'NO_TRADE',
-      entry:          pendingSignal?.entry          ?? null,
-      tp:             pendingSignal?.tp             ?? null,
-      sl:             pendingSignal?.sl             ?? null,
-      confidence:     pendingSignal?.confidence     ?? null,
-      tradeStyle:     (pendingSignal as any)?.tradeStyle    ?? null,
-      timeframeUsed:  (pendingSignal as any)?.timeframe_used ?? null,
-      reasoning:      pendingSignal?.reasoning      ?? null,
-      whatInvalidates:(pendingSignal as any)?.what_invalidates ?? null,
+      action:         pendingSignal?.action ?? rawSignal?.action ?? 'NO_TRADE',
+      entry:          pendingSignal?.entry          ?? rawSignal?.entry ?? null,
+      tp:             pendingSignal?.tp             ?? rawSignal?.tp ?? null,
+      sl:             pendingSignal?.sl             ?? rawSignal?.sl ?? null,
+      confidence:     pendingSignal?.confidence     ?? rawSignal?.confidence ?? null,
+      tradeStyle:     (pendingSignal as any)?.tradeStyle    ?? rawSignal?.tradeStyle ?? null,
+      timeframeUsed:  (pendingSignal as any)?.timeframe_used ?? rawSignal?.timeframe_used ?? null,
+      reasoning:      pendingSignal?.reasoning      ?? rawSignal?.reasoning ?? null,
+      whatInvalidates:(pendingSignal as any)?.what_invalidates ?? rawSignal?.what_invalidates ?? null,
       entryExpiry:    entryExpiry ? new Date(entryExpiry) : null,
       triggers:       triggers as any,
       status:         'active',
