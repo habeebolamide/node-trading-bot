@@ -33,6 +33,7 @@ export function mapToOpenTrade(dbTrade: any): OpenTrade {
 export function calculateManagementTimeout(style: TradingStyle): string {
   const minutes = {
     scalp:    15,
+    day:      20,
     swing:    30,
     position: 30,
     auto:     20,
@@ -46,6 +47,7 @@ export function calculateManagementTimeout(style: TradingStyle): string {
 export function entryExpiryMinutesForStyle(style: TradingStyle | string | null | undefined): number {
   return ({
     scalp:    45,     // ~10 candles on 5m
+    day:      180,    // 3 hours — intraday, flat by session end
     swing:    240,    // 4 hours
     position: 1440,   // 24 hours
     auto:     120,    // 2 hours

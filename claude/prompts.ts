@@ -47,6 +47,7 @@ DEFAULT (override with reason, not impulse):
 
 Risk-to-reward — favor setups offering at least:
   ~1.0R for scalps (high win-rate, tight structure)
+  ~1.2R for day trades (intraday structure, flat by session end)
   ~1.5R for swings
   ~2.0R for position trades
 A thinner R/R is acceptable when the setup is exceptionally clean — but never stretch
@@ -116,6 +117,15 @@ export function buildSystemPrompt(
       You enter close to current price or at immediate structure levels.
     `.trim(),
 
+    day: `
+      You trade intraday moves. Trades last a few hours and you close them out
+      within the same trading day — you do NOT hold overnight. You trade with
+      the intraday trend off the 15m/1h, timing entries on the 5m at a key level
+      or on a clean momentum break. Targets are the next intraday structural
+      level; stops sit behind the level that frames the day's range. If a setup
+      can't reasonably resolve before the session winds down, skip it.
+    `.trim(),
+
     swing: `
       You trade structure and continuation. Trades last hours to days.
       You wait for pullbacks to key levels before entering.
@@ -138,6 +148,12 @@ export function buildSystemPrompt(
         level. Tight stops, R/R ≥ 1.0, entry close to current price. Best in
         low-news, mid-volatility tape.
 
+      DAY — a few hours, closed within the session (no overnight hold). Use when
+        the 15m/1h shows a defined intraday trend or range you can work, timing
+        entry on the 5m at an intraday level. R/R ≥ 1.2, stop behind the level
+        framing the day's range, TP at the next intraday structural level. Best
+        when there's a clean intraday read but not a multi-day thesis.
+
       SWING — hours. Use when 1h/4h structure is intact and you
         can wait for a pullback to a key level (prior swing, demand/supply zone,
         VWAP, round number). Wider stops, R/R ≥ 1.5, entry usually a limit at
@@ -146,7 +162,9 @@ export function buildSystemPrompt(
         that gives you R/R 4+, take it.
 
       Decision rule: match the style to the dominant timeframe showing the
-      cleanest structure. If the 5m is noisy but 1h is trending — swing. If
+      cleanest structure. If the 5m is clean and fast — scalp. If the 15m/1h
+      frames a trend you can work and exit the same day — day. If the 5m is
+      noisy but 1h/4h structure invites holding through noise — swing. If
       everything is choppy — NO_TRADE. Emit the chosen style in tradeStyle
       so the server clamps entry expiry correctly.
     `.trim(),
@@ -276,7 +294,7 @@ export function buildSystemPrompt(
     below it are auto-rejected regardless of how strong the R/R looks.
     
     ${testModeBlock}
-    For "LONG" | "SHORT": entry_expiry_minutes = how long the setup remains valid if entry isn't hit (e.g. 30 for a tight scalp, 240 for a swing).
+    For "LONG" | "SHORT": entry_expiry_minutes = how long the setup remains valid if entry isn't hit (e.g. 30 for a tight scalp, 180 for a day trade, 240 for a swing).
     For "NO_TRADE": triggers.timeout_minutes = how long this market context stays valid before fresh re-analysis is needed.
     Emit DURATIONS in minutes, not absolute timestamps — the server computes the deadline from your duration.
     Always respond with valid JSON only. No text outside the JSON.
@@ -346,10 +364,11 @@ export function buildEntryPrompt(
   // Daily levels would be added here once we seed Daily candles.
   const style = agent.tradingStyle ?? 'auto';
   const includeTfs: Array<'5m' | '15m' | '1h' | '4h'> = (
-    style === 'scalp' ? ['5m', '15m', '1h', '4h'] :
-      style === 'swing' ? ['15m', '1h', '4h'] :
-        style === 'position' ? ['1h', '4h'] :
-          ['5m', '15m', '1h', '4h']    // auto: full coverage
+    style === 'scalp' ? ['5m', '15m', '1h'] :   // minutes-long: 5m/15m structure + 1h trend; 4h levels are too far to be entry/SL/TP
+      style === 'day' ? ['5m', '15m', '1h', '4h'] :   // intraday: time entries on 5m, work 15m/1h, 4h frames the day's range/trend
+        style === 'swing' ? ['15m', '1h', '4h'] :
+          style === 'position' ? ['1h', '4h'] :
+            ['5m', '15m', '1h', '4h']    // auto: full coverage
   );
 
   const levelBlocks: string[] = [];
@@ -450,7 +469,7 @@ export function buildEntryPrompt(
       "sl": <number | null>,
       "confidence": <number 1-10>,
       "timeframe_used": "<timeframe that drove the decision>",
-      "tradeStyle": "scalp" | "swing" | "position",
+      "tradeStyle": "scalp" | "day" | "swing" | "position",
       "entry_expiry_minutes": <number | null — minutes the LONG/SHORT setup stays valid; null for NO_TRADE>,
       "reasoning": "<max 150 chars>",
       "what_invalidates": "<max 80 chars>",

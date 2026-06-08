@@ -41,7 +41,7 @@ export class AgentRuntime {
   public pair: string;
   public allocationPercent: number;
   public riskPercent: number;
-  public tradingStyle: 'scalp' | 'swing' | 'position' | 'auto';
+  public tradingStyle: 'scalp' | 'day' | 'swing' | 'position' | 'auto';
   public mode: 'backtest' | 'paper' | 'live';
   public status: 'active' | 'paused' | 'stopped';
   public learnedRules: LearnedRule[] = [];
