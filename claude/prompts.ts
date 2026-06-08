@@ -14,6 +14,7 @@ import type {
 } from '../types/trade.types.js';
 import type { ChallengeRiskContext } from '../types/challenge.types.js';
 import { findKeyLevels, formatKeyLevelsForPrompt, type KeyLevelsResult } from "../markets/keys.js";
+import { getLotSpec } from '../risk/index.js';
 
 // ─────────────────────────────────────────────
 // TEST MODE FLAG
@@ -157,12 +158,18 @@ export function buildSystemPrompt(
   const leverage = agent.leverage ?? 10;
   const riskPct  = agent.riskPercent;
   const riskClause = challenge
-    ? `Risk model (nested cap, NOT a target):
-        ALLOCATION per trade = ${(challenge.maxMarginPct * 100).toFixed(0)}% of bucket = $${(challenge.equity * challenge.maxMarginPct).toFixed(2)} of margin.
-        MAX risk per trade  = ${challenge.riskPercent}%.
-        These are CEILINGS the bot enforces, not budgets to spend. Place your stop where the thesis breaks (structural). If that stop happens to risk less than the ceiling, the trade is smaller and that is correct. 
+    ? `Risk model (challenge — nested cap):
+        ALLOCATION per trade: ${(challenge.maxMarginPct * 100).toFixed(0)}% of bucket = $${(challenge.equity * challenge.maxMarginPct).toFixed(2)} of margin.
+        MAX risk per trade: ${challenge.riskPercent}% of that margin allocation.
+        These are CEILINGS the bot enforces, not budgets to spend. Place your stop where the thesis breaks (structural). If the structural stop risks less than the ceiling, the trade is smaller and that is correct.
         NEVER widen a stop to "use up" the risk budget — that's the fastest way to blow the bucket.`
-    : `Risk per trade: up to ${riskPct}% of allocated capital — this is a ceiling, not a target. Tight structural stops produce smaller actual losses, which is correct.`;
+    : `Risk model:
+        The bot caps loss per trade at ${riskPct}% of the margin used for THAT trade (a ratio, not a dollar budget — you don't need to know the account size to use this).
+        How the bot sizes positions:
+          - You pick SL by STRUCTURE. The bot computes position size automatically so that loss-if-SL-hits ≤ ${riskPct}% of margin.
+          - Tighter SL → bot can use larger position for the same loss cap. Wider SL → bot scales position DOWN to keep loss inside the cap.
+          - If structural SL is so wide that the scaled-down position falls below the exchange minimum lot, the trade is rejected. Don't narrow SL just to fit — return NO_TRADE with low confidence instead.
+        NEVER widen a stop to "use up" risk budget — wider stop = bigger loss when wrong, every time. Structure decides SL; the bot decides size.`;
 
   const challengeBlock = challenge ? buildChallengeBlock(challenge) : '';
 
@@ -247,7 +254,10 @@ export function buildSystemPrompt(
 
     For management decisions (HOLD / ADJUST / CLOSE / PARTIAL_CLOSE):
     triggers are not used either. The exchange's TP/SL handles critical
-    exits autonomously; management re-runs on each candle close.
+    exits autonomously; management re-runs on each candle close. When
+    managing an open trade, evaluate news/events independently — do not
+    rely on pre-computed context. If a major event just broke, assess whether
+    it invalidates the thesis.
     
     CONFIDENCE:
 
@@ -462,85 +472,91 @@ export function buildManagementPrompt(
   trade: OpenTrade,
   mtfData: MultiTimeframeData,
   newsContext: string,
-  /** What the LLM said at entry time would invalidate the thesis. Pulled
-   *  from the originating Signal row by the caller (agents/index.ts).
-   *  Without this, the exit-side LLM has no anchor for what "invalidation"
-   *  actually means for this specific trade. */
   originalInvalidation?: string,
 ): string {
   const pnlSign = trade.unrealisedPct >= 0 ? '+' : '';
   const duration = getTimeSince(trade.openedAt);
   const currentPrice = mtfData.tf5m.candles.at(-1)?.close ?? trade.entryPrice;
 
-  // Challenge context (if active) is already in the system prompt.
+  const inProfit = trade.unrealisedPct >= 0;
+
+  const lot = getLotSpec(trade.pair);
+  const isPartialCloseDisabled = trade.positionSize < 2 * lot.minQty;
+  const partialCloseStatus = isPartialCloseDisabled
+    ? `DISABLED (Position size ${trade.positionSize} is too small to split — minimum order qty is ${lot.minQty} for ${trade.pair}. Any partial close is impossible. You must either HOLD or fully CLOSE.)`
+    : `ENABLED (Current size: ${trade.positionSize}, minimum order qty: ${lot.minQty})`;
 
   return `
-  You have an open ${trade.direction} trade on ${trade.pair}.
+You are managing a LIVE ${trade.direction} position on ${trade.pair} — real money is at risk right now.
+This is not a fresh analysis. You already committed to this trade. Your job is to manage it well,
+not to re-litigate whether you'd take it again.
 
-  OPEN TRADE:
-  Direction:      ${trade.direction}
-  Entry:          ${trade.entryPrice}
-  Current price:  ${currentPrice}
-  TP:             ${trade.currentTp}
-  SL:             ${trade.currentSl}
-  Unrealised P&L: ${pnlSign}${trade.unrealisedPct.toFixed(2)}% (${pnlSign}$${trade.unrealisedPnl.toFixed(2)})
-  Time open:      ${duration}
-  Original read:  "${trade.entryReasoning}"
+POSITION:
+Direction:       ${trade.direction}
+Entry:           ${trade.entryPrice}
+Current price:   ${currentPrice}
+TP:              ${trade.currentTp}
+SL:              ${trade.currentSl}  ← this is your invalidation line; the exchange enforces it automatically
+Unrealised:      ${pnlSign}${trade.unrealisedPct.toFixed(2)}% (${pnlSign}$${trade.unrealisedPnl.toFixed(2)}) — currently ${inProfit ? 'IN PROFIT' : 'IN DRAWDOWN'}
+Duration:        ${duration}
+Original thesis: ${trade.entryReasoning}
+${originalInvalidation ? `Thesis breaks if:  ${originalInvalidation}` : ''}
+Partial close:   ${partialCloseStatus}
 
+CURRENT MARKET (every price you reference MUST come from the data below — do not invent levels):
+━━ 4H — is the original thesis still structurally intact? ━━
+${formatTimeframe(mtfData.tf4h)}
 
-  ━━━━━━━━━━━━━━━━━━━━━━━
-  4H — is the original thesis still structurally intact?
-  ${formatTimeframe(mtfData.tf4h)}
+━━ 1H — how is momentum developing? ━━
+${formatTimeframe(mtfData.tf1h)}
 
-  ━━━━━━━━━━━━━━━━━━━━━━━
-  1H — how is momentum developing?
-  ${formatTimeframe(mtfData.tf1h)}
+━━ 15M — what is price doing right now? ━━
+${formatTimeframe(mtfData.tf15m)}
 
-  ━━━━━━━━━━━━━━━━━━━━━━━
-  15M — what is price doing right now?
-  ${formatTimeframe(mtfData.tf15m)}
+━━━━━━━━━━━━━━━━━━━━━━━
+HOW TO DECIDE — work through this in order:
 
-  ━━━━━━━━━━━━━━━━━━━━━━━
-  NEWS:
-  ${newsContext}
+1. DEFAULT IS HOLD. Most of the time, the correct action is to do nothing and
+   let the trade work toward TP or SL. You placed the SL where the thesis breaks
+   — trust it. A position being temporarily underwater is NORMAL and is NOT a
+   reason to close. Acting without a concrete, data-backed reason is itself a
+   mistake — it bleeds edge through fees and bad fills.
 
-  Review the current state against your original thesis. Close or adjust
-  only if the thesis is genuinely invalidated or market structure changed —
-  not because the trade is temporarily underwater.
-  ${originalInvalidation ? `Original invalidation read: "${originalInvalidation}"` : ''}
+2. CLOSE only if the ORIGINAL THESIS IS GENUINELY BROKEN — i.e. structure that
+   the trade depended on has actually failed on the chart in front of you (a
+   real break of the level, a clean shift in structure, a confirmed reversal).
+   "Price moved against me a bit" is not invalidation. Fear is not invalidation.
+   If you cannot point to a specific broken level in the data above, do not CLOSE.
 
-  TP CAN BE EXTENDED when the trade is in profit AND structure supports
-  further movement — price has cleanly broken your original TP and the next
-  meaningful structural level is materially further. Use ADJUST with newTp
-  set to that next level. When extending TP, tighten SL (to break-even or
-  the prior swing) to lock in what's earned.
+3. IF IN PROFIT — protect and extend:
+   - ADJUST: tighten SL toward break-even or behind the most recent ${trade.direction === 'LONG' ? 'swing low' : 'swing high'}
+     to lock in gains. Keep the SL a sensible distance back (roughly ≥1× ATR
+     from price) so normal noise does not wick you out prematurely.
+   - ADJUST: extend TP ONLY if price has cleanly reached the old TP zone AND a
+     further structural level genuinely exists beyond it. Otherwise leave TP.
+   - PARTIAL_CLOSE: when the move is extended and the next leg is uncertain —
+     bank a portion, let the rest ride with a protected stop. ${isPartialCloseDisabled ? 'NOTE: PARTIAL CLOSE IS CURRENTLY DISABLED FOR THIS POSITION SIZE.' : ''}
 
-  Don't extend on hope. If the path forward is unclear, HOLD or
-  PARTIAL_CLOSE to bank some and let the rest ride.
+4. IF IN DRAWDOWN — be patient, not reactive:
+   - The SL already caps the downside. Do NOT pre-emptively close just because
+     you are red. Either the thesis holds (HOLD) or it is genuinely broken (CLOSE).
+   - NEVER widen the SL. NEVER move it further from price. Tighten only.
 
-  After your decision, provide re-analysis triggers — price levels where the
-  trade situation changes significantly:
-    price_up:   a level above current price worth re-assessing (resistance
-                that if broken changes the thesis, or where partial profit
-                should be taken)
-    price_down: a level below current price worth re-assessing (support
-                that if broken invalidates, or that would warrant tightening
-                the stop)
-  Null is fine when no meaningful level is nearby.
+5. Never act just to act. If nothing concrete has changed since entry: HOLD.
 
-  Respond ONLY with this exact JSON:
-  {
-    "action": "HOLD" | "ADJUST" | "CLOSE" | "PARTIAL_CLOSE",
-    "newTp": <number | null>,
-    "newSl": <number | null>,
-    "closePercent": <0-100 | null>,
-    "reasoning": "<why you are making this decision — max 100 chars>",
-    "urgency": "low" | "medium" | "high",
-    "triggers": {
-      "price_up": <number | null>,
-      "price_down": <number | null>
-    }
-  }
+reasoning must name the SPECIFIC level or signal driving the decision (e.g.
+"4H broke 1985 support, structure flipped" — not "looks weak"). If you cannot
+name it, the answer is HOLD.
+
+JSON response:
+{
+  "action": "HOLD" | "ADJUST" | "CLOSE" | "PARTIAL_CLOSE",
+  "newTp": <number | null — only when extending/changing TP>,
+  "newSl": <number | null — only when tightening SL; must be closer to price than current, never further>,
+  "closePercent": <0-100 | null — only for PARTIAL_CLOSE>,
+  "reasoning": "<name the specific level/signal — max 100 chars>",
+  "urgency": "low" | "medium" | "high"
+}
   `.trim();
 }
 

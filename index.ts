@@ -8,6 +8,7 @@ import { buildMtfData } from './markets/mtf.js';
 import { clearTriggers, getTriggerState, hasTriggers, startTimeoutChecker } from './agents/triggers.js';
 import { synthesiseLessons } from './learning/index.js';
 import { reconcileAgentChallengeToggles, tickActiveChallenges } from './challenge/index.js';
+import { executionEngine } from './execution/index.js';
 import { prisma } from './lib/prisma.js';
 import logger from './utils/logger.js';
 
@@ -70,6 +71,13 @@ async function main(): Promise<void> {
   // reconciler runs frequently (every minute) so toggle UX feels responsive;
   // the hourly tick is a backstop for expiry / unwinnable-equity detection.
   startChallengeChecker();
+
+  // 3d. Live trade reconciler — polls Bybit every 30s and detects positions
+  // that the bot still thinks are open but are actually closed on the
+  // exchange. Catches missed Private WS close events (silent disconnects,
+  // brief reconnect windows where TP/SL fired). Fires an immediate tick on
+  // startup so any boot-time stuck trade is resolved within seconds.
+  executionEngine.startLiveReconciler();
 
   // 3c. Wire up immediate reanalysis handlers — fires the moment needsReanalysis
   // or needsManagementReanalysis flips to true (e.g. realtime ticker hit).

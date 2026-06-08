@@ -221,9 +221,9 @@ export class BybitWebSocket {
     }
 
     // save to DB (non-blocking)
-    this.saveCandle(candle).catch(err =>
-      logger.error('Failed to save candle', { error: err })
-    );
+    // this.saveCandle(candle).catch(err =>
+    //   logger.error('Failed to save candle', { error: err })
+    // );
 
     // notify agent loops
     const key = `${pair}:${tf}`;

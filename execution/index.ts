@@ -350,13 +350,13 @@ export async function checkPaperTpSl(
     let   hit:   'TP_HIT' | 'SL_HIT' | null = null;
 
     if (trade.direction === 'LONG') {
-      if (prevPrice < trade.currentTp && currentPrice >= trade.currentTp) hit = 'TP_HIT';
-      if (prevPrice > trade.currentSl && currentPrice <= trade.currentSl) hit = 'SL_HIT';
+      if (trade.currentTp > 0 && currentPrice >= trade.currentTp) hit = 'TP_HIT';
+      if (trade.currentSl > 0 && currentPrice <= trade.currentSl) hit = 'SL_HIT';
     }
 
     if (trade.direction === 'SHORT') {
-      if (prevPrice > trade.currentTp && currentPrice <= trade.currentTp) hit = 'TP_HIT';
-      if (prevPrice < trade.currentSl && currentPrice >= trade.currentSl) hit = 'SL_HIT';
+      if (trade.currentTp > 0 && currentPrice <= trade.currentTp) hit = 'TP_HIT';
+      if (trade.currentSl > 0 && currentPrice >= trade.currentSl) hit = 'SL_HIT';
     }
 
     if (!hit) continue;
@@ -387,6 +387,29 @@ export async function executeManagement(
   switch (decision.action) {
 
     case 'ADJUST': {
+      // Push to Bybit FIRST so the DB only ever reflects exchange truth.
+      // The earlier order (DB update → fire-and-forget Bybit call → swallow
+      // errors) created a class of bugs where the DB tracked a phantom SL/TP
+      // that Bybit never received. If Bybit rejects, updateLiveTpSl throws and
+      // we leave both the DB row and the in-memory trade at the old values.
+      if ((trade.mode ?? agent.mode) === 'live') {
+        try {
+          await updateLiveTpSl(trade, decision.newTp, decision.newSl);
+          // updateLiveTpSl mutates trade.currentTp/Sl on success.
+        } catch (err: any) {
+          logger.error('ADJUST aborted — Bybit rejected the update; DB unchanged', {
+            tradeId: trade.id,
+            error:   err?.message ?? err,
+          });
+          return;
+        }
+      } else {
+        // Paper: no exchange round-trip, just mutate locally.
+        if (decision.newTp) trade.currentTp = decision.newTp;
+        if (decision.newSl) trade.currentSl = decision.newSl;
+      }
+
+      // Now write the confirmed values back to DB.
       await prisma.trade.update({
         where: { id: trade.id },
         data: {
@@ -394,13 +417,6 @@ export async function executeManagement(
           ...(decision.newSl ? { stopLoss:   decision.newSl } : {}),
         },
       });
-
-      if ((trade.mode ?? agent.mode) === 'live') {
-        await updateLiveTpSl(trade, decision.newTp, decision.newSl);
-      }
-
-      if (decision.newTp) trade.currentTp = decision.newTp;
-      if (decision.newSl) trade.currentSl = decision.newSl;
 
       await notifications.sendTradeAlert(agent, 'ADJUST', trade);
       logger.info('Trade adjusted', { tradeId: trade.id, newTp: decision.newTp, newSl: decision.newSl });
@@ -619,15 +635,23 @@ export async function closeTrade(
     closedAt: new Date(),
     durationHours: duration / 3600,
     postMortemId: null,
+    // Surface the partial vs final breakdown so the close alert is honest about
+    // how the total PnL was assembled. When there were no partials this is 0
+    // and the notification just shows the final number as before.
+    priorPartialPnl: Math.round(priorPartial * 100) / 100,
+    finalExitPnl:    Math.round(finalExitPnl * 100) / 100,
   } as unknown as ClosedTrade);
 
   logger.info('Trade closed', {
-    tradeId:     trade.id,
-    pair:        trade.pair,
-    direction:   trade.direction,
-    entry:       trade.entryPrice,
-    exit:        exitPrice,
-    pnl:         realisedPnl,
+    tradeId:        trade.id,
+    pair:           trade.pair,
+    direction:      trade.direction,
+    entry:          trade.entryPrice,
+    exit:           exitPrice,
+    remainingSize:  trade.positionSize,
+    priorPartialPnl: Math.round(priorPartial * 100) / 100,
+    finalExitPnl:   Math.round(finalExitPnl * 100) / 100,
+    pnl:            realisedPnl,
     outcome,
     closeReason,
   });
@@ -778,14 +802,9 @@ async function handleExecutionUpdate(executions: any[]): Promise<void> {
         execSide === closingSide || closedSize > 0;
 
       if (!isClosingFill) {
-        logger.info('Private WS: entry fill (not a close) — ignoring', {
-          agentId: agent.id,
-          pair,
-          execSide,
-          tradeDirection: trade.direction,
-          closedSize,
-          execPrice: exec.execPrice,
-        });
+        // Entry fill (not a close) — silently ignore. Used to log here on every
+        // live trade open, which was just noise; if the detection ever misfires
+        // it shows up in the absence of a subsequent close event, not in logs.
         continue;
       }
 
@@ -921,28 +940,127 @@ async function updateLiveTpSl(
   // the private endpoint passthrough below.
   if (!newTp && !newSl) return;
 
-  try {
-    const params: Record<string, any> = {
-      category:    'linear',
-      symbol:      trade.pair,
-      positionIdx: 0,             // one-way mode; 1 / 2 for hedge mode long/short
-      tpslMode:    'Full',
-      tpTriggerBy: 'LastPrice',
-      slTriggerBy: 'LastPrice',
-    };
-    if (newTp) params.takeProfit = String(newTp);
-    if (newSl) params.stopLoss   = String(newSl);
+  // tpslMode='Full' treats UNSET takeProfit/stopLoss as "clear" — so if we only
+  // sent the leg the LLM changed, the other leg would get wiped on Bybit.
+  // Always carry over the non-changing leg from the live trade state.
+  const tpToSend = newTp ?? trade.currentTp;
+  const slToSend = newSl ?? trade.currentSl;
 
-    await (exchange as any).privatePostV5PositionTradingStop(params);
+  const params: Record<string, any> = {
+    category:    'linear',
+    symbol:      trade.pair,
+    positionIdx: 0,            // one-way mode; 1 / 2 for hedge mode long/short
+    tpslMode:    'Full',
+    tpTriggerBy: 'LastPrice',
+    slTriggerBy: 'LastPrice',
+  };
+  if (tpToSend && tpToSend > 0) params.takeProfit = String(tpToSend);
+  if (slToSend && slToSend > 0) params.stopLoss   = String(slToSend);
+
+  try {
+    // Bybit V5 surfaces errors via retCode in the RESPONSE BODY rather than
+    // throwing. A successful HTTP 200 with retCode=10001 ("params error") used
+    // to be logged as "Live TP/SL updated" while Bybit kept the OLD SL — the
+    // bot then thought it had a profitable trailing stop at 1975 while the
+    // real stop on the exchange was still 1991. Symptom: price came back into
+    // "profitable SL" zone, nothing triggered, position stayed open. Hard
+    // failure on retCode != 0 so this can never silently lie again.
+    const response: any = await (exchange as any)
+      .privatePostV5PositionTradingStop(params);
+
+    const retCode = Number(response?.retCode ?? response?.info?.retCode ?? 0);
+    const retMsg  = response?.retMsg ?? response?.info?.retMsg ?? '';
+
+    if (retCode !== 0) {
+      throw new Error(`Bybit rejected trading-stop update: retCode=${retCode} retMsg="${retMsg}"`);
+    }
+
+    // Only commit the in-memory trade fields AFTER Bybit confirms success.
+    // The caller (executeManagement → ADJUST) updates trade.currentTp/Sl
+    // before calling us; if Bybit rejects, we want the local state to reflect
+    // what's actually on the exchange so subsequent management cycles do not
+    // operate on a phantom SL.
+    if (newTp != null) trade.currentTp = newTp;
+    if (newSl != null) trade.currentSl = newSl;
 
     logger.info('Live TP/SL updated via trading-stop', {
+      tradeId:  trade.id,
+      pair:     trade.pair,
+      newTp,
+      newSl,
+      tpToSend,
+      slToSend,
+      retCode,
+    });
+  } catch (error: any) {
+    // Bubble the failure up so executeManagement notices and the DB row is
+    // rolled back to match the exchange. Without rollback, DB has SL=1975 but
+    // Bybit has SL=1991 — exact divergence that caused the stuck trade.
+    logger.error('Failed to update live TP/SL', {
       tradeId: trade.id,
       pair:    trade.pair,
       newTp,
       newSl,
+      params,
+      error:   error?.message ?? error,
     });
-  } catch (error: any) {
-    logger.error('Failed to update live TP/SL', { tradeId: trade.id, error: error.message });
+    throw error;
+  }
+}
+
+// ─────────────────────────────────────────────
+// Find exit fill price from Bybit history
+//
+// Shared helper for two situations where we need to learn what price a trade
+// actually closed at without being able to ask the close order itself:
+//   1. Reconciler detected Bybit already closed the position out from under us
+//      (TP/SL fired but the Private WS event was missed). Reconciler calls
+//      this BEFORE closeTrade so we can pass exitPriceOverride and skip the
+//      doomed createOrder attempt.
+//   2. The LLM CLOSE path raced a Bybit-side close and got retCode 110017
+//      ("position is zero"). closeLivePosition falls back to this helper as
+//      a recovery so PnL isn't recorded as 0.
+//
+// Looks at the most recent fills on the closing side after the trade opened.
+// Returns null on no match — callers must decide whether to retry, fail, or
+// fall back to entry price as last-resort placeholder.
+// ─────────────────────────────────────────────
+
+async function findExitFillPrice(trade: OpenTrade): Promise<number | null> {
+  try {
+    const fills = await exchange.fetchMyTrades(trade.pair, undefined, 20);
+    const closingSide = trade.direction === 'LONG' ? 'sell' : 'buy';
+    const openedAtMs  = trade.openedAt.getTime();
+
+    const candidate = (fills as any[])
+      .filter(f =>
+        (f.side?.toLowerCase?.() ?? '') === closingSide &&
+        f.timestamp > openedAtMs &&
+        typeof f.price === 'number',
+      )
+      .sort((a, b) => b.timestamp - a.timestamp)[0];
+
+    if (candidate?.price) {
+      logger.info('Recovered exit price from Bybit fill history', {
+        tradeId:   trade.id,
+        exitPrice: candidate.price,
+        fillId:    candidate.id ?? null,
+      });
+      return candidate.price;
+    }
+
+    logger.warn('No matching exit fill found in Bybit history', {
+      tradeId:   trade.id,
+      pair:      trade.pair,
+      fillCount: (fills as any[]).length,
+    });
+    return null;
+  } catch (err: any) {
+    logger.error('Failed to fetch exit fill from Bybit history', {
+      tradeId: trade.id,
+      error:   err?.message ?? err,
+    });
+    return null;
   }
 }
 
@@ -968,37 +1086,8 @@ async function closeLivePosition(trade: OpenTrade): Promise<number> {
     // that actually completed at TP or SL.
     const msg = (error?.message ?? '') as string;
     if (msg.includes('110017') || msg.toLowerCase().includes('position is zero')) {
-      try {
-        const fills = await exchange.fetchMyTrades(trade.pair, undefined, 20);
-        // Pick the most recent fill after this trade opened, on the closing side.
-        const closingSide = trade.direction === 'LONG' ? 'sell' : 'buy';
-        const openedAtMs  = trade.openedAt.getTime();
-        const candidate = (fills as any[])
-          .filter(f =>
-            (f.side?.toLowerCase?.() ?? '') === closingSide &&
-            f.timestamp > openedAtMs &&
-            typeof f.price === 'number',
-          )
-          .sort((a, b) => b.timestamp - a.timestamp)[0];
-
-        if (candidate?.price) {
-          logger.info('Recovered exit price from Bybit fill history', {
-            tradeId:   trade.id,
-            exitPrice: candidate.price,
-            fillId:    candidate.id ?? null,
-          });
-          return candidate.price;
-        }
-
-        logger.warn('Position-zero recovery: no matching fill found', {
-          tradeId: trade.id, fillCount: (fills as any[]).length,
-        });
-      } catch (recoverErr: any) {
-        logger.error('Position-zero recovery failed', {
-          tradeId: trade.id,
-          error:   recoverErr?.message ?? recoverErr,
-        });
-      }
+      const recovered = await findExitFillPrice(trade);
+      if (recovered != null) return recovered;
     }
 
     // Last resort — still wrong (records 0 PnL) but better than crashing.
@@ -1030,17 +1119,63 @@ async function partialCloseTrade(
   let   remainSize = quantizePosition(trade.pair, trade.positionSize - closeSize);
 
   if (closeSize <= 0 || remainSize < lot.minQty) {
-    logger.warn('Partial close infeasible at this position size — converting to full close', {
-      tradeId:        trade.id,
-      positionSize:   trade.positionSize,
-      percent,
-      rawClose,
-      quantizedClose: closeSize,
-      remainSize,
-      minQty:         lot.minQty,
-    });
-    await closeTrade(agent, trade, 'PARTIAL_CONVERTED_TO_FULL');
-    return;
+    // Try to adjust close size if the position is large enough to split
+    if (trade.positionSize < 2 * lot.minQty) {
+      logger.warn('Partial close skipped: position size too small to split — holding full position', {
+        tradeId:      trade.id,
+        positionSize: trade.positionSize,
+        minQty:       lot.minQty,
+      });
+      await notifications.sendSystem(
+        `⚠️ <b>Partial close skipped</b> for ${trade.pair} on agent <b>${agent.name}</b>.\n` +
+        `Position size (${trade.positionSize}) is too small to split (min order qty is ${lot.minQty}). Holding full position.`
+      );
+      return;
+    }
+
+    // Otherwise, we can adjust closeSize to make it feasible:
+    let adjustedCloseSize = closeSize;
+    if (closeSize < lot.minQty) {
+      adjustedCloseSize = lot.minQty;
+    } else if (trade.positionSize - closeSize < lot.minQty) {
+      // closeSize is too large, leaving a remainder less than minQty.
+      // Adjust closeSize so that remaining size is exactly minQty.
+      adjustedCloseSize = trade.positionSize - lot.minQty;
+    }
+
+    // Quantize the adjusted close size
+    adjustedCloseSize = quantizePosition(trade.pair, adjustedCloseSize);
+    const adjustedRemainSize = quantizePosition(trade.pair, trade.positionSize - adjustedCloseSize);
+
+    // Double check that the adjusted values are feasible
+    if (adjustedCloseSize >= lot.minQty && adjustedRemainSize >= lot.minQty) {
+      const originalPercent = percent;
+      percent = Math.round((adjustedCloseSize / trade.positionSize) * 100);
+      closeSize = adjustedCloseSize;
+      remainSize = adjustedRemainSize;
+
+      logger.info('Adjusted partial close size to comply with lot requirements', {
+        tradeId:            trade.id,
+        originalPercent,
+        adjustedPercent:    percent,
+        originalCloseSize:  closeSize,
+        adjustedCloseSize,
+        remainSize,
+      });
+    } else {
+      // Fallback to HOLD if math somehow failed
+      logger.warn('Partial close adjustment failed — holding full position', {
+        tradeId:      trade.id,
+        positionSize: trade.positionSize,
+        closeSize,
+        remainSize,
+      });
+      await notifications.sendSystem(
+        `⚠️ <b>Partial close failed</b> for ${trade.pair} on agent <b>${agent.name}</b>.\n` +
+        `Unable to adjust size safely. Holding full position.`
+      );
+      return;
+    }
   }
 
   let   exitPrice  = 0;
@@ -1057,7 +1192,52 @@ async function partialCloseTrade(
       const order = await exchange.createOrder(
         trade.pair, 'market', side, closeSize, undefined, { reduceOnly: true }
       );
-      exitPrice = order.average ?? order.price ?? trade.entryPrice;
+
+      // For market orders, ccxt's createOrder response returns immediately
+      // with order.average = null and order.price = null — the fill price
+      // isn't populated until the order is queried back. The old code fell
+      // through `order.average ?? order.price ?? trade.entryPrice` and ALWAYS
+      // landed on entry price, making partialPnl = 0 on every partial close
+      // (and showing "Banked PnL: 0.00 USDT" in the notification, with no
+      // visible movement on realizedPnL in DB).
+      //
+      // Brief wait + fetchOrder gets the actual average fill price. Bybit
+      // market orders fill in <100ms; 500ms is plenty of headroom. If
+      // fetchOrder fails or still has no average, fall back to the most
+      // recent close-side fill from history via findExitFillPrice — same
+      // path the reconciler uses. Entry price is the absolute last resort.
+      await new Promise(r => setTimeout(r, 500));
+
+      let resolvedPrice: number | null = null;
+      try {
+        const filled: any = await exchange.fetchOrder(order.id, trade.pair);
+        if (typeof filled?.average === 'number' && filled.average > 0) {
+          resolvedPrice = filled.average;
+        } else if (typeof filled?.price === 'number' && filled.price > 0) {
+          resolvedPrice = filled.price;
+        }
+      } catch (fetchErr: any) {
+        logger.warn('fetchOrder after partial close failed — falling back to fill history', {
+          tradeId: trade.id,
+          orderId: order.id,
+          error:   fetchErr?.message ?? fetchErr,
+        });
+      }
+
+      if (resolvedPrice == null) {
+        resolvedPrice = await findExitFillPrice(trade);
+      }
+
+      exitPrice = resolvedPrice ?? trade.entryPrice;
+
+      if (exitPrice === trade.entryPrice) {
+        logger.warn('Partial close exitPrice could not be resolved — defaulting to entry (partialPnl will be 0)', {
+          tradeId: trade.id,
+          orderId: order.id,
+        });
+      }
+      // Success case is covered by the existing 'Partial close' info log
+      // emitted a few lines below with exitPrice + partialPnl + sizes.
     } catch (error: any) {
       logger.error('Partial close failed', { error: error.message });
       clearTimeout(tagTimeout);
@@ -1083,11 +1263,17 @@ async function partialCloseTrade(
   // the final-exit PnL on top — partial + final stays consistent across
   // any number of partials. Prisma `increment` is atomic; safe even if two
   // partials raced (they don't today, but defensive).
+  const priorPnL = (await prisma.trade.findUnique({
+    where: { id: trade.id },
+    select: { realizedPnL: true }
+  }))?.realizedPnL ?? 0;
+  const newRealizedPnL = Math.round((priorPnL + partialPnl) * 100) / 100;
+
   await prisma.trade.update({
     where: { id: trade.id },
     data: {
       size:        remainSize,
-      realizedPnL: { increment: Math.round(partialPnl * 100) / 100 },
+      realizedPnL: newRealizedPnL,
     },
   });
   trade.positionSize = remainSize;
@@ -1146,6 +1332,109 @@ function generateSignature(expires: number): string {
 }
 
 // ─────────────────────────────────────────────
+// Live trade reconciler — defense in depth against missed close events
+//
+// The Private WS is supposed to push every TP/SL hit and manual close via
+// execution/position streams. In practice we still see misses: silent
+// disconnects (TCP alive but app-layer dead and no 'close' event fires),
+// brief reconnect windows where events are dropped, auth that quietly
+// expires, etc. When that happens the bot stays IN_TRADE while Bybit has
+// already closed the position — the divergence the user just hit.
+//
+// Fix: periodically poll Bybit's actual position state for every live
+// IN_TRADE agent. If Bybit reports size 0 but the bot still thinks it has
+// a position, fire closeTrade — closeLivePosition already has the
+// "position is zero" recovery path (retCode 110017) that looks up the
+// real exit price from recent fills, so PnL is recorded correctly.
+//
+// 30s interval is the sweet spot: tight enough to catch misses fast
+// without hammering the API. Bybit's position GET is cheap (rate limit
+// of 10 req/sec) and we only call it per IN_TRADE agent.
+// ─────────────────────────────────────────────
+
+const RECONCILE_INTERVAL_MS = 30_000;
+let reconcileTimer: NodeJS.Timeout | null = null;
+
+async function reconcileLiveTrades(): Promise<void> {
+  for (const agent of agentManager.getAllAgents()) {
+    if (agent.state !== 'IN_TRADE') continue;
+    if (!agent.currentTrade)        continue;
+    if ((agent.currentTrade.mode ?? agent.mode) !== 'live') continue;
+
+    const trade = agent.currentTrade;
+
+    try {
+      const positions = await exchange.fetchPositions([trade.pair]);
+      // Bybit may return multiple entries (long + short in hedge mode) — pick
+      // the one matching this trade's direction. ccxt normalises `contracts`
+      // to the position size; some legacy paths use `size`.
+      const sideMatch = trade.direction === 'LONG' ? 'long' : 'short';
+      const pos = positions.find((p: any) =>
+        p.symbol === trade.pair &&
+        (!p.side || p.side.toLowerCase() === sideMatch),
+      ) ?? positions.find((p: any) => p.symbol === trade.pair);
+
+      const livePositionSize = pos
+        ? parseFloat(pos.contracts ?? (pos as any).size ?? '0')
+        : 0;
+
+      // Position is gone on Bybit but the bot still has it open — Bybit
+      // closed it (TP/SL fired, liquidation, manual UI close) and we missed
+      // the WS event. Pre-fetch the real exit price from fill history and
+      // pass it as override, so closeTrade skips the doomed createOrder
+      // attempt against a zero position (saves an API call + drops the
+      // noisy "Failed to close live position" log that isn't really an
+      // error in this path).
+      //
+      // If the fill lookup fails (rare — fills should be in the last 20),
+      // we still call closeTrade without an override; closeLivePosition's
+      // own recovery path catches the 110017 and re-tries the same lookup.
+      // Worst case we record entryPrice as exitPrice on PnL = 0 and you'll
+      // see the "no matching exit fill found" warn line to reconcile by hand.
+      if (livePositionSize === 0) {
+        logger.warn('Reconciler: Bybit position is zero — closing locally', {
+          agentId:      agent.id,
+          tradeId:      trade.id,
+          pair:         trade.pair,
+          direction:    trade.direction,
+          localSize:    trade.positionSize,
+        });
+
+        const exitPrice = await findExitFillPrice(trade);
+        await closeTrade(
+          agent,
+          trade,
+          'RECONCILED_FROM_BYBIT',
+          exitPrice ?? undefined,
+        );
+      }
+    } catch (err: any) {
+      // Don't let one bad tick (network blip, rate limit) kill the loop.
+      // Next 30s tick gets another chance.
+      logger.error('Reconciler tick failed', {
+        agentId: agent.id,
+        tradeId: trade.id,
+        error:   err?.message ?? err,
+      });
+    }
+  }
+}
+
+export function startLiveReconciler(): void {
+  if (reconcileTimer) return;
+
+  reconcileTimer = setInterval(() => {
+    void reconcileLiveTrades();
+  }, RECONCILE_INTERVAL_MS);
+
+  // Fire once immediately on startup so any stuck trade gets caught on the
+  // first boot tick, not after a 30s delay.
+  void reconcileLiveTrades();
+
+  logger.info('Live trade reconciler started', { intervalMs: RECONCILE_INTERVAL_MS });
+}
+
+// ─────────────────────────────────────────────
 // Exports
 // ─────────────────────────────────────────────
 
@@ -1157,4 +1446,5 @@ export const executionEngine = {
   updateLivePnl,
   checkPaperTpSl,
   startPrivateWebSocket,
+  startLiveReconciler,
 };

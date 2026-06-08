@@ -80,6 +80,15 @@ export const notifications = {
       } else if (type === 'CLOSE') {
         const closedTrade = trade as ClosedTrade;
         const emoji = closedTrade.outcome === 'win' ? '✅' : '❌';
+        // Only show the partial / final breakdown when there were actual
+        // partials — keeps the notification clean for the common case where
+        // total PnL == final exit PnL.
+        const prior = (closedTrade as any).priorPartialPnl ?? 0;
+        const final = (closedTrade as any).finalExitPnl ?? closedTrade.realisedPnl ?? 0;
+        const hasPartials = Math.abs(prior) > 0.005;
+        const breakdownLine = hasPartials
+          ? `  ↳ Banked from partials: <b>${prior >= 0 ? '+' : ''}${prior.toFixed(2)}</b> · Final exit: <b>${final >= 0 ? '+' : ''}${final.toFixed(2)}</b>\n`
+          : '';
         text =
           `${emoji} TRADE CLOSED\n\n` +
           `Agent: <b>${agent.name}</b>\n` +
@@ -87,6 +96,7 @@ export const notifications = {
           `Direction: ${closedTrade.direction}\n` +
           `Entry: ${closedTrade.entryPrice} → Exit: ${closedTrade.exitPrice}\n` +
           `PnL: <b>${(closedTrade.realisedPnl ?? 0).toFixed(2)} USDT</b> (${(closedTrade.realisedPct ?? 0).toFixed(2)}%)\n` +
+          breakdownLine +
           `Outcome: <b>${(closedTrade.outcome ?? 'unknown').toString().toUpperCase()}</b>\n` +
           `Reason: ${closedTrade.closeReason}`;
       } else if (type === 'ADJUST') {
