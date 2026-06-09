@@ -81,7 +81,7 @@ export async function fetchHistoricalCandles(
 // ─────────────────────────────────────────────
 
 export async function seedCandleBuffers(pairs: string[]): Promise<void> {
-    const timeframes: CandleInterval[] = ['5', '15', '60', '240'];
+    const timeframes: CandleInterval[] = ['1', '5', '15', '60', '240'];
 
     for (const pair of pairs) {
         // Initialise the pair if it doesn't exist

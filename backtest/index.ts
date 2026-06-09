@@ -343,6 +343,7 @@ function buildMtfSnapshot(
   const candles4h  = candles['240'] ?? [];
   const candles15m = candles['15']  ?? [];
   const candles5m  = candles['5']   ?? [];
+  const candles1m  = candles['1']   ?? [];
 
   const slice1h  = candles1h.slice(Math.max(0, index1h - 200), index1h);
 
@@ -350,10 +351,12 @@ function buildMtfSnapshot(
   const index4h  = Math.floor(index1h / 4);
   const index15m = index1h * 4;
   const index5m  = index1h * 12;
+  const index1m  = index1h * 60;
 
   const slice4h  = candles4h.slice(Math.max(0, index4h  - 200), index4h);
   const slice15m = candles15m.slice(Math.max(0,  index15m - 200), index15m);
   const slice5m  = candles5m.slice(Math.max(0,   index5m  - 200), index5m);
+  const slice1m  = candles1m.slice(Math.max(0,   index1m  - 200), index1m);
 
   if (slice1h.length < 50) return null;
 
@@ -367,12 +370,16 @@ function buildMtfSnapshot(
     regime:     detectRegime(c) ?? {} as any,
   });
 
+  const tf5mSnap = buildSnapshot(slice5m, '5');
+
   return {
     pair:  candles1h[index1h]?.pair ?? '',
     tf4h:  buildSnapshot(slice4h,  '240'),
     tf1h:  buildSnapshot(slice1h,  '60'),
     tf15m: buildSnapshot(slice15m, '15'),
-    tf5m:  buildSnapshot(slice5m,  '5'),
+    tf5m:  tf5mSnap,
+    // 1m buffer may be short early in the window — fall back to the 5m snapshot
+    tf1m:  slice1m.length >= 50 ? buildSnapshot(slice1m, '1') : tf5mSnap,
   };
 }
 
@@ -465,7 +472,7 @@ async function loadHistoricalCandles(
   startDate: Date,
   endDate:   Date,
 ): Promise<Record<string, Candle[]>> {
-  const timeframes: CandleInterval[] = ['5', '15', '60', '240'];
+  const timeframes: CandleInterval[] = ['1', '5', '15', '60', '240'];
   const result: Record<string, Candle[]> = {};
 
   for (const tf of timeframes) {

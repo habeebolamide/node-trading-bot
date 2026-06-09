@@ -21,7 +21,7 @@ const candleBuffers: Record<string, Record<string, any[]>> = {};
 export async function seedCandleBuffers(pairs: string[]): Promise<void> {
   logger.info('Seeding candle buffers', { pairs });
 
-  const timeframes = ['5', '15', '60', '240'];
+  const timeframes = ['1', '5', '15', '60', '240'];
   // const BASE_URL = process.env.BYBIT_TESTNET === 'true'
   //   ? 'https://api-testnet.bybit.com'
   //   : 'https://api.bybit.com';

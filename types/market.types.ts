@@ -128,6 +128,7 @@ export interface MultiTimeframeData {
   tf1h:   TimeframeSnapshot;
   tf15m:  TimeframeSnapshot;
   tf5m:   TimeframeSnapshot;
+  tf1m:   TimeframeSnapshot;
 }
 
 export interface TimeframeSnapshot {

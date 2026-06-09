@@ -22,7 +22,6 @@ import { getLotSpec } from '../risk/index.js';
 // Remove entirely when going live
 // ─────────────────────────────────────────────
 
-const TEST_MODE = false;
 
 // ─────────────────────────────────────────────
 // Stable principles — kept identical across all agents and calls.
@@ -112,9 +111,14 @@ export function buildSystemPrompt(
 
   const styleGuide = {
     scalp: `
-      You trade short-term momentum. Trades last minutes.
-      You look for quick, high-probability moves with tight stops and clear targets.
-      You enter close to current price or at immediate structure levels.
+      You trade short-term momentum off the 1m and 5m, using 15m only for
+      immediate context. Trades are fast — typically 5–10 minutes, never hours.
+      You look for quick, high-probability moves with tight stops and clear
+      targets, entering close to current price or at immediate 1m/5m structure.
+      Because stops are tight, you run high leverage — a small price move is a
+      large margin ROI, so precision on entry and exit timing is everything.
+      If the move doesn't resolve quickly, get out; do not let a scalp turn into
+      a bag-hold.
     `.trim(),
 
     day: `
@@ -143,10 +147,11 @@ export function buildSystemPrompt(
       the current structure — never force a style onto conditions that don't
       support it. Stay out if nothing aligns.
 
-      SCALP — minutes to ~1 hour. Use when intraday momentum is clean: 5m/15m
-        trend with volume, tight range break, or a clear reaction off a fresh
-        level. Tight stops, R/R ≥ 1.0, entry close to current price. Best in
-        low-news, mid-volatility tape.
+      SCALP — fast, 1-20 minutes (never hours). Use when 1m/5m momentum is clean:
+        1m/5m trend with volume, tight range break, or a clear reaction off a fresh
+        level (15m for immediate context only). Tight stops with high leverage so a
+        small move is a large margin ROI, R/R ≥ 1.0, entry close to current price.
+        Best in low-news, mid-volatility tape. If it doesn't resolve fast, exit.
 
       DAY — a few hours, closed within the session (no overnight hold). Use when
         the 15m/1h shows a defined intraday trend or range you can work, timing
@@ -191,21 +196,6 @@ export function buildSystemPrompt(
 
   const challengeBlock = challenge ? buildChallengeBlock(challenge) : '';
 
-  const testModeBlock = TEST_MODE
-    ? `
-      ━━━━━━━━━━━━━━━━━━━━━━━
-      TEST MODE — ACTIVE:
-      You MUST return LONG or SHORT. NO_TRADE is not allowed.
-      If the market is unclear choose the most reasonable directional bias.
-      CRITICAL: You are strictly hunting for HIGH-ROI setups (e.g. 100%+ margin ROI equivalent).
-      A 100% margin ROI requires roughly (100 / leverage)% from entry — at ${leverage}× that's ${(100 / leverage).toFixed(2)}%.
-      Do NOT return low-potential, 20% ROI micro-scalps just to fulfill the trade requirement.
-      Look further out on the chart for major structural levels that offer massive Risk/Reward.
-      Do not invent fake levels. Keep entries logical relative to current price.
-      Reflect uncertainty through lower confidence score.
-      ━━━━━━━━━━━━━━━━━━━━━━━
-    `.trim()
-    : '';
 
   return `
     You trade crypto on your own judgment. You read the market, find real
@@ -270,13 +260,6 @@ export function buildSystemPrompt(
     each significant candle close. Just set price_up/price_down to null and
     do not over-think these fields for directional signals.
 
-    For management decisions (HOLD / ADJUST / CLOSE / PARTIAL_CLOSE):
-    triggers are not used either. The exchange's TP/SL handles critical
-    exits autonomously; management re-runs on each candle close. When
-    managing an open trade, evaluate news/events independently — do not
-    rely on pre-computed context. If a major event just broke, assess whether
-    it invalidates the thesis.
-    
     CONFIDENCE:
 
     Confidence is a probability assessment, not a permission slip. Be honest:
@@ -288,15 +271,6 @@ export function buildSystemPrompt(
     is a better trade than an 8 with 1.2R. Do NOT inflate confidence to
     clear a threshold, do NOT deflate it from over-caution.
 
-    There IS a hard floor enforced by the risk layer (varies by performance
-    mode — see EFFECTIVE PARAMETERS / mode block in the entry prompt). The
-    entry prompt will show the exact floor for the current call. Signals
-    below it are auto-rejected regardless of how strong the R/R looks.
-    
-    ${testModeBlock}
-    For "LONG" | "SHORT": entry_expiry_minutes = how long the setup remains valid if entry isn't hit (e.g. 30 for a tight scalp, 180 for a day trade, 240 for a swing).
-    For "NO_TRADE": triggers.timeout_minutes = how long this market context stays valid before fresh re-analysis is needed.
-    Emit DURATIONS in minutes, not absolute timestamps — the server computes the deadline from your duration.
     Always respond with valid JSON only. No text outside the JSON.
   `.trim();
 }
@@ -316,7 +290,8 @@ export function buildEntryPrompt(
 ): string {
 
   const now = new Date().toISOString();
-  const currentPrice = mtfData.tf5m.candles.at(-1)?.close
+  const currentPrice = mtfData.tf1m.candles.at(-1)?.close
+    ?? mtfData.tf5m.candles.at(-1)?.close
     ?? mtfData.tf15m.candles.at(-1)?.close
     ?? mtfData.tf1h.candles.at(-1)?.close
     ?? 0;
@@ -363,15 +338,26 @@ export function buildEntryPrompt(
   // operating on 5m/15m structure; position trades only need the macro view.
   // Daily levels would be added here once we seed Daily candles.
   const style = agent.tradingStyle ?? 'auto';
-  const includeTfs: Array<'5m' | '15m' | '1h' | '4h'> = (
-    style === 'scalp' ? ['5m', '15m', '1h'] :   // minutes-long: 5m/15m structure + 1h trend; 4h levels are too far to be entry/SL/TP
+  const includeTfs: Array<'1m' | '5m' | '15m' | '1h' | '4h'> = (
+    style === 'scalp' ? ['1m', '5m', '15m'] :   // minutes-long (5–10 min): pure micro-structure on 1m/5m, 15m for immediate context
       style === 'day' ? ['5m', '15m', '1h', '4h'] :   // intraday: time entries on 5m, work 15m/1h, 4h frames the day's range/trend
         style === 'swing' ? ['15m', '1h', '4h'] :
           style === 'position' ? ['1h', '4h'] :
-            ['5m', '15m', '1h', '4h']    // auto: full coverage
+            ['1m', '5m', '15m', '1h', '4h']    // auto: full coverage incl. 1m for scalp-style adaptation
   );
 
   const levelBlocks: string[] = [];
+
+  if (includeTfs.includes('1m')) {
+    // 1m is the noisiest feed — keep only the strongest structural levels, top 3
+    // per side, and drop round numbers (meaningless at this resolution). Use for
+    // pinpoint scalp entry/exit timing, not for framing the trade thesis.
+    const raw = findKeyLevels(mtfData.tf1m.candles);
+    const trimmed = trimLevels(raw, 3, ['round_number']);
+    levelBlocks.push(`━━━━━━━━━━━━━━━━━━━━━━━
+    SCALP LEVELS — 1M (top 3, structural only — entry/exit timing):
+    ${formatKeyLevelsForPrompt(trimmed)}`);
+  }
 
   if (includeTfs.includes('5m')) {
     // 5m has the most noise — filter to swing/volume_node only, top 3 per side.
@@ -406,6 +392,28 @@ export function buildEntryPrompt(
 
   const levelsSection = levelBlocks.join('\n\n    ');
 
+  // Timeframe read-outs, gated by trade style (same set as the levels above).
+  // A scalp shouldn't be reasoning off the 4H; a position trade shouldn't be
+  // distracted by 1m noise. Ordered high → low for a top-down read.
+  const tfSummaryBlocks: string[] = [];
+  const pushTfSummary = (
+    key:   '4h' | '1h' | '15m' | '5m' | '1m',
+    label: string,
+    snap:  MultiTimeframeData['tf4h'],
+  ) => {
+    if (includeTfs.includes(key)) {
+      tfSummaryBlocks.push(`━━━━━━━━━━━━━━━━━━━━━━━
+    ${label}:
+    ${formatTimeframe(snap)}`);
+    }
+  };
+  pushTfSummary('4h',  '4H',  mtfData.tf4h);
+  pushTfSummary('1h',  '1H',  mtfData.tf1h);
+  pushTfSummary('15m', '15M', mtfData.tf15m);
+  pushTfSummary('5m',  '5M',  mtfData.tf5m);
+  pushTfSummary('1m',  '1M',  mtfData.tf1m);
+  const tfSummarySection = tfSummaryBlocks.join('\n\n    ');
+
   return `
     ${modeLabel}
     CURRENT TIME (UTC): ${now}
@@ -419,29 +427,14 @@ export function buildEntryPrompt(
     REGIME: ${regime.regime} (${(regime.confidence * 100).toFixed(0)}% confidence)
     ADX: ${regime.adx} | BB width: ${regime.bbWidth} | EMA slope: ${regime.emaSlope}% | Volume: ${regime.volumeTrend}
     
-    ━━━━━━━━━━━━━━━━━━━━━━━
-    4H:
-    ${formatTimeframe(mtfData.tf4h)}
-    
-    ━━━━━━━━━━━━━━━━━━━━━━━
-    1H:
-    ${formatTimeframe(mtfData.tf1h)}
-    
-    ━━━━━━━━━━━━━━━━━━━━━━━
-    15M:
-    ${formatTimeframe(mtfData.tf15m)}
-    
-    ━━━━━━━━━━━━━━━━━━━━━━━
-    5M:
-    ${formatTimeframe(mtfData.tf5m)}
-    
+    ${tfSummarySection}
+
     ━━━━━━━━━━━━━━━━━━━━━━━
     NEWS:
     ${newsContext}
     
     ${relevantLessons}
     
-    ━━━━━━━━━━━━━━━━━━━━━━━
     BEFORE RESPONDING — sanity checks:
 
     1. SL placement:
@@ -471,8 +464,8 @@ export function buildEntryPrompt(
       "timeframe_used": "<timeframe that drove the decision>",
       "tradeStyle": "scalp" | "day" | "swing" | "position",
       "entry_expiry_minutes": <number | null — minutes the LONG/SHORT setup stays valid; null for NO_TRADE>,
-      "reasoning": "<max 150 chars>",
-      "what_invalidates": "<max 80 chars>",
+      "what_invalidates": "<max 100 chars — concrete level/signal that proves the thesis wrong, not a feeling.>",
+      "reasoning": "<max 200 chars — why this trade, right now: the structure + edge.>",
       "triggers": {
         "price_up": <number | null>,
         "price_down": <number | null>,
@@ -495,7 +488,9 @@ export function buildManagementPrompt(
 ): string {
   const pnlSign = trade.unrealisedPct >= 0 ? '+' : '';
   const duration = getTimeSince(trade.openedAt);
-  const currentPrice = mtfData.tf5m.candles.at(-1)?.close ?? trade.entryPrice;
+  const currentPrice = mtfData.tf1m.candles.at(-1)?.close
+    ?? mtfData.tf5m.candles.at(-1)?.close
+    ?? trade.entryPrice;
 
   const inProfit = trade.unrealisedPct >= 0;
 
@@ -506,76 +501,102 @@ export function buildManagementPrompt(
     : `ENABLED (Current size: ${trade.positionSize}, minimum order qty: ${lot.minQty})`;
 
   return `
-You are managing a LIVE ${trade.direction} position on ${trade.pair} — real money is at risk right now.
-This is not a fresh analysis. You already committed to this trade. Your job is to manage it well,
-not to re-litigate whether you'd take it again.
+    You are managing a LIVE ${trade.direction} position on ${trade.pair} — real money is at risk right now.
+    This is not a fresh analysis. You already committed to this trade. Your job is to manage it well,
+    not to re-litigate whether you'd take it again.
 
-POSITION:
-Direction:       ${trade.direction}
-Entry:           ${trade.entryPrice}
-Current price:   ${currentPrice}
-TP:              ${trade.currentTp}
-SL:              ${trade.currentSl}  ← this is your invalidation line; the exchange enforces it automatically
-Unrealised:      ${pnlSign}${trade.unrealisedPct.toFixed(2)}% (${pnlSign}$${trade.unrealisedPnl.toFixed(2)}) — currently ${inProfit ? 'IN PROFIT' : 'IN DRAWDOWN'}
-Duration:        ${duration}
-Original thesis: ${trade.entryReasoning}
-${originalInvalidation ? `Thesis breaks if:  ${originalInvalidation}` : ''}
-Partial close:   ${partialCloseStatus}
+    POSITION:
+    Direction:       ${trade.direction}
+    Entry:           ${trade.entryPrice}
+    Current price:   ${currentPrice}
+    TP:              ${trade.currentTp}
+    SL:              ${trade.currentSl}  ← this is your invalidation line; the exchange enforces it automatically
+    Unrealised:      ${pnlSign}${trade.unrealisedPct.toFixed(2)}% (${pnlSign}$${trade.unrealisedPnl.toFixed(2)}) — currently ${inProfit ? 'IN PROFIT' : 'IN DRAWDOWN'}
+    Duration:        ${duration}
+    Original thesis: ${trade.entryReasoning}
+    ${originalInvalidation ? `Thesis breaks if:  ${originalInvalidation}` : ''}
+    Partial close:   ${partialCloseStatus}
 
-CURRENT MARKET (every price you reference MUST come from the data below — do not invent levels):
-━━ 4H — is the original thesis still structurally intact? ━━
-${formatTimeframe(mtfData.tf4h)}
+    CURRENT MARKET (every price you reference MUST come from the data below — do not invent levels):
+    ━━ 4H — is the original thesis still structurally intact? ━━
+    ${formatTimeframe(mtfData.tf4h)}
 
-━━ 1H — how is momentum developing? ━━
-${formatTimeframe(mtfData.tf1h)}
+    ━━ 1H — how is momentum developing? ━━
+    ${formatTimeframe(mtfData.tf1h)}
 
-━━ 15M — what is price doing right now? ━━
-${formatTimeframe(mtfData.tf15m)}
+    ━━ 15M — what is price doing right now? ━━
+    ${formatTimeframe(mtfData.tf15m)}
 
-━━━━━━━━━━━━━━━━━━━━━━━
-HOW TO DECIDE — work through this in order:
+    ━━ 5M — near-term momentum into the current move ━━
+    ${formatTimeframe(mtfData.tf5m)}
 
-1. DEFAULT IS HOLD. Most of the time, the correct action is to do nothing and
-   let the trade work toward TP or SL. You placed the SL where the thesis breaks
-   — trust it. A position being temporarily underwater is NORMAL and is NOT a
-   reason to close. Acting without a concrete, data-backed reason is itself a
-   mistake — it bleeds edge through fees and bad fills.
+    ━━ 1M — live price action for precise exits (critical for fast scalps) ━━
+    ${formatTimeframe(mtfData.tf1m)}
 
-2. CLOSE only if the ORIGINAL THESIS IS GENUINELY BROKEN — i.e. structure that
-   the trade depended on has actually failed on the chart in front of you (a
-   real break of the level, a clean shift in structure, a confirmed reversal).
-   "Price moved against me a bit" is not invalidation. Fear is not invalidation.
-   If you cannot point to a specific broken level in the data above, do not CLOSE.
+    ━━━━━━━━━━━━━━━━━━━━━━━
+    HOW TO DECIDE — work through this in order:
 
-3. IF IN PROFIT — protect and extend:
-   - ADJUST: tighten SL toward break-even or behind the most recent ${trade.direction === 'LONG' ? 'swing low' : 'swing high'}
-     to lock in gains. Keep the SL a sensible distance back (roughly ≥1× ATR
-     from price) so normal noise does not wick you out prematurely.
-   - ADJUST: extend TP ONLY if price has cleanly reached the old TP zone AND a
-     further structural level genuinely exists beyond it. Otherwise leave TP.
-   - PARTIAL_CLOSE: when the move is extended and the next leg is uncertain —
-     bank a portion, let the rest ride with a protected stop. ${isPartialCloseDisabled ? 'NOTE: PARTIAL CLOSE IS CURRENTLY DISABLED FOR THIS POSITION SIZE.' : ''}
+    1. DEFAULT IS HOLD. Most of the time, the correct action is to do nothing and
+      let the trade work toward TP or SL. You placed the SL where the thesis breaks
+      — trust it. A position being temporarily underwater is NORMAL and is NOT a
+      reason to close. Acting without a concrete, data-backed reason is itself a
+      mistake — it bleeds edge through fees and bad fills.
 
-4. IF IN DRAWDOWN — be patient, not reactive:
-   - The SL already caps the downside. Do NOT pre-emptively close just because
-     you are red. Either the thesis holds (HOLD) or it is genuinely broken (CLOSE).
-   - NEVER widen the SL. NEVER move it further from price. Tighten only.
+    2. CLOSE EARLY when the read has changed — do NOT wait for the SL. The SL at
+      ${trade.currentSl} is the hard backstop the exchange enforces for you; by the
+      time price prints there it is already too late to add value. A good trader's
+      edge is getting out BEFORE the stop, while the exit is still good. CLOSE (or
+      PARTIAL_CLOSE) when you can point to REAL evidence in the data that the move is
+      turning against you, such as:
+        - a reversal forming against your position — e.g. you are ${trade.direction} and the
+          lower timeframes are now printing ${trade.direction === 'LONG' ? 'lower highs + lower lows' : 'higher highs + higher lows'},
+          or a strong opposite-side rejection / engulfing at a key level
+        - momentum has decisively flipped: the timeframe that carried your thesis is
+          now driving the other way, ideally with volume confirming the against-side
+        - the structure the trade relied on is visibly failing — the level is being
+          lost in front of you; you do NOT have to wait for the exact SL price to print
+      This is a JUDGEMENT call and the bar is REAL evidence, not a feeling. "Price
+      moved against me a bit", a single noisy candle, or fear are NOT reasons. If the
+      strongest thing you can say is "it looks weak", HOLD.
 
-5. Never act just to act. If nothing concrete has changed since entry: HOLD.
+    2b. NEAR TP — protect the win. If price has run most of the way to TP and is now
+      showing exhaustion or starting to reverse (rejection wick, stalling momentum,
+      opposite-side pressure building), do not give the gains back chasing the last
+      few ticks. PARTIAL_CLOSE to bank the bulk of it, or CLOSE outright if the
+      reversal looks convincing. Round-tripping a near-winner back to break-even is a
+      worse outcome than taking most of the target.
 
-reasoning must name the SPECIFIC level or signal driving the decision (e.g.
-"4H broke 1985 support, structure flipped" — not "looks weak"). If you cannot
-name it, the answer is HOLD.
+    3. IF IN PROFIT — protect and extend:
+      - ADJUST: tighten SL toward break-even or behind the most recent ${trade.direction === 'LONG' ? 'swing low' : 'swing high'}
+        to lock in gains. Keep the SL a sensible distance back (roughly ≥1× ATR
+        from price) so normal noise does not wick you out prematurely.
+      - ADJUST: extend TP ONLY if price has cleanly reached the old TP zone AND a
+        further structural level genuinely exists beyond it. Otherwise leave TP.
+      - PARTIAL_CLOSE: when the move is extended and the next leg is uncertain —
+        bank a portion, let the rest ride with a protected stop. ${isPartialCloseDisabled ? 'NOTE: PARTIAL CLOSE IS CURRENTLY DISABLED FOR THIS POSITION SIZE.' : ''}
 
-JSON response:
-{
-  "action": "HOLD" | "ADJUST" | "CLOSE" | "PARTIAL_CLOSE",
-  "newTp": <number | null — only when extending/changing TP>,
-  "newSl": <number | null — only when tightening SL; must be closer to price than current, never further>,
-  "closePercent": <0-100 | null — only for PARTIAL_CLOSE>,
-  "reasoning": "<name the specific level/signal — max 100 chars>",
-  "urgency": "low" | "medium" | "high"
-}
+    4. IF IN DRAWDOWN — be patient, not reactive:
+      - The SL already caps the downside. Do NOT close just because you are red —
+        being underwater is not a reason. But if the early-exit evidence in step 2 is
+        actually there (reversal forming, momentum flipped against you), don't stubbornly
+        ride it to the stop either — cut it. Red + real reversal = CLOSE; red + noise = HOLD.
+      - NEVER widen the SL. NEVER move it further from price. Tighten only.
+
+    5. Never act just to act. If nothing concrete has changed since entry: HOLD.
+
+    reasoning must name the SPECIFIC level or signal driving the decision (e.g.
+    "4H broke 1985 support, structure flipped" — not "looks weak"). If you cannot
+    name it, the answer is HOLD.
+
+    JSON response:
+    {
+      "action": "HOLD" | "ADJUST" | "CLOSE" | "PARTIAL_CLOSE",
+      "newTp": <number | null — only when extending/changing TP>,
+      "newSl": <number | null — only when tightening SL; must be closer to price than current, never further>,
+      "closePercent": <0-100 | null — only for PARTIAL_CLOSE>,
+      "reasoning": "<max 100 chars — name the specific level/signal driving the action, not a feeling.>",
+      "urgency": "low" | "medium" | "high"
+    }
   `.trim();
 }
 
@@ -837,7 +858,7 @@ function getTimeSince(date: Date): string {
 
 // ─────────────────────────────────────────────
 // Challenge context block — included in BOTH entry and exit prompts when
-// the agent is running inside a session. Gives Claude the equity / target /
+// the agent is running inside a session. Gives LLM the equity / target /
 // timer / drawdown awareness needed to lock in wins near target and play
 // defensive near the floor. See guides/CHALLENGE_MODE.md.
 // ─────────────────────────────────────────────

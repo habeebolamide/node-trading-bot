@@ -223,8 +223,6 @@ async function callWithFallback<T>(
             : 'n/a',
         });
 
-        logger.info('Raw Response', { agentId, promptType, rawText });
-
         const parsed = parseJSON<T>(rawText);
 
         logger.info('DeepSeek response details', { agentId, promptType, rawResponse: parsed });

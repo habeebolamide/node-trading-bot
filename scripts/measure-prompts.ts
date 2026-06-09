@@ -93,6 +93,7 @@ function mockMtf(pair: string): MultiTimeframeData {
     tf1h: mockSnapshot(pair, '60', 67000),
     tf15m: mockSnapshot(pair, '15', 67000),
     tf5m: mockSnapshot(pair, '5', 67000),
+    tf1m: mockSnapshot(pair, '1', 67000),
   };
 }
 

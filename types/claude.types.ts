@@ -20,6 +20,7 @@ export interface TimeframeScores {
   tf1h:  number;
   tf15m: number;
   tf5m:  number;
+  tf1m:  number;
   total: number;    // sum — determines signal strength
 }
 

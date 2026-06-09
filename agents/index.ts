@@ -965,6 +965,27 @@ export class AgentManager {
     agent.entryCycleInFlight = true;
 
     try {
+    // Pull the original Signal row — gives us both the trade's actual style
+    // (the LLM's chosen style, which matters for 'auto' agents) and the
+    // what_invalidates line to surface at exit time. The most recent
+    // executed/triggered/active signal for this agent is the one that produced
+    // the open trade — entry sets status='executed' on the matching signal row.
+    const originatingSignal = await prisma.signal.findFirst({
+      where:  { agentId: agent.id, status: { in: ['executed', 'triggered', 'active'] } },
+      orderBy: { createdAt: 'desc' },
+      select: { whatInvalidates: true, tradeStyle: true },
+    });
+
+    // SCALP = set-and-forget. A 5–10 min scalp is over before an LLM management
+    // call (tens of seconds) can return — and the exchange already enforces the
+    // TP/SL bracket. Running management here just burns cost and risks a stale
+    // ADJUST landing mid-scalp. Let the bracket do the work.
+    const tradeStyle = originatingSignal?.tradeStyle ?? agent.tradingStyle;
+    if (tradeStyle === 'scalp') {
+      logger.info(`[${agent.name}] Scalp trade — set-and-forget, skipping LLM management (TP/SL bracket enforces exit)`);
+      return;
+    }
+
     // Challenge context for exit decisions — Claude needs days-left / progress
     // / drawdown-used to lock in wins near target and play defensive near floor.
     const session = agent.currentTrade.challengeId
@@ -973,16 +994,6 @@ export class AgentManager {
     const challengeContext = (session && session.status === 'active')
       ? await buildChallengeRiskContext(session as ChallengeSessionRecord)
       : null;
-
-    // Pull the original Signal row to surface what_invalidates at exit time.
-    // The most recent executed/triggered/active signal for this agent is the
-    // one that produced the open trade — entry sets status='executed' on the
-    // matching signal row when the trade fills.
-    const originatingSignal = await prisma.signal.findFirst({
-      where:  { agentId: agent.id, status: { in: ['executed', 'triggered', 'active'] } },
-      orderBy: { createdAt: 'desc' },
-      select: { whatInvalidates: true },
-    });
 
     // System prompt carries the challenge block (if active) — single source
     // of truth across entry and management.
