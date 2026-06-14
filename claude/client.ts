@@ -1,4 +1,6 @@
 import OpenAI from 'openai';
+import fs from 'node:fs';
+import path from 'node:path';
 import logger from '../utils/logger.js';
 import type {
   EntrySignal,
@@ -48,6 +50,62 @@ const DEFAULT_PRICING: ModelPricing = PRICING_BY_MODEL['deepseek-v4-flash'] ?? {
   inputCacheMissPerM: 0.14,
   outputPerM: 0.28,
 };
+
+// ─────────────────────────────────────────────
+// Prompt transcript logging
+// Writes the EXACT system + user prompt the model received, plus its
+// response, to one readable file per call under logs/prompts/. This is the
+// audit trail for signal quality — it lets us confirm what levels/timeframes
+// the model actually saw when it produced a given entry, instead of guessing.
+// Toggle off with LOG_PROMPTS=false.
+// ─────────────────────────────────────────────
+
+const PROMPT_LOG_DIR = path.resolve(process.cwd(), 'logs', 'prompts');
+const PROMPT_LOGGING_ENABLED = process.env.LOG_PROMPTS !== 'false';
+
+/**
+ * Write the prompt up front (before the API call) so the transcript survives
+ * even if the call hangs or crashes. Returns the file path so the response can
+ * be appended later, or null if logging is disabled / failed (never throws).
+ */
+function capturePrompt(
+  promptType: PromptType,
+  agentId: string,
+  systemPrompt: string,
+  userPrompt: string,
+): string | null {
+  if (!PROMPT_LOGGING_ENABLED) return null;
+  try {
+    fs.mkdirSync(PROMPT_LOG_DIR, { recursive: true });
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const safeAgent = String(agentId).replace(/[^a-zA-Z0-9_-]/g, '_');
+    const filePath = path.join(PROMPT_LOG_DIR, `${stamp}_${promptType}_${safeAgent}.txt`);
+    const header =
+      `=== LLM CALL =================================================\n` +
+      `time:      ${new Date().toISOString()}\n` +
+      `agentId:   ${agentId}\n` +
+      `promptType:${promptType}\n` +
+      `=== SYSTEM PROMPT ===========================================\n` +
+      `${systemPrompt}\n` +
+      `=== USER PROMPT =============================================\n` +
+      `${userPrompt}\n`;
+    fs.writeFileSync(filePath, header, 'utf8');
+    return filePath;
+  } catch (err: any) {
+    logger.warn('Failed to write prompt transcript', { agentId, promptType, error: err?.message });
+    return null;
+  }
+}
+
+/** Append the model's outcome (response or failure) to the transcript. Never throws. */
+function appendOutcome(filePath: string | null, section: string): void {
+  if (!filePath) return;
+  try {
+    fs.appendFileSync(filePath, section, 'utf8');
+  } catch {
+    // Logging must never interfere with trading — swallow.
+  }
+}
 
 export async function getEntrySignal(
   systemPrompt: string,
@@ -116,6 +174,8 @@ async function callWithFallback<T>(
   const startedAt = Date.now();
   let lastError = '';
 
+  const transcriptPath = capturePrompt(promptType, agentId, systemPrompt, userPrompt);
+
   const sysTokensEst = estimateTokens(systemPrompt);
   const userTokensEst = estimateTokens(userPrompt);
 
@@ -130,6 +190,7 @@ async function callWithFallback<T>(
     totalTokensEst: sysTokensEst + userTokensEst,
     systemCacheable: sysTokensEst >= DEEPSEEK_CACHE_MIN_TOKENS,
     systemPaddingNeeded: Math.max(0, DEEPSEEK_CACHE_MIN_TOKENS - sysTokensEst),
+    transcript: transcriptPath,
   });
 
   const models = MODELS_BY_TYPE[promptType];
@@ -227,6 +288,14 @@ async function callWithFallback<T>(
 
         logger.info('DeepSeek response details', { agentId, promptType, rawResponse: parsed });
 
+        appendOutcome(
+          transcriptPath,
+          `=== RESPONSE (model: ${model}, attempt: ${attempt + 1}) ====================\n` +
+            `${rawText}\n` +
+            `=== PARSED (success: ${parsed.success}${parsed.error ? `, error: ${parsed.error}` : ''}) ===\n` +
+            `${JSON.stringify(parsed.data, null, 2)}\n`,
+        );
+
         return {
           success: parsed.success,
           data: parsed.data,
@@ -269,6 +338,12 @@ async function callWithFallback<T>(
   }
 
   logger.error('All DeepSeek models failed', { agentId, promptType, lastError });
+
+  appendOutcome(
+    transcriptPath,
+    `=== FAILED ==================================================\n` +
+      `All fallback models failed. lastError: ${lastError}\n`,
+  );
 
   return {
     success: false,

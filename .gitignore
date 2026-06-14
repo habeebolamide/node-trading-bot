@@ -10,5 +10,6 @@ node_modules
 
 /generated/prisma
 logs/*.log
+logs/prompts/
 /prisma/migrations
 /dist

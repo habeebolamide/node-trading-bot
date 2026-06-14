@@ -13,7 +13,13 @@ import type {
   OpenTrade
 } from '../types/trade.types.js';
 import type { ChallengeRiskContext } from '../types/challenge.types.js';
-import { findKeyLevels, formatKeyLevelsForPrompt, type KeyLevelsResult } from "../markets/keys.js";
+import {
+  findKeyLevels,
+  formatKeyLevelsForPrompt,
+  findConfluenceZones,
+  formatConfluenceZonesForPrompt,
+  type KeyLevelsResult,
+} from "../markets/keys.js";
 import { getLotSpec } from '../risk/index.js';
 
 // ─────────────────────────────────────────────
@@ -390,7 +396,26 @@ export function buildEntryPrompt(
     ${formatKeyLevelsForPrompt(levels4h)}`);
   }
 
-  const levelsSection = levelBlocks.join('\n\n    ');
+  // Cross-timeframe confluence — computed from the same timeframes the agent
+  // is allowed to see. Surfaced FIRST so the model anchors on the strongest
+  // multi-TF structure before reading per-timeframe detail. These survive even
+  // when far from spot, which is exactly what a pullback-limit entry needs.
+  const tfSnapshots: Record<'1m' | '5m' | '15m' | '1h' | '4h', MultiTimeframeData['tf4h']> = {
+    '1m': mtfData.tf1m,
+    '5m': mtfData.tf5m,
+    '15m': mtfData.tf15m,
+    '1h': mtfData.tf1h,
+    '4h': mtfData.tf4h,
+  };
+  const confluenceZones = findConfluenceZones(
+    includeTfs.map(tf => ({ tf, candles: tfSnapshots[tf].candles })),
+    currentPrice,
+  );
+  const confluenceBlock = `━━━━━━━━━━━━━━━━━━━━━━━
+    CONFLUENCE ZONES (multi-timeframe — strongest structure on the chart):
+    ${formatConfluenceZonesForPrompt(confluenceZones, currentPrice)}`;
+
+  const levelsSection = [confluenceBlock, ...levelBlocks].join('\n\n    ');
 
   // Timeframe read-outs, gated by trade style (same set as the levels above).
   // A scalp shouldn't be reasoning off the 4H; a position trade shouldn't be
@@ -414,6 +439,21 @@ export function buildEntryPrompt(
   pushTfSummary('1m',  '1M',  mtfData.tf1m);
   const tfSummarySection = tfSummaryBlocks.join('\n\n    ');
 
+  // Macro directional anchor — derived ONLY from the 4H, so it stays stable
+  // while the lower timeframes (and the REGIME line) chop. The model is told
+  // below to anchor its side here and NOT reverse on lower-timeframe noise.
+  // Gated to styles that actually look at the 4H — a pure scalp does not.
+  const macroBias = includeTfs.includes('4h')
+    ? describeMacroBias(mtfData.tf4h)
+    : null;
+  const macroBiasBlock = macroBias
+    ? `━━━━━━━━━━━━━━━━━━━━━━━
+    MACRO BIAS (4H — your directional anchor):
+    ${macroBias}
+
+    `
+    : '';
+
   return `
     ${modeLabel}
     CURRENT TIME (UTC): ${now}
@@ -423,8 +463,8 @@ export function buildEntryPrompt(
 
     ${levelsSection}
 
-    ━━━━━━━━━━━━━━━━━━━━━━━
-    REGIME: ${regime.regime} (${(regime.confidence * 100).toFixed(0)}% confidence)
+    ${macroBiasBlock}━━━━━━━━━━━━━━━━━━━━━━━
+    REGIME (lower-timeframe momentum — SECONDARY to MACRO BIAS, flips on small moves): ${regime.regime} (${(regime.confidence * 100).toFixed(0)}% confidence)
     ADX: ${regime.adx} | BB width: ${regime.bbWidth} | EMA slope: ${regime.emaSlope}% | Volume: ${regime.volumeTrend}
     
     ${tfSummarySection}
@@ -434,7 +474,53 @@ export function buildEntryPrompt(
     ${newsContext}
     
     ${relevantLessons}
-    
+
+    ━━━━━━━━━━━━━━━━━━━━━━━
+    FIRST — evaluate the pullback-limit option before you may say NO_TRADE:
+
+    A resting limit at a level price has NOT reached yet is a VALID trade, not a
+    NO_TRADE. "Nothing is happening at current price right now" / "choppy" /
+    "range contraction" are NOT reasons to pass when a strong zone sits nearby —
+    that is exactly when you place the limit and wait.
+
+    Before returning NO_TRADE you MUST construct and weigh at least one
+    pullback-limit setup from the CONFLUENCE ZONES above:
+      1. Pick the nearest strong (≥4★) confluence zone price could realistically
+         reach — support for a LONG, resistance for a SHORT.
+      2. Build it: entry AT the zone, SL just beyond it (where the zone breaks
+         and the thesis is wrong), TP at the next confluence zone / structural
+         level in your favour.
+      3. Compute R/R and margin ROI (price_move_% × leverage).
+      4. Decide. If you REJECT it, your reasoning MUST name the concrete reason
+         — e.g. "counter to 4H downtrend, ADX 30, EMA50 overhead" — NOT a vague
+         "no clean edge". Reject only for a real reason: poor R/R, a hard fight
+         against a strong higher-timeframe trend, or no reachable quality zone.
+
+    This does NOT mean force a trade. A counter-trend limit into a strong 4H
+    trend is still a legitimate pass. The point is to actually CONSTRUCT and
+    EVALUATE the setup, not skip it because the current candle is quiet.
+
+    ━━━━━━━━━━━━━━━━━━━━━━━
+    DIRECTIONAL CONSISTENCY — read before you pick a side:
+
+    The MACRO BIAS (4H) above is your anchor. The REGIME line and the 1m/5m/15m
+    structure labels are momentum reads that flip on small moves — a sub-1% wiggle
+    can swing them from "uptrend" to "downtrend", or NEUTRAL to TRENDING_BEAR.
+    Treat them as timing, NOT as a reason to reverse direction.
+
+    - Do NOT flip LONG↔SHORT unless the 4H structure ITSELF has broken — e.g. the
+      4H loses its most recent higher-low and closes below it. A regime-label
+      change or a lower-timeframe pullback is NOT a 4H structure break.
+    - A pullback AGAINST the 4H trend is a pullback-ENTRY in the 4H direction, not
+      a signal to trade the other way. If MACRO BIAS is BULLISH, a dip toward
+      support is a LONG opportunity — not a cue to SHORT.
+    - Be especially skeptical of a counter-trend trade whose TP sits on the very
+      support/resistance the dominant trend would bounce from — you would be
+      aiming at the level where the trend reloads against you.
+    - If lower-timeframe momentum is against the 4H but price has NOT reached your
+      level, the correct action is usually to WAIT — keep the resting limit or
+      return NO_TRADE — rather than chase the opposite side.
+
     BEFORE RESPONDING — sanity checks:
 
     1. SL placement:
@@ -779,6 +865,38 @@ function detectStructure(candles: Candle[]): string {
 }
 
 // ─────────────────────────────────────────────
+// Macro directional bias — the stable anchor the entry prompt is told not to
+// fight on lower-timeframe noise. Derived ONLY from the 4H (structure + EMAs),
+// reusing the same primitives as formatTimeframe so it never disagrees with the
+// 4H block the model also sees. Returns BULLISH / BEARISH / NEUTRAL plus a
+// short note on what a trade with vs. against the bias implies.
+// ─────────────────────────────────────────────
+
+function describeMacroBias(tf4h: MultiTimeframeData['tf4h']): string {
+  if (!tf4h || tf4h.candles.length === 0) return 'UNKNOWN — insufficient 4H data; treat LONG and SHORT symmetrically.';
+
+  const ind       = tf4h.indicators;
+  const latest    = tf4h.candles.at(-1)!;
+  const structure = detectStructure(tf4h.candles);
+  const aboveEma20 = latest.close > ind.ema20;
+  const aboveEma50 = latest.close > ind.ema50;
+
+  const bullish = structure.startsWith('Uptrend')   && aboveEma50;
+  const bearish = structure.startsWith('Downtrend') && !aboveEma50;
+
+  if (bullish) {
+    return `BULLISH — 4H ${structure.toLowerCase()}; price ${aboveEma20 ? 'above' : 'below'} EMA20, above EMA50. `
+      + `Prefer LONG / pullback-buys into support. A SHORT here is counter-trend — take it only on an exceptional, clearly-justified setup, not on lower-timeframe momentum.`;
+  }
+  if (bearish) {
+    return `BEARISH — 4H ${structure.toLowerCase()}; price ${aboveEma20 ? 'above' : 'below'} EMA20, below EMA50. `
+      + `Prefer SHORT / pullback-sells into resistance. A LONG here is counter-trend — take it only on an exceptional, clearly-justified setup, not on lower-timeframe momentum.`;
+  }
+  return `NEUTRAL — 4H ${structure.toLowerCase()}; EMAs mixed (price ${aboveEma20 ? 'above' : 'below'} EMA20, ${aboveEma50 ? 'above' : 'below'} EMA50). `
+    + `No macro tailwind either way — treat LONG and SHORT symmetrically and demand cleaner lower-timeframe structure before committing.`;
+}
+
+// ─────────────────────────────────────────────
 // Trim a KeyLevelsResult — used for noisier timeframes (5m) where the full
 // set would flood the prompt with weak round-number guesses. Keeps the same
 // shape so formatKeyLevelsForPrompt works unchanged.
@@ -789,8 +907,29 @@ function trimLevels(
   maxPerSide: number,
   excludeSources: ('swing' | 'volume_node' | 'round_number' | 'recent_extreme')[] = [],
 ): KeyLevelsResult {
-  const filterSide = (levels: KeyLevelsResult['resistances']) =>
-    levels.filter(l => !excludeSources.includes(l.source)).slice(0, maxPerSide);
+  // Keep nearest AND strongest within the cap — same anti-eviction logic as
+  // selectSide, so a strong distant level isn't dropped on these noisy TFs.
+  const filterSide = (levels: KeyLevelsResult['resistances']) => {
+    const filtered = levels.filter(l => !excludeSources.includes(l.source));
+    const byDistance = (a: typeof filtered[number], b: typeof filtered[number]) =>
+      Math.abs(a.price - result.currentPrice) - Math.abs(b.price - result.currentPrice);
+    const byStrength = (a: typeof filtered[number], b: typeof filtered[number]) =>
+      (b.strength - a.strength) || (b.touched - a.touched);
+
+    const nearKeep   = Math.ceil(maxPerSide / 2);
+    const nearest    = [...filtered].sort(byDistance).slice(0, nearKeep);
+    const strongest  = [...filtered].sort(byStrength).slice(0, maxPerSide);
+
+    const seen = new Set<string>();
+    const out: typeof filtered = [];
+    for (const l of [...nearest, ...strongest]) {
+      const key = l.price.toFixed(5);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push(l);
+    }
+    return out.sort(byDistance);
+  };
 
   const resistances = filterSide(result.resistances);
   const supports = filterSide(result.supports);

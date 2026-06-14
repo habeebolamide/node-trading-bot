@@ -159,8 +159,23 @@ async function handleCandle(candle: Candle): Promise<void> {
 
     if (!regime) return;
 
-    // 🔥 pass regime into significance
+    // 🔥 pass regime into significance — judged on the CLOSING candle's own
+    // timeframe (a 5m close should gauge significance from 5m structure).
     const significant = isSignificantCandle(buffer, regime.regime);
+
+    // Regime SHOWN TO THE LLM is always computed on the 1h buffer, never on the
+    // timeframe of whichever candle happened to close. handleCandle is wired to
+    // both the 5m and 1h closes (see onCandle calls in main); deriving the
+    // headline regime from `candle.interval` meant a 5m close fed the model a
+    // 5m-derived regime — which flips NEUTRAL↔TRENDING_BEAR on a sub-0.5% move —
+    // while a 1h close fed a 1h regime. Same market, different "regime", decided
+    // only by which candle closed. That is what let a 68.07→67.80 dip flip the
+    // bias from LONG to SHORT on a manual rerun. Anchor it to the 1h so the
+    // model's directional read is stable; this also matches the
+    // onNeedsReanalysis path, which already derives regime from the '60' buffer.
+    const macroRegime = candle.interval === '60'
+      ? regime
+      : (detectRegime(getCandleBuffer(pair, '60')) ?? regime);
 
     // ─────────────────────────────────────────
     // FORCE CHECK SYSTEM
@@ -230,7 +245,7 @@ async function handleCandle(candle: Candle): Promise<void> {
     await agentManager.processSignificantCandle(
       candle,
       mtfData,
-      regime,
+      macroRegime,
       newsContext,
     );
 

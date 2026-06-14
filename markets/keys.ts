@@ -14,6 +14,19 @@ export interface KeyLevel {
   lastSeen: number;       // openTime of last candle that touched it
 }
 
+/** A price zone that lines up across two or more timeframes — the strongest
+ *  structure on the chart and the kind of level a trader rests a limit at. */
+export interface ConfluenceZone {
+  price:       number;        // zone center
+  low:         number;        // zone lower bound
+  high:        number;        // zone upper bound
+  type:        'resistance' | 'support';
+  timeframes:  string[];      // which timeframes contributed (e.g. ['15m','1h','4h'])
+  strength:    number;        // 1-5 — more aligned timeframes = stronger
+  touched:     number;        // total touches across contributing levels
+  source:      KeyLevel['source'];
+}
+
 export interface KeyLevelsResult {
   resistances:  KeyLevel[];
   supports:     KeyLevel[];
@@ -32,6 +45,20 @@ const ZONE_THRESHOLD   = 0.003;  // 0.3% — prices within this % are the same l
 const MAX_LEVELS       = 5;      // max levels to return each side
 const LOOKBACK_SWING   = 5;      // candles each side to confirm a swing point
 const MIN_TOUCHES      = 2;      // minimum touches to consider a level significant
+
+// Level selection per side. A pure nearest-first slice evicts strong but
+// distant zones the moment price moves away from them — that's why a demand
+// zone 3% below spot vanishes from the prompt until price has already fallen
+// to it. We instead keep BOTH the nearest levels (near-term actionable
+// structure) AND the strongest levels regardless of distance (so a major
+// zone stays visible even when far from price).
+const NEAREST_KEEP   = 3;  // always keep the N nearest levels per side
+const STRONGEST_KEEP = 4;  // always keep the M strongest levels per side, distance-independent
+
+// Cross-timeframe confluence. Slightly wider than ZONE_THRESHOLD because a
+// level rarely prints at the exact same price on 15m and 4h — we want
+// "roughly the same zone" to merge.
+const CONFLUENCE_THRESHOLD = 0.004;  // 0.4%
 
 // ─────────────────────────────────────────────
 // Main export
@@ -63,16 +90,10 @@ export function findKeyLevels(candles: Candle[]): KeyLevelsResult {
   // Cluster levels that are very close together
   const clustered = clusterLevels(allLevels, currentPrice);
 
-  // Split into supports and resistances
-  const resistances = clustered
-    .filter(l => l.price > currentPrice)
-    .sort((a, b) => a.price - b.price)   // nearest first
-    .slice(0, MAX_LEVELS);
-
-  const supports = clustered
-    .filter(l => l.price < currentPrice)
-    .sort((a, b) => b.price - a.price)   // nearest first
-    .slice(0, MAX_LEVELS);
+  // Split into supports and resistances — keep nearest AND strongest so a
+  // major zone far from spot is never evicted just for being far.
+  const resistances = selectSide(clustered, currentPrice, 'resistance');
+  const supports    = selectSide(clustered, currentPrice, 'support');
 
   const nearestResistance = resistances[0]?.price ?? null;
   const nearestSupport    = supports[0]?.price    ?? null;
@@ -90,6 +111,44 @@ export function findKeyLevels(candles: Candle[]): KeyLevelsResult {
       ? formatDistance(currentPrice, nearestSupport)
       : null,
   };
+}
+
+// ─────────────────────────────────────────────
+// Select levels for one side — keep the union of the NEAREST_KEEP nearest
+// and the STRONGEST_KEEP strongest. Returned nearest-first for display.
+// This is the fix for distance-based eviction: a strong zone survives the
+// cut on strength even when several weaker levels sit between it and price.
+// ─────────────────────────────────────────────
+
+function selectSide(
+  levels: KeyLevel[],
+  currentPrice: number,
+  side: 'support' | 'resistance',
+): KeyLevel[] {
+  const onSide = levels.filter(l =>
+    side === 'resistance' ? l.price > currentPrice : l.price < currentPrice,
+  );
+  if (onSide.length === 0) return [];
+
+  const byDistance = (a: KeyLevel, b: KeyLevel) =>
+    Math.abs(a.price - currentPrice) - Math.abs(b.price - currentPrice);
+  const byStrength = (a: KeyLevel, b: KeyLevel) =>
+    (b.strength - a.strength) || (b.touched - a.touched);
+
+  const nearest  = [...onSide].sort(byDistance).slice(0, NEAREST_KEEP);
+  const strongest = [...onSide].sort(byStrength).slice(0, STRONGEST_KEEP);
+
+  // Union, deduped by price.
+  const seen = new Set<string>();
+  const union: KeyLevel[] = [];
+  for (const l of [...nearest, ...strongest]) {
+    const key = l.price.toFixed(5);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    union.push(l);
+  }
+
+  return union.sort(byDistance);
 }
 
 // ─────────────────────────────────────────────
@@ -363,6 +422,110 @@ ${supportLines || '  None identified'}
 ★★★★★ = very strong level (multiple confluences)
 ★★★☆☆ = moderate level
 ★☆☆☆☆ = weak level (single touch)
+  `.trim();
+}
+
+// ─────────────────────────────────────────────
+// Cross-timeframe confluence zones
+// A level that prints on the 15m, 1h AND 4h is one fat zone a trader marks
+// once — not three weak separate levels. findKeyLevels runs each timeframe in
+// isolation, so that confluence is invisible to the model. This merges levels
+// across timeframes by price proximity and surfaces only the zones where ≥2
+// timeframes agree, ranked by how many timeframes line up (strongest first).
+// ─────────────────────────────────────────────
+
+export function findConfluenceZones(
+  byTf: Array<{ tf: string; candles: Candle[] }>,
+  currentPrice: number,
+): ConfluenceZone[] {
+  // Gather every level from every timeframe, tagged with its source timeframe.
+  const tagged: Array<KeyLevel & { tf: string }> = [];
+  for (const { tf, candles } of byTf) {
+    if (candles.length < 20) continue;
+    const r = findKeyLevels(candles);
+    for (const l of [...r.resistances, ...r.supports]) tagged.push({ ...l, tf });
+  }
+  if (tagged.length === 0) return [];
+
+  // Cluster across all timeframes by price proximity.
+  const sorted = [...tagged].sort((a, b) => a.price - b.price);
+  const clusters: Array<Array<KeyLevel & { tf: string }>> = [];
+  let current: Array<KeyLevel & { tf: string }> = [sorted[0]!];
+
+  for (let i = 1; i < sorted.length; i++) {
+    const prev = sorted[i - 1]!;
+    const cur  = sorted[i]!;
+    const diff = Math.abs(cur.price - prev.price) / prev.price;
+    if (diff <= CONFLUENCE_THRESHOLD) {
+      current.push(cur);
+    } else {
+      clusters.push(current);
+      current = [cur];
+    }
+  }
+  clusters.push(current);
+
+  const zones: ConfluenceZone[] = [];
+  for (const cluster of clusters) {
+    const tfs = [...new Set(cluster.map(l => l.tf))];
+    if (tfs.length < 2) continue;   // confluence requires ≥2 timeframes agreeing
+
+    const prices  = cluster.map(l => l.price);
+    const low     = Math.min(...prices);
+    const high    = Math.max(...prices);
+    const center  = round(prices.reduce((s, p) => s + p, 0) / prices.length);
+    const touched = cluster.reduce((s, l) => s + l.touched, 0);
+
+    const source =
+      cluster.find(l => l.source === 'swing')?.source ??
+      cluster.find(l => l.source === 'volume_node')?.source ??
+      cluster[0]!.source;
+
+    zones.push({
+      price:      center,
+      low:        round(low),
+      high:       round(high),
+      type:       center > currentPrice ? 'resistance' : 'support',
+      timeframes: tfs,
+      strength:   Math.min(5, tfs.length + 1),   // 2 TFs → 3★, 3 TFs → 4★, 4+ → 5★
+      touched,
+      source,
+    });
+  }
+
+  // Strongest (most aligned) first, then nearest to price.
+  return zones.sort((a, b) =>
+    (b.strength - a.strength) ||
+    (Math.abs(a.price - currentPrice) - Math.abs(b.price - currentPrice)),
+  );
+}
+
+export function formatConfluenceZonesForPrompt(
+  zones: ConfluenceZone[],
+  currentPrice: number,
+): string {
+  if (zones.length === 0) return 'No multi-timeframe confluence zones detected.';
+
+  const fmt = (z: ConfluenceZone): string => {
+    const stars = '★'.repeat(z.strength) + '☆'.repeat(5 - z.strength);
+    const dist  = ((z.price - currentPrice) / currentPrice) * 100;
+    const band  = z.low === z.high ? `${z.price}` : `${z.low}–${z.high}`;
+    return `  ${band} [${stars}] — aligned on ${z.timeframes.join(', ')} (${dist >= 0 ? '+' : ''}${dist.toFixed(2)}% away)`;
+  };
+
+  const resistances = zones.filter(z => z.type === 'resistance').map(fmt).join('\n');
+  const supports    = zones.filter(z => z.type === 'support').map(fmt).join('\n');
+
+  return `
+These zones line up across MULTIPLE timeframes — the strongest structure on
+the chart, and they stay listed even when far from current price. Prefer them
+for pullback-limit entries, invalidation (SL), and targets (TP).
+
+RESISTANCE CONFLUENCE (above price):
+${resistances || '  None'}
+
+SUPPORT CONFLUENCE (below price):
+${supports || '  None'}
   `.trim();
 }
 
