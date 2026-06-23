@@ -6,7 +6,8 @@ import type {
 } from '../types/market.types.js';
 import type {
   PerformanceMode,
-  RelevantLesson
+  RelevantLesson,
+  WinningPattern
 } from '../types/risk.types.js';
 import type {
   ClosedTrade,
@@ -21,6 +22,7 @@ import {
   type KeyLevelsResult,
 } from "../markets/keys.js";
 import { getLotSpec } from '../risk/index.js';
+import { calculateMomentumTrajectory } from '../markets/indicators.js';
 
 // ─────────────────────────────────────────────
 // TEST MODE FLAG
@@ -66,21 +68,18 @@ your capital.
 
 Setup selection (above the R/R + confidence floors):
 
-  TARGET ≥100% margin ROI per win — that's the goal. Compounds fastest and
-  pays for the API cost of running. Achievable on most clean trades given
-  the leverage you have; do the math (price_move_% × leverage).
+  Margin ROI is a BYPRODUCT of a good trade, never the goal. Do NOT reach for a
+  distant TP to manufacture a big ROI or R/R number — that is exactly how a thin,
+  low-probability setup gets dressed up as "200% ROI" and then loses. A clean
+  trade to a NEAR, reachable structural target beats a hopeful one to a far level
+  every time. Structure sets the target; you never stretch it for arithmetic.
 
-  PREFER HIGH-GRADE setups at any ROI tier — clean structure, fresh level,
-  good timeframe alignment, honest confidence ≥7. A high-grade 60% setup
-  beats a mediocre 100% one. Quality first, magnitude second.
+  PREFER HIGH-GRADE setups — clean structure, a fresh level, timeframe alignment
+  in ONE direction, honest confidence ≥7, and a CLEAR path to a reachable target.
+  Quality and probability first; magnitude is whatever the structure gives you.
 
-  Take DECENT (50–80% margin ROI) when quality is strong and nothing
-  100%+ is currently in front of you — don't sit out a clean A-grade
-  setup waiting for a unicorn.
-
-  AVOID LOW (<40% margin ROI) unless the setup is exceptionally clean AND
-  nothing higher-impact is available. Management can extend TP to the next
-  structural level if the trade runs, turning a 30% entry into 80%+.
+  The bar to BE in a trade is high. If the setup is not high-grade, the answer is
+  NO_TRADE — not a smaller, lower-conviction version of a mediocre trade.
 
   NO_TRADE when nothing reasonable exists. Don't force trades. Burning an
   LLM call on NO_TRADE is cheaper than burning a trade on a marginal setup.
@@ -293,6 +292,9 @@ export function buildEntryPrompt(
   lessons: RelevantLesson[],
   monthlyPnl: number,
   performanceMode: PerformanceMode,
+  derivativesContext: string = '',
+  winningPatterns: WinningPattern[] = [],
+  calibrationNote: string = '',
 ): string {
 
   const now = new Date().toISOString();
@@ -340,16 +342,41 @@ export function buildEntryPrompt(
     `.trim()
     : '';
 
+  // What's been WORKING — the positive counterpart to past mistakes. Surfaces
+  // the agent's most repeatable winning setups so it leans into its edge, not
+  // just away from its errors.
+  const winningPlaybook = winningPatterns.length > 0
+    ? `
+  ━━━━━━━━━━━━━━━━━━━━━━━
+  WHAT'S BEEN WORKING — your most repeatable winning setups (look for these first):
+  ${winningPatterns.map((w, i) =>
+      `${i + 1}. [${w.patternTag}] ${w.rule} — won ${w.frequency}x`
+    ).join('\n')}
+    `.trim()
+    : '';
+
+  // Confidence calibration — realised win rate by stated confidence. Grounds the
+  // model's self-assessment in its actual track record. Empty until enough trades.
+  const calibrationBlock = calibrationNote
+    ? `━━━━━━━━━━━━━━━━━━━━━━━
+    YOUR CONFIDENCE CALIBRATION (realised win rate by stated confidence):
+    ${calibrationNote}
+    Be honest — if your 8s win like your 6s, you're inflating. Weight EV by these real odds, not the number you'd like to write.
+
+    `
+    : '';
+
   // Per-style key-level coverage. Scalps need intraday levels because they're
-  // operating on 5m/15m structure; position trades only need the macro view.
-  // Daily levels would be added here once we seed Daily candles.
+  // operating on 5m/15m structure; swing/position pull in the 1D macro frame
+  // above the 4H anchor. Daily is gated OUT of scalp/day — at those horizons it
+  // is noise, not coverage (a scalp never reasons off daily structure).
   const style = agent.tradingStyle ?? 'auto';
-  const includeTfs: Array<'1m' | '5m' | '15m' | '1h' | '4h'> = (
+  const includeTfs: Array<'1m' | '5m' | '15m' | '1h' | '4h' | '1d'> = (
     style === 'scalp' ? ['1m', '5m', '15m'] :   // minutes-long (5–10 min): pure micro-structure on 1m/5m, 15m for immediate context
       style === 'day' ? ['5m', '15m', '1h', '4h'] :   // intraday: time entries on 5m, work 15m/1h, 4h frames the day's range/trend
-        style === 'swing' ? ['15m', '1h', '4h'] :
-          style === 'position' ? ['1h', '4h'] :
-            ['1m', '5m', '15m', '1h', '4h']    // auto: full coverage incl. 1m for scalp-style adaptation
+        style === 'swing' ? ['15m', '1h', '4h', '1d'] :   // swing: 1D is the macro frame above the 4H anchor
+          style === 'position' ? ['1h', '4h', '1d'] :     // position: macro view, anchored on 1D
+            ['1m', '5m', '15m', '1h', '4h', '1d']    // auto: full coverage — 1m for scalp adaptation, 1d for swing adaptation
   );
 
   const levelBlocks: string[] = [];
@@ -396,16 +423,24 @@ export function buildEntryPrompt(
     ${formatKeyLevelsForPrompt(levels4h)}`);
   }
 
+  if (includeTfs.includes('1d')) {
+    const levels1d = findKeyLevels(mtfData.tf1d.candles);
+    levelBlocks.push(`━━━━━━━━━━━━━━━━━━━━━━━
+    MACRO LEVELS — 1D (daily structure — the strongest, slowest-moving S/R on the chart):
+    ${formatKeyLevelsForPrompt(levels1d)}`);
+  }
+
   // Cross-timeframe confluence — computed from the same timeframes the agent
   // is allowed to see. Surfaced FIRST so the model anchors on the strongest
   // multi-TF structure before reading per-timeframe detail. These survive even
   // when far from spot, which is exactly what a pullback-limit entry needs.
-  const tfSnapshots: Record<'1m' | '5m' | '15m' | '1h' | '4h', MultiTimeframeData['tf4h']> = {
+  const tfSnapshots: Record<'1m' | '5m' | '15m' | '1h' | '4h' | '1d', MultiTimeframeData['tf4h']> = {
     '1m': mtfData.tf1m,
     '5m': mtfData.tf5m,
     '15m': mtfData.tf15m,
     '1h': mtfData.tf1h,
     '4h': mtfData.tf4h,
+    '1d': mtfData.tf1d,
   };
   const confluenceZones = findConfluenceZones(
     includeTfs.map(tf => ({ tf, candles: tfSnapshots[tf].candles })),
@@ -422,7 +457,7 @@ export function buildEntryPrompt(
   // distracted by 1m noise. Ordered high → low for a top-down read.
   const tfSummaryBlocks: string[] = [];
   const pushTfSummary = (
-    key:   '4h' | '1h' | '15m' | '5m' | '1m',
+    key:   '1d' | '4h' | '1h' | '15m' | '5m' | '1m',
     label: string,
     snap:  MultiTimeframeData['tf4h'],
   ) => {
@@ -432,6 +467,7 @@ export function buildEntryPrompt(
     ${formatTimeframe(snap)}`);
     }
   };
+  pushTfSummary('1d',  '1D',  mtfData.tf1d);
   pushTfSummary('4h',  '4H',  mtfData.tf4h);
   pushTfSummary('1h',  '1H',  mtfData.tf1h);
   pushTfSummary('15m', '15M', mtfData.tf15m);
@@ -454,6 +490,17 @@ export function buildEntryPrompt(
     `
     : '';
 
+  // Derivatives positioning — funding + OI. Gated OUT of scalp: a minutes-long
+  // scalp rarely holds across a funding boundary, and OI shifts are a slower,
+  // day/swing-horizon signal. Empty string (e.g. backtest) renders nothing.
+  const derivativesBlock = (derivativesContext && style !== 'scalp')
+    ? `━━━━━━━━━━━━━━━━━━━━━━━
+    DERIVATIVES POSITIONING (funding + open interest — crowding & conviction):
+    ${derivativesContext}
+
+    `
+    : '';
+
   return `
     ${modeLabel}
     CURRENT TIME (UTC): ${now}
@@ -465,40 +512,52 @@ export function buildEntryPrompt(
 
     ${macroBiasBlock}━━━━━━━━━━━━━━━━━━━━━━━
     REGIME (lower-timeframe momentum — SECONDARY to MACRO BIAS, flips on small moves): ${regime.regime} (${(regime.confidence * 100).toFixed(0)}% confidence)
-    ADX: ${regime.adx} | BB width: ${regime.bbWidth} | EMA slope: ${regime.emaSlope}% | Volume: ${regime.volumeTrend}
+    ADX: ${regime.adx} | EMA slope: ${regime.emaSlope}% | Volume: ${regime.volumeTrend}
     
     ${tfSummarySection}
 
     ━━━━━━━━━━━━━━━━━━━━━━━
     NEWS:
     ${newsContext}
-    
-    ${relevantLessons}
 
-    ━━━━━━━━━━━━━━━━━━━━━━━
-    FIRST — evaluate the pullback-limit option before you may say NO_TRADE:
+    ${derivativesBlock}${winningPlaybook ? winningPlaybook + '\n\n    ' : ''}${relevantLessons}
 
-    A resting limit at a level price has NOT reached yet is a VALID trade, not a
-    NO_TRADE. "Nothing is happening at current price right now" / "choppy" /
-    "range contraction" are NOT reasons to pass when a strong zone sits nearby —
-    that is exactly when you place the limit and wait.
+    ${calibrationBlock}━━━━━━━━━━━━━━━━━━━━━━━
+    FIRST — is there genuinely something to trade here? Most cycles, there is NOT.
 
-    Before returning NO_TRADE you MUST construct and weigh at least one
-    pullback-limit setup from the CONFLUENCE ZONES above:
-      1. Pick the nearest strong (≥4★) confluence zone price could realistically
-         reach — support for a LONG, resistance for a SHORT.
-      2. Build it: entry AT the zone, SL just beyond it (where the zone breaks
-         and the thesis is wrong), TP at the next confluence zone / structural
-         level in your favour.
-      3. Compute R/R and margin ROI (price_move_% × leverage).
-      4. Decide. If you REJECT it, your reasoning MUST name the concrete reason
-         — e.g. "counter to 4H downtrend, ADX 30, EMA50 overhead" — NOT a vague
-         "no clean edge". Reject only for a real reason: poor R/R, a hard fight
-         against a strong higher-timeframe trend, or no reachable quality zone.
+    NO_TRADE is your DEFAULT, and a trade must EARN its way past it. Sitting out a
+    marginal market is the correct, disciplined action and a GOOD outcome — not a
+    wasted cycle. You are paid to wait for edge, not to be in the market. Expect
+    most cycles to end in NO_TRADE.
 
-    This does NOT mean force a trade. A counter-trend limit into a strong 4H
-    trend is still a legitimate pass. The point is to actually CONSTRUCT and
-    EVALUATE the setup, not skip it because the current candle is quiet.
+    Read MACRO BIAS + REGIME + ADX above and decide which tape you are in FIRST:
+
+    NO-EDGE TAPE — macro bias NEUTRAL, OR a contracting / compression range, OR
+    ADX below ~22 (no real trend). DEFAULT HERE IS NO_TRADE. A nearby "★★★★★
+    confluence zone" is NOT a reason to trade: in a trendless, rangebound tape
+    price chops straight through those levels — which is precisely how
+    support-bounce longs and resistance-fade shorts get stopped. Do NOT
+    manufacture a pullback-limit just because a zone exists. Return NO_TRADE
+    unless you can name a genuinely exceptional trigger happening RIGHT NOW
+    (e.g. a clean liquidity sweep + reclaim, or a fresh high-volume structural
+    break) — and if you can, state exactly what it is in your reasoning.
+
+    TRENDING TAPE — macro bias BULLISH or BEARISH, ADX above ~22, and structure
+    confirming. ONLY HERE do you actively hunt a pullback-limit:
+      1. Pick the nearest strong (≥4★) zone price can realistically reach IN THE
+         TREND DIRECTION — support for a LONG in an uptrend, resistance for a
+         SHORT in a downtrend. Do NOT fade the trend.
+      2. Build it: entry AT the zone, SL just beyond where the thesis is wrong,
+         TP at the next structural level in your favour.
+      3. Check the GEOMETRY, not the ratio: is the SL beyond ~1× the
+         trade-timeframe ATR so routine noise won't stop it? Is the path to TP
+         CLEAR, or does it sit behind one or more opposing ≥4★ zones? A large R/R
+         produced by a far TP behind resistance is a LIE — the number looks great
+         and the trade still loses.
+
+    Decide on EDGE, not on R/R magnitude. "4.1R / 209% ROI" is NOT a reason to
+    trade — it is arithmetic off a distant TP. If you cannot name a concrete edge
+    that exists right now, the honest answer is NO_TRADE — and that is a win.
 
     ━━━━━━━━━━━━━━━━━━━━━━━
     DIRECTIONAL CONSISTENCY — read before you pick a side:
@@ -745,6 +804,58 @@ Respond ONLY with this exact JSON:
 }
 
 // ─────────────────────────────────────────────
+// Win-analysis prompt — positive mirror of the post-mortem.
+// Run after a winning trade closes to extract the repeatable edge.
+// ─────────────────────────────────────────────
+
+export function buildWinAnalysisPrompt(
+  trade: ClosedTrade,
+  regimeAtEntry: string,
+  newsAtEntry: string,
+  rsiAtEntry: number,
+  volumeRatioAtEntry: number,
+): string {
+  return `
+A trade just closed in PROFIT. Analyse what actually worked — the repeatable
+edge — with the same honesty you'd apply to a loss. Do NOT credit luck or a
+lucky news spike as edge: if the win was not repeatable, say so in the driver
+and pick a pattern tag that reflects that.
+
+TRADE:
+Pair:      ${trade.pair}
+Direction: ${trade.direction}
+Entry:     ${trade.entryPrice} → Exit: ${trade.exitPrice}
+Gain:      ${trade.realisedPct.toFixed(2)}%
+Duration:  ${trade.durationHours.toFixed(1)} hours
+Reason:    ${trade.closeReason}
+Original reasoning: "${trade.entryReasoning}"
+
+CONDITIONS AT ENTRY:
+Regime:  ${regimeAtEntry}
+RSI:     ${rsiAtEntry}
+Volume:  ${volumeRatioAtEntry}x average
+News:    ${newsAtEntry}
+
+PATTERN TAG: SCREAMING_SNAKE_CASE describing the winning setup. Examples:
+  PULLBACK_TO_4H_SUPPORT_LONG
+  BREAKOUT_RETEST_WITH_VOLUME
+  RANGE_FADE_AT_CONFLUENCE
+  TREND_CONTINUATION_AFTER_EMA_RECLAIM
+
+RULE TO REPEAT: a specific, actionable rule with concrete conditions.
+  Good: "Take LONG pullbacks to 4H support when 4H trend is up and RSI > 45."
+  Bad:  "Buy the dip."
+
+Respond ONLY with this exact JSON:
+{
+  "primaryDriver": "<one sentence — the real, repeatable reason this worked>",
+  "patternTag": "<SCREAMING_SNAKE_CASE — see examples above>",
+  "ruleToRepeat": "<specific actionable rule with concrete conditions where possible>"
+}
+  `.trim();
+}
+
+// ─────────────────────────────────────────────
 // Synthesis prompt — weekly job
 // ─────────────────────────────────────────────
 
@@ -820,7 +931,17 @@ function formatTimeframe(tf: MultiTimeframeData['tf4h']): string {
       ind.volume.ratio < 0.6 ? `weak (${ind.volume.ratio.toFixed(1)}x)` :
         `normal (${ind.volume.ratio.toFixed(1)}x)`;
 
-  const macdRead = ind.macd.histogram > 0 ? 'positive' : 'negative';
+  // Momentum DIRECTION, not just level — is RSI rising/falling, is the MACD
+  // histogram building or fading, is price diverging from RSI. Falls back to the
+  // static MACD sign when the series is too short to compute a trajectory.
+  const traj = calculateMomentumTrajectory(candles);
+  const macdRead = traj
+    ? `MACD ${traj.macdSign}, ${traj.macd}`
+    : `MACD histogram: ${ind.macd.histogram > 0 ? 'positive' : 'negative'}`;
+  const rsiTrend = traj && traj.rsi !== 'flat' ? `, ${traj.rsi}` : '';
+  const divergenceNote = traj?.divergence
+    ? `\n⚠ ${traj.divergence === 'bearish' ? 'BEARISH' : 'BULLISH'} divergence — price vs RSI (momentum not confirming price)`
+    : '';
 
   const recent = candles.slice(-10);
   const recentHigh = Math.max(...recent.map(c => c.high));
@@ -829,10 +950,10 @@ function formatTimeframe(tf: MultiTimeframeData['tf4h']): string {
   return `
 Price: ${latest.close} ${direction} | ${vsEma20} | ${vsEma50}
 Structure: ${structure}
-RSI: ${rsiContext} | Volume: ${volContext} | MACD histogram: ${macdRead}
+RSI: ${rsiContext}${rsiTrend} | Volume: ${volContext} | ${macdRead}
 ATR: ${ind.atr} | ADX: ${ind.adx}${ind.adx > 25 ? ' (trending)' : ' (no clear trend)'}
 Latest candle: ${pattern}
-Recent range: ${recentLow} — ${recentHigh}
+Recent range: ${recentLow} — ${recentHigh}${divergenceNote}
   `.trim();
 }
 

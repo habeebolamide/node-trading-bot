@@ -76,6 +76,14 @@ export interface PostMortemResult {
   avoidable:       boolean;
 }
 
+// Win-analysis — the positive mirror of the post-mortem. Run after a winning
+// trade closes to extract what actually worked so the bot can do more of it.
+export interface WinAnalysisResult {
+  primaryDriver:   string;      // the real reason this trade worked
+  patternTag:      string;      // SCREAMING_SNAKE_CASE — the winning setup type
+  ruleToRepeat:    string;      // concrete, actionable "do this again" rule
+}
+
 // ─────────────────────────────────────────────
 // Claude API call wrapper
 // ─────────────────────────────────────────────

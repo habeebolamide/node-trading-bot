@@ -124,6 +124,7 @@ export interface RegimeAnalysis {
 
 export interface MultiTimeframeData {
   pair:   string;
+  tf1d:   TimeframeSnapshot;   // daily — macro frame for swing/position/auto
   tf4h:   TimeframeSnapshot;
   tf1h:   TimeframeSnapshot;
   tf15m:  TimeframeSnapshot;

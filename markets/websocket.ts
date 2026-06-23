@@ -13,7 +13,7 @@ import { notifications } from '../utils/notifications.js';
 
 const BUFFER_SIZE = 200;
 const PING_INTERVAL = 20_000;
-const TIMEFRAMES = ['1', '5', '15', '60', '240'];
+const TIMEFRAMES = ['1', '5', '15', '60', '240', 'D'];
 
 // in-memory buffer — [pair][timeframe] = Candle[]
 const candleBuffers: Record<string, Record<string, any[]>> = {};
@@ -21,7 +21,7 @@ const candleBuffers: Record<string, Record<string, any[]>> = {};
 export async function seedCandleBuffers(pairs: string[]): Promise<void> {
   logger.info('Seeding candle buffers', { pairs });
 
-  const timeframes = ['1', '5', '15', '60', '240'];
+  const timeframes = ['1', '5', '15', '60', '240', 'D'];
   // const BASE_URL = process.env.BYBIT_TESTNET === 'true'
   //   ? 'https://api-testnet.bybit.com'
   //   : 'https://api.bybit.com';

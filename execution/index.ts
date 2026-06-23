@@ -9,7 +9,7 @@ import { getCandleBuffer } from '../markets/websocket.js';
 import { detectRegime } from '../markets/regime.js';
 import { calculateIndicators } from '../markets/indicators.js';
 import { getNewsContextForPrompt } from '../markets/news.js';
-import { runPostMortem } from '../learning/index.js';
+import { runPostMortem, runWinAnalysis } from '../learning/index.js';
 import { quantizePosition, getLotSpec } from '../risk/index.js';
 import {
   endChallenge,
@@ -34,6 +34,7 @@ interface EntrySnapshot {
   rsi:         number | null;
   volumeRatio: number | null;
   news:        string;
+  confidence?: number;          // stated confidence at entry — feeds calibration
 }
 
 function buildEntrySnapshot(pair: string): EntrySnapshot {
@@ -121,7 +122,7 @@ export async function executeEntry(
     : await executePaperEntry(request);
 
   if (result.success) {
-    const entrySnapshot = buildEntrySnapshot(agent.pair);
+    const entrySnapshot = { ...buildEntrySnapshot(agent.pair), confidence: signal.confidence };
 
     const trade = await prisma.trade.create({
       data: {
@@ -656,13 +657,14 @@ export async function closeTrade(
     closeReason,
   });
 
-  // Post-mortem: only on losses. Uses snapshot stored at executeEntry.
-  // positionValue / realisedPct already computed above for the notification —
-  // reuse them here instead of recomputing.
-  if (realisedPnl < 0) {
+  // Learning loop. Losses → post-mortem (what to avoid); wins → win-analysis
+  // (what to repeat). Both use the snapshot stored at executeEntry, and both
+  // run fire-and-forget so the close path is never blocked on an LLM call.
+  // positionValue / realisedPct already computed above for the notification.
+  if (realisedPnl !== 0) {
     const snapshot = (closed as any).entrySnapshot as EntrySnapshot | null;
     if (snapshot) {
-      const closedTradeForPm = {
+      const closedTradeForAnalysis = {
         ...trade,
         exitPrice,
         realisedPnl,
@@ -674,17 +676,20 @@ export async function closeTrade(
         postMortemId:  null,
       } as unknown as ClosedTrade;
 
-      runPostMortem(
-        closedTradeForPm,
+      const analyse = realisedPnl < 0 ? runPostMortem : runWinAnalysis;
+      analyse(
+        closedTradeForAnalysis,
         snapshot.regime,
         snapshot.news,
         snapshot.rsi ?? 50,
         snapshot.volumeRatio ?? 1,
       ).catch(err =>
-        logger.error('Post-mortem failed', { tradeId: trade.id, error: err?.message ?? err }),
+        logger.error('Trade analysis failed', {
+          tradeId: trade.id, outcome, error: err?.message ?? err,
+        }),
       );
     } else {
-      logger.warn('Losing trade has no entrySnapshot — skipping post-mortem', { tradeId: trade.id });
+      logger.warn('Closed trade has no entrySnapshot — skipping analysis', { tradeId: trade.id });
     }
   }
 

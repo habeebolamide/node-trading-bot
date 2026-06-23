@@ -226,6 +226,115 @@ export function calculateEMASlope(candles: Candle[], period = 20, lookback = 5):
 }
 
 // ─────────────────────────────────────────────
+// Momentum trajectory — the DIRECTION of momentum, not just its level.
+// calculateIndicators returns single latest values (a snapshot); this fills
+// the gap the LLM is otherwise blind to: is RSI rising or falling, is the MACD
+// histogram expanding (momentum building) or contracting (fading), and is price
+// diverging from RSI (a classic reversal warning). Used mainly for trade
+// management — "is this move running out of steam?" — but also surfaces at entry
+// to flag late entries and reversal setups.
+// ─────────────────────────────────────────────
+
+export interface MomentumTrajectory {
+  rsi:        'rising' | 'falling' | 'flat';
+  rsiDelta:   number;                       // RSI change over the lookback window
+  macd:       'expanding' | 'contracting' | 'flat';  // |histogram| trajectory
+  macdSign:   'positive' | 'negative';
+  divergence: 'bullish' | 'bearish' | null; // price vs RSI over recent window
+}
+
+export function calculateMomentumTrajectory(
+  candles:  Candle[],
+  lookback: number = 4,
+): MomentumTrajectory | null {
+  if (candles.length < 50) return null;
+
+  const closes     = candles.map(c => c.close);
+  const rsiSeries  = RSI.calculate({ values: closes, period: 14 });
+  const macdSeries = MACD.calculate({
+    values:             closes,
+    fastPeriod:         12,
+    slowPeriod:         26,
+    signalPeriod:       9,
+    SimpleMAOscillator: false,
+    SimpleMASignal:     false,
+  });
+
+  // RSI direction — change over the lookback window. ±2 deadband filters noise.
+  const rsiNow   = rsiSeries.at(-1) ?? 50;
+  const rsiPrev  = rsiSeries.at(-1 - lookback) ?? rsiNow;
+  const rsiDelta = round(rsiNow - rsiPrev, 1);
+  const rsi: MomentumTrajectory['rsi'] =
+    rsiDelta > 2 ? 'rising' : rsiDelta < -2 ? 'falling' : 'flat';
+
+  // MACD histogram trajectory — |hist| growing = momentum building, shrinking =
+  // fading toward a cross. The sign says direction; the trajectory says strength.
+  const histNow  = macdSeries.at(-1)?.histogram ?? 0;
+  const histPrev = macdSeries.at(-1 - lookback)?.histogram ?? histNow;
+  const absNow   = Math.abs(histNow);
+  const absPrev  = Math.abs(histPrev);
+  const macd: MomentumTrajectory['macd'] =
+    absNow > absPrev * 1.1 ? 'expanding' :
+    absNow < absPrev * 0.9 ? 'contracting' : 'flat';
+  const macdSign: MomentumTrajectory['macdSign'] = histNow >= 0 ? 'positive' : 'negative';
+
+  return {
+    rsi,
+    rsiDelta,
+    macd,
+    macdSign,
+    divergence: detectDivergence(candles, rsiSeries),
+  };
+}
+
+// Price/RSI divergence over the most recent window. Compares the price extreme
+// in the recent half vs the prior half against RSI at those same points:
+//   bearish = price higher high, RSI lower high (uptrend losing steam)
+//   bullish = price lower low,  RSI higher low  (downtrend losing steam)
+// RSI.calculate drops the first `period` values, so rsiSeries[ci - 14] ≈ RSI at
+// candle index ci.
+function detectDivergence(
+  candles:   Candle[],
+  rsiSeries: number[],
+  window = 30,
+): 'bullish' | 'bearish' | null {
+  const n = candles.length;
+  if (n < window + 14) return null;
+
+  const start = n - window;
+  const mid   = start + Math.floor(window / 2);
+  const rsiAt = (ci: number): number | null => {
+    const k = ci - 14;
+    return k >= 0 && k < rsiSeries.length ? rsiSeries[k]! : null;
+  };
+
+  let firstHigh = start, secondHigh = mid, firstLow = start, secondLow = mid;
+  for (let i = start; i < mid; i++) {
+    if (candles[i]!.high > candles[firstHigh]!.high) firstHigh = i;
+    if (candles[i]!.low  < candles[firstLow]!.low)   firstLow  = i;
+  }
+  for (let i = mid; i < n; i++) {
+    if (candles[i]!.high > candles[secondHigh]!.high) secondHigh = i;
+    if (candles[i]!.low  < candles[secondLow]!.low)   secondLow  = i;
+  }
+
+  const r1h = rsiAt(firstHigh),  r2h = rsiAt(secondHigh);
+  const r1l = rsiAt(firstLow),   r2l = rsiAt(secondLow);
+
+  // Bearish: price made a higher high but RSI made a lower high
+  if (r1h != null && r2h != null &&
+      candles[secondHigh]!.high > candles[firstHigh]!.high && r2h < r1h - 1) {
+    return 'bearish';
+  }
+  // Bullish: price made a lower low but RSI made a higher low
+  if (r1l != null && r2l != null &&
+      candles[secondLow]!.low < candles[firstLow]!.low && r2l > r1l + 1) {
+    return 'bullish';
+  }
+  return null;
+}
+
+// ─────────────────────────────────────────────
 // Utility
 // ─────────────────────────────────────────────
 

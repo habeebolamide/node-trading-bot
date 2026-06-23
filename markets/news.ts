@@ -5,10 +5,19 @@ import type { EconomicEvent, NewsItem } from '../types/market.types.js';
 // Config
 // ─────────────────────────────────────────────
 
-const CRYPTOPANIC_URL = 'https://cryptopanic.com/api/v1/posts';
-const POLL_INTERVAL_MS = 5 * 60 * 1000;   // check every 5 minutes
-const NEWS_WINDOW_MS = 30 * 60 * 1000;  // flag news from last 30 mins
-const EVENT_WINDOW_MS = 30 * 60 * 1000;  // block trading 30 mins before event
+// Crypto-news RSS feeds — keyless and bot-friendly. Unlike the JSON anti-bot
+// endpoints (cryptocurrency.cv, TradingView) which 403 server requests, RSS is
+// built to be machine-fetched. Headlines only; the LLM reads and weighs them.
+const RSS_FEEDS = [
+  'https://cointelegraph.com/rss',
+  'https://decrypt.co/feed',
+];
+const POLL_INTERVAL_MS = 5 * 60 * 1000;             // re-fetch every 5 minutes
+const NEWS_WINDOW_MS = 30 * 60 * 1000;              // "breaking" window — drives the high-impact significance gate
+const NEWS_CONTEXT_WINDOW_MS = 6 * 60 * 60 * 1000;  // wider window for prompt context (RSS isn't minute-fresh)
+const EVENT_WINDOW_MS = 30 * 60 * 1000;             // block trading 30 mins before event
+// Cheap keyword heuristic for "market-moving" — RSS carries no impact field.
+const HIGH_IMPACT_RE = /\b(sec|etf|hack|exploit|breach|lawsuit|ban|halt|fomc|cpi|fed|rate (cut|hike)|default|liquidat|crash|delist)\b/i;
 
 // ─────────────────────────────────────────────
 // In-memory store
@@ -31,15 +40,13 @@ export async function startNewsMonitor(): Promise<void> {
 
   logger.info('News monitor starting');
 
-  // Fetch immediately on start
+  // Fetch immediately on start, then poll. Economic-calendar fetch is disabled:
+  // the only free endpoint (TradingView) 403s server requests, so a reliable
+  // free econ calendar is an open gap. upcomingEvents stays empty and is handled
+  // gracefully by getUpcomingEventWarning / isNearEconomicEvent.
   await fetchNews();
-  await fetchEconomicEvents();
 
-  // Then poll on interval
-  pollTimer = setInterval(async () => {
-    await fetchNews();
-    await fetchEconomicEvents();
-  }, POLL_INTERVAL_MS);
+  pollTimer = setInterval(() => { void fetchNews(); }, POLL_INTERVAL_MS);
 }
 
 export function stopNewsMonitor(): void {
@@ -99,7 +106,7 @@ export function getUpcomingEventWarning(): string | null {
 
 // Returns recent news headlines formatted for Claude prompt
 export function getNewsContextForPrompt(pair: string): string {
-  const cutoff = new Date(Date.now() - NEWS_WINDOW_MS);
+  const cutoff = new Date(Date.now() - NEWS_CONTEXT_WINDOW_MS);
   const base = extractBaseCurrency(pair);
 
   const relevant = recentNews
@@ -128,36 +135,81 @@ export function getNewsContextForPrompt(pair: string): string {
 // ─────────────────────────────────────────────
 
 async function fetchNews(): Promise<void> {
-  try {
-    const url = 'https://cryptocurrency.cv/api/news?limit=10&category=solana';
+  const collected: NewsItem[] = [];
 
-    const res = await fetch(url);
-    if (!res.ok) {
-      logger.warn('Free Crypto News fetch failed', { status: res.status });
-      return;
+  for (const feed of RSS_FEEDS) {
+    try {
+      const res = await fetch(feed, {
+        headers: { 'User-Agent': 'Mozilla/5.0 (compatible; trading-bot/1.0)' },
+      });
+      if (!res.ok) {
+        logger.warn('RSS fetch failed', { feed, status: res.status });
+        continue;
+      }
+      collected.push(...parseRssItems(await res.text()));
+    } catch (error) {
+      logger.warn('RSS fetch error', { feed, error: (error as Error).message });
     }
-
-    const data = await res.json() as { articles?: any[] };
-
-    // logger.info({ data: data.articles });
-
-    recentNews = (data.articles ?? []).map((item: any): NewsItem => ({
-      id: Math.random().toString(),
-      headline: item.title,
-      source: item.source ?? 'unknown',
-      sentiment: item.sentiment ?? 'neutral', 
-      impact: item.impact ?? (item.reputation && item.reputation > 70 ? 'high' : 'medium'),
-      pairs: ['SOLUSDT'],
-      url: item.link,
-      publishedAt: new Date(item.pubDate),
-    }));
-
-    lastFetchAt = new Date();
-    // logger.info('News fetched', { news: recentNews });
-
-  } catch (error) {
-    logger.error('Failed to fetch news', { error });
   }
+
+  // Keep the last good batch on a transient all-feeds failure rather than
+  // blanking the NEWS block.
+  if (collected.length === 0) return;
+
+  // Newest first, dedupe by headline, cap the in-memory store.
+  const seen = new Set<string>();
+  recentNews = collected
+    .sort((a, b) => b.publishedAt.getTime() - a.publishedAt.getTime())
+    .filter(n => (seen.has(n.headline) ? false : (seen.add(n.headline), true)))
+    .slice(0, 40);
+
+  lastFetchAt = new Date();
+}
+
+// Minimal dependency-free RSS 2.0 parser — pulls title/link/pubDate from each
+// <item>, handling CDATA-wrapped fields. Good enough for headline awareness;
+// not a general XML parser.
+function parseRssItems(xml: string): NewsItem[] {
+  const blocks = xml.match(/<item[\s\S]*?<\/item>/gi) ?? [];
+  const items: NewsItem[] = [];
+
+  for (const block of blocks) {
+    const headline = decodeEntities(extractTag(block, 'title'));
+    if (!headline) continue;
+
+    const link    = extractTag(block, 'link');
+    const pubDate = extractTag(block, 'pubDate');
+    const when    = pubDate ? new Date(pubDate) : new Date();
+
+    items.push({
+      id:          link || headline,
+      headline,
+      source:      'rss',
+      sentiment:   'neutral',                                  // RSS has none; the LLM reads the headline itself
+      impact:      HIGH_IMPACT_RE.test(headline) ? 'high' : 'medium',
+      pairs:       [],                                         // broad market news — matches every pair's filter
+      url:         link,
+      publishedAt: isNaN(when.getTime()) ? new Date() : when,
+    });
+  }
+
+  return items;
+}
+
+function extractTag(block: string, tag: string): string {
+  const m = block.match(new RegExp(`<${tag}[^>]*>(?:<!\\[CDATA\\[)?([\\s\\S]*?)(?:\\]\\]>)?</${tag}>`, 'i'));
+  return m?.[1]?.trim() ?? '';
+}
+
+function decodeEntities(s: string): string {
+  return s
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#0?39;/g, "'")
+    .replace(/&apos;/g, "'")
+    .replace(/&#8217;/g, '’');
 }
 
 // ─────────────────────────────────────────────
@@ -205,30 +257,6 @@ async function fetchEconomicEvents(): Promise<void> {
 // ─────────────────────────────────────────────
 // Helpers
 // ─────────────────────────────────────────────
-
-// CryptoPanic uses vote counts to signal sentiment
-function mapSentiment(votes: any): NewsItem['sentiment'] {
-  if (!votes) return 'neutral';
-  const bullish = votes.positive ?? 0;
-  const bearish = votes.negative ?? 0;
-  if (bullish > bearish * 1.5) return 'positive';
-  if (bearish > bullish * 1.5) return 'negative';
-  return 'neutral';
-}
-
-// More negative votes = higher impact (controversy = market moving)
-function mapImpact(votes: any): NewsItem['impact'] {
-  if (!votes) return 'low';
-  const total = (votes.positive ?? 0) + (votes.negative ?? 0) + (votes.important ?? 0);
-  if (total > 50 || votes.important > 10) return 'high';
-  if (total > 20) return 'medium';
-  return 'low';
-}
-
-// CryptoPanic currencies: [{ code: "BTC", ... }] → ["BTC", "BTCUSDT"]
-function extractPairsFromCurrencies(currencies: any[]): string[] {
-  return currencies.flatMap(c => [c.code, `${c.code}USDT`]);
-}
 
 // BTCUSDT → BTC, ETHUSDT → ETH
 function extractBaseCurrency(pair: string): string {

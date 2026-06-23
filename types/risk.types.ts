@@ -88,13 +88,14 @@ export interface TradeLessonInput {
   patternTag:      string;
   primaryReason:   string;
   ruleToAdd:       string;
-  verdict:         string;
-  marketRegime:    string;
+  // Loss-only fields — wins omit them (no verdict / avoidability to assess).
+  verdict?:        string | null;
+  marketRegime?:   string;
+  avoidable?:      boolean | null;
   rsiAtEntry:      number;
   trendAtEntry:    string;
   volumeRatio:     number;
   newsAtEntry:     string | null;
-  avoidable:       boolean;
 }
 
 export interface RelevantLesson {
@@ -103,6 +104,15 @@ export interface RelevantLesson {
   primaryReason:   string;
   frequency:       number;
   similarity?:     number;          // set when using vector search
+}
+
+// A recurring WINNING setup, surfaced into the entry prompt as "what's been
+// working" — the positive counterpart to RelevantLesson. Built from win
+// post-mortems (TradeLesson rows with outcome='win').
+export interface WinningPattern {
+  patternTag:      string;
+  rule:            string;          // the "do this again" insight
+  frequency:       number;          // how many wins shared this pattern
 }
 
 // ─────────────────────────────────────────────

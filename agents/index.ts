@@ -7,7 +7,7 @@ import type { Candle, MultiTimeframeData, RegimeAnalysis } from "../types/market
 import type { OpenTrade } from "../types/trade.types.js";
 import type { ChallengeRiskContext, ChallengeSessionRecord } from "../types/challenge.types.js";
 import logger from "../utils/logger.js";
-import { getRelevantLessons } from '../learning/index.js';
+import { getRelevantLessons, getWinningPatterns, getConfidenceCalibration } from '../learning/index.js';
 import { notifications } from "../utils/notifications.js";
 import { executionEngine } from "../execution/index.js";
 import { getChallengePortfolio, getPortfolio } from "../capital/index.js";
@@ -19,6 +19,7 @@ import {
   WATCH_TIMEOUT_DEFAULT_MINUTES,
 } from "../utils/helper.js";
 import { getCandleBuffer } from "../markets/websocket.js";
+import { getDerivativesContextForPrompt } from "../markets/derivatives.js";
 
 import {
   setTriggers,
@@ -816,6 +817,10 @@ export class AgentManager {
 
     const riskAgent = agent.toPromptAgent();
 
+    const derivativesContext = getDerivativesContextForPrompt(agent.pair);
+    const winningPatterns    = await getWinningPatterns(agent.id);
+    const calibrationNote    = await getConfidenceCalibration(agent.id);
+
     const entryPrompt = buildEntryPrompt(
       riskAgent,
       mtfData,
@@ -824,6 +829,9 @@ export class AgentManager {
       lessons,
       drawdown.monthlyPnlPct * 100,
       performanceMode,
+      derivativesContext,
+      winningPatterns,
+      calibrationNote,
     );
 
     const claudeResult = await getEntrySignal(systemPrompt, entryPrompt, agent.id);

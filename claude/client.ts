@@ -6,6 +6,7 @@ import type {
   EntrySignal,
   ManagementDecision,
   PostMortemResult,
+  WinAnalysisResult,
   ClaudeCallResult,
 } from '../types/claude.types.js';
 
@@ -128,6 +129,15 @@ export async function getPostMortem(
   agentId: string,
 ): Promise<ClaudeCallResult<PostMortemResult>> {
   return callWithFallback<PostMortemResult>(POST_MORTEM_SYSTEM, postMortemPrompt, 'postmortem', agentId);
+}
+
+export async function getWinAnalysis(
+  winPrompt: string,
+  agentId: string,
+): Promise<ClaudeCallResult<WinAnalysisResult>> {
+  // Reuses the 'postmortem' prompt-type for model/pricing routing — same
+  // lightweight analysis call, just a positive framing.
+  return callWithFallback<WinAnalysisResult>(WIN_ANALYSIS_SYSTEM, winPrompt, 'postmortem', agentId);
 }
 
 export async function getSynthesis(
@@ -371,6 +381,12 @@ const POST_MORTEM_SYSTEM = `
 You are a trading performance analyst.
 Analyze losing trades objectively and identify clear patterns.
 Always respond in valid JSON only. Be specific and actionable.
+`.trim();
+
+const WIN_ANALYSIS_SYSTEM = `
+You are a trading performance analyst.
+Analyze winning trades objectively and identify what actually drove the win —
+the repeatable edge, not luck. Always respond in valid JSON only. Be specific.
 `.trim();
 
 const SYNTHESIS_SYSTEM = `

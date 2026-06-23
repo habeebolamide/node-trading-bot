@@ -89,6 +89,7 @@ function mockSnapshot(pair: string, interval: CandleInterval, base: number): Tim
 function mockMtf(pair: string): MultiTimeframeData {
   return {
     pair,
+    tf1d: mockSnapshot(pair, 'D', 67000),
     tf4h: mockSnapshot(pair, '240', 67000),
     tf1h: mockSnapshot(pair, '60', 67000),
     tf15m: mockSnapshot(pair, '15', 67000),

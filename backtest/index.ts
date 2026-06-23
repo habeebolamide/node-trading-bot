@@ -339,6 +339,7 @@ function buildMtfSnapshot(
   candles: Record<string, Candle[]>,
   index1h: number,
 ): MultiTimeframeData | null {
+  const candles1d  = candles['D']   ?? [];
   const candles1h  = candles['60']  ?? [];
   const candles4h  = candles['240'] ?? [];
   const candles15m = candles['15']  ?? [];
@@ -348,11 +349,13 @@ function buildMtfSnapshot(
   const slice1h  = candles1h.slice(Math.max(0, index1h - 200), index1h);
 
   // Approximate indices for other timeframes
+  const index1d  = Math.floor(index1h / 24);
   const index4h  = Math.floor(index1h / 4);
   const index15m = index1h * 4;
   const index5m  = index1h * 12;
   const index1m  = index1h * 60;
 
+  const slice1d  = candles1d.slice(Math.max(0, index1d  - 200), index1d);
   const slice4h  = candles4h.slice(Math.max(0, index4h  - 200), index4h);
   const slice15m = candles15m.slice(Math.max(0,  index15m - 200), index15m);
   const slice5m  = candles5m.slice(Math.max(0,   index5m  - 200), index5m);
@@ -371,10 +374,13 @@ function buildMtfSnapshot(
   });
 
   const tf5mSnap = buildSnapshot(slice5m, '5');
+  const tf4hSnap = buildSnapshot(slice4h, '240');
 
   return {
     pair:  candles1h[index1h]?.pair ?? '',
-    tf4h:  buildSnapshot(slice4h,  '240'),
+    // Daily slice is short on backtest windows under ~200 days — fall back to 4h
+    tf1d:  slice1d.length >= 50 ? buildSnapshot(slice1d, 'D') : tf4hSnap,
+    tf4h:  tf4hSnap,
     tf1h:  buildSnapshot(slice1h,  '60'),
     tf15m: buildSnapshot(slice15m, '15'),
     tf5m:  tf5mSnap,
@@ -472,7 +478,7 @@ async function loadHistoricalCandles(
   startDate: Date,
   endDate:   Date,
 ): Promise<Record<string, Candle[]>> {
-  const timeframes: CandleInterval[] = ['1', '5', '15', '60', '240'];
+  const timeframes: CandleInterval[] = ['1', '5', '15', '60', '240', 'D'];
   const result: Record<string, Candle[]> = {};
 
   for (const tf of timeframes) {

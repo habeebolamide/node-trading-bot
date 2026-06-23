@@ -1,9 +1,9 @@
 import logger from '../utils/logger.js';
-import { getPostMortem, getSynthesis } from '../claude/client.js';
-import { buildPostMortemPrompt, buildSynthesisPrompt } from '../claude/prompts.js';
+import { getPostMortem, getWinAnalysis, getSynthesis } from '../claude/client.js';
+import { buildPostMortemPrompt, buildWinAnalysisPrompt, buildSynthesisPrompt } from '../claude/prompts.js';
 import type { ClosedTrade } from '../types/trade.types.js';
-import type { PostMortemResult } from '../types/claude.types.js';
-import type { RelevantLesson, TradeLessonInput } from '../types/risk.types.js';
+import type { PostMortemResult, WinAnalysisResult } from '../types/claude.types.js';
+import type { RelevantLesson, TradeLessonInput, WinningPattern } from '../types/risk.types.js';
 import { prisma } from '../lib/prisma.js';
 import type { LearnedRule } from '../types/agent.types.js';
 
@@ -66,6 +66,59 @@ export async function runPostMortem(
 }
 
 // ─────────────────────────────────────────────
+// Win-analysis
+// Called automatically after every winning trade — the positive mirror of the
+// post-mortem. Extracts the repeatable edge and stores it as a win lesson so
+// getWinningPatterns can surface "what's been working" into the entry prompt.
+// ─────────────────────────────────────────────
+
+export async function runWinAnalysis(
+  trade:         ClosedTrade,
+  regimeAtEntry: string,
+  newsAtEntry:   string,
+  rsiAtEntry:    number,
+  volumeRatio:   number,
+): Promise<void> {
+  logger.info('Running win-analysis', { tradeId: trade.id, pnl: trade.realisedPct });
+
+  const prompt = buildWinAnalysisPrompt(
+    trade,
+    regimeAtEntry,
+    newsAtEntry,
+    rsiAtEntry,
+    volumeRatio,
+  );
+
+  const result = await getWinAnalysis(prompt, trade.agentId);
+
+  if (!result.success || !result.data) {
+    logger.error('Win-analysis Claude call failed', { tradeId: trade.id });
+    return;
+  }
+
+  const analysis = result.data as WinAnalysisResult;
+
+  await saveLesson({
+    agentId:       trade.agentId,
+    tradeId:       trade.id,
+    pair:          trade.pair,
+    outcome:       'win',
+    patternTag:    analysis.patternTag,
+    primaryReason: analysis.primaryDriver,
+    ruleToAdd:     analysis.ruleToRepeat,
+    rsiAtEntry,
+    trendAtEntry:  regimeAtEntry,
+    volumeRatio,
+    newsAtEntry:   newsAtEntry !== 'No significant news in the last 30 minutes.' ? newsAtEntry : null,
+  });
+
+  logger.info('Win-analysis saved', {
+    tradeId:    trade.id,
+    patternTag: analysis.patternTag,
+  });
+}
+
+// ─────────────────────────────────────────────
 // Save lesson to DB
 // ─────────────────────────────────────────────
 
@@ -77,6 +130,9 @@ async function saveLesson(input: TradeLessonInput): Promise<void> {
       tag:         input.patternTag,
       rule:        input.ruleToAdd,
       description: input.primaryReason,
+      outcome:     input.outcome,
+      verdict:     input.verdict   ?? null,
+      avoidable:   input.avoidable ?? null,
     },
   });
 }
@@ -109,15 +165,23 @@ export async function getRelevantLessons(
 
   if (relevantTags.length === 0) return [];
 
-  // Fetch matching lessons from DB
-  const lessons = await prisma.tradeLesson.findMany({
+  // Fetch matching LOSS lessons from DB. Fetch a few extra — the avoidability
+  // filter below drops some, and we still want a full top-5 afterward.
+  const rawLessons = await prisma.tradeLesson.findMany({
     where: {
       agentId,
+      outcome: 'loss',
       tag: { in: relevantTags },
     },
     orderBy: { createdAt: 'desc' },
-    take: 20, // fetch more than needed — we'll rank and trim
+    take: 30,
   });
+
+  // Drop lessons the post-mortem judged pure bad luck or unavoidable — surfacing
+  // them as "rules" would teach the bot to avoid setups that were actually fine,
+  // suppressing good future trades. Legacy lessons (verdict/avoidable = null)
+  // predate this signal, so we keep them rather than guess.
+  const lessons = rawLessons.filter(l => l.verdict !== 'bad_luck' && l.avoidable !== false);
 
   if (lessons.length === 0) return [];
 
@@ -148,6 +212,90 @@ export async function getRelevantLessons(
 
   // Return top 5 — keep prompt lean
   return result.slice(0, 5);
+}
+
+// ─────────────────────────────────────────────
+// Winning-pattern retriever
+// Surfaces the agent's most repeatable winning setups (by frequency) into the
+// entry prompt as "what's been working". Unlike the loss retriever this is not
+// setup-matched — win tags are LLM-generated and varied — it's general "here is
+// your edge" awareness. Tag-matching wins to the current setup is a future step.
+// ─────────────────────────────────────────────
+
+export async function getWinningPatterns(
+  agentId: string,
+  limit = 3,
+): Promise<WinningPattern[]> {
+  const wins = await prisma.tradeLesson.findMany({
+    where:   { agentId, outcome: 'win' },
+    orderBy: { createdAt: 'desc' },
+    take:    50,
+  });
+
+  if (wins.length === 0) return [];
+
+  // Group by tag, counting frequency and keeping the most recent rule per tag
+  // (findMany is ordered desc, so the first row seen for a tag is the newest).
+  const byTag: Record<string, { rule: string; count: number }> = {};
+  for (const w of wins) {
+    if (!byTag[w.tag]) byTag[w.tag] = { rule: w.rule, count: 0 };
+    byTag[w.tag]!.count++;
+  }
+
+  return Object.entries(byTag)
+    .map(([patternTag, v]) => ({ patternTag, rule: v.rule, frequency: v.count }))
+    .sort((a, b) => b.frequency - a.frequency)
+    .slice(0, limit);
+}
+
+// ─────────────────────────────────────────────
+// Confidence calibration
+// Buckets the agent's CLOSED trades by the confidence stated at entry and
+// reports the actual win rate per band. Surfaced into the entry prompt so the
+// LLM can see whether its "8" really wins like an 8 — grounding confidence in
+// realised odds instead of letting it drift. Reads confidence from the entry
+// snapshot JSON (no schema column). Returns '' until there's enough history.
+// ─────────────────────────────────────────────
+
+export async function getConfidenceCalibration(
+  agentId:   string,
+  minTrades = 10,
+): Promise<string> {
+  const trades = await prisma.trade.findMany({
+    where:   { agentId, status: 'closed', realizedPnL: { not: null } },
+    select:  { realizedPnL: true, entrySnapshot: true },
+    orderBy: { closedAt: 'desc' },
+    take:    200,
+  });
+
+  const bandFor = (c: number): string =>
+    c >= 9 ? '9-10' : c >= 8 ? '8' : c >= 7 ? '7' : c >= 6 ? '6' : '<6';
+
+  const bands: Record<string, { wins: number; total: number }> = {};
+  let counted = 0;
+
+  for (const t of trades) {
+    const snap = t.entrySnapshot as { confidence?: number } | null;
+    const c = typeof snap?.confidence === 'number' ? snap.confidence : null;
+    if (c == null) continue;                       // pre-calibration trades have no confidence
+
+    const band = bandFor(c);
+    if (!bands[band]) bands[band] = { wins: 0, total: 0 };
+    bands[band]!.total++;
+    if ((t.realizedPnL ?? 0) > 0) bands[band]!.wins++;
+    counted++;
+  }
+
+  if (counted < minTrades) return '';
+
+  const order = ['9-10', '8', '7', '6', '<6'];
+  return order
+    .filter(b => bands[b])
+    .map(b => {
+      const { wins, total } = bands[b]!;
+      return `  conf ${b}: ${Math.round((wins / total) * 100)}% win (${total} trades)`;
+    })
+    .join('\n');
 }
 
 // ─────────────────────────────────────────────

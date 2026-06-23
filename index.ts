@@ -2,6 +2,7 @@ import 'dotenv/config';
 import { getNewsContextForPrompt, hasRecentHighImpactNews, startNewsMonitor, stopNewsMonitor } from './markets/news.js';
 import { agentManager } from './agents/index.js';
 import { BybitWebSocket, candleBuffers, getCandleBuffer, onCandle, seedCandleBuffers } from "./markets/websocket.js";
+import { startDerivativesMonitor } from "./markets/derivatives.js";
 import type { Candle, CandleInterval } from './types/market.types.js';
 import { detectRegime, isSignificantCandle } from './markets/regime.js';
 import { buildMtfData } from './markets/mtf.js';
@@ -107,6 +108,19 @@ async function main(): Promise<void> {
   const uniquePairs = [...new Set(agents.map(a => a.pair))];
 
   await seedCandleBuffers(uniquePairs);
+
+  // 4a. Funding rate + open interest — polled in the background and served from
+  // cache into the entry prompt (day/swing). Independent of the candle feed, so
+  // a slow REST call here never blocks candle seeding or trading.
+  await startDerivativesMonitor(uniquePairs);
+
+  // 4a-ii. News + economic-calendar monitor. The LLM has NO web access of its
+  // own (DeepSeek / OpenRouter), so it can only weigh news this populates into
+  // the prompt — it cannot fetch or verify anything itself. Free, keyless
+  // sources, polled every 5 min, try/catch-wrapped: a dead endpoint degrades to
+  // an empty NEWS block rather than crashing startup. Previously imported but
+  // never called, which left the NEWS block permanently empty.
+  await startNewsMonitor();
 
   // 4b. Replay any entry hits that happened while the bot was offline.
   // Uses the 5m buffer just seeded above; must run AFTER seedCandleBuffers.

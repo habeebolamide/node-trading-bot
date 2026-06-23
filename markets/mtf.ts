@@ -22,6 +22,7 @@ export function buildMtfData(pair: string): MultiTimeframeData | null {
     };
   };
 
+  const tf1d  = build('D');
   const tf4h  = build('240');
   const tf1h  = build('60');
   const tf15m = build('15');
@@ -33,6 +34,7 @@ export function buildMtfData(pair: string): MultiTimeframeData | null {
 
   return {
     pair,
+    tf1d:  tf1d  ?? tf4h,         // fallback to 4h if daily buffer not full yet (only used by swing/position/auto)
     tf4h,
     tf1h,
     tf15m: tf15m ?? tf1h,         // fallback to 1h if 15m buffer not full yet

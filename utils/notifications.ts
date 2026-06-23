@@ -47,6 +47,16 @@ async function safeSend(
   }
 }
 
+// Telegram HTML parse mode treats <, >, & as markup. Model-generated free text
+// (reasoning, close reasons) routinely contains them — e.g. "ADX <22" — which
+// 400s the whole send. Escape any dynamic text before it enters an HTML message.
+function esc(s: unknown): string {
+  return String(s ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
 // ─────────────────────────────────────────────
 // Public notification surface. Every method returns a resolved Promise
 // — callers can `await` them safely without risking a throw blocking
@@ -98,7 +108,7 @@ export const notifications = {
           `PnL: <b>${(closedTrade.realisedPnl ?? 0).toFixed(2)} USDT</b> (${(closedTrade.realisedPct ?? 0).toFixed(2)}%)\n` +
           breakdownLine +
           `Outcome: <b>${(closedTrade.outcome ?? 'unknown').toString().toUpperCase()}</b>\n` +
-          `Reason: ${closedTrade.closeReason}`;
+          `Reason: ${esc(closedTrade.closeReason)}`;
       } else if (type === 'ADJUST') {
         text =
           `🔄 TP/SL ADJUSTED\n\n` +
@@ -161,7 +171,7 @@ export const notifications = {
     await safeSend(() => ({
       text:
         `⚠️ No trade signal from ${agentName} for ${pair} at this time.\n\n` +
-        `Reason: <b>${reason}</b>.\n\n` +
+        `Reason: <b>${esc(reason)}</b>.\n\n` +
         `Triggers:\n` +
         `  Price Up: ${triggers?.price_up ?? 'null'}\n` +
         `  Price Down: ${triggers?.price_down ?? 'null'}`,
@@ -180,7 +190,18 @@ export const notifications = {
         ? new Date(signal.entry_expiry).toUTCString()
         : 'N/A';
       const entryPrice = signal.entry ?? 0;
-      const value      = positionSize * entryPrice;
+      const tpPrice    = signal.tp ?? entryPrice;
+      const slPrice    = signal.sl ?? entryPrice;
+      const value      = positionSize * entryPrice;            // notional (USDT)
+      const leverage   = agent.leverage ?? 1;
+      const margin     = leverage > 0 ? value / leverage : value;
+      // Linear USDT perp: PnL = price move × size. The risk layer guarantees TP/SL
+      // sit on the correct side, so the magnitudes are the gross win/loss in USDT.
+      const profit     = Math.abs(tpPrice - entryPrice) * positionSize;
+      const loss       = Math.abs(entryPrice - slPrice) * positionSize;
+      const profitPct  = margin > 0 ? (profit / margin) * 100 : 0;
+      const lossPct    = margin > 0 ? (loss   / margin) * 100 : 0;
+      const rr         = loss > 0 ? profit / loss : 0;
 
       const text = `${directionEmoji} <b>SIGNAL GENERATED</b>
 
@@ -193,14 +214,18 @@ export const notifications = {
     <b>TP:</b> ${signal.tp}
 
     <b>Size:</b> ${positionSize}
-    <b>Value:</b> ${value.toFixed(2)} USDT
+    <b>Value:</b> ${value.toFixed(2)} USDT (margin ${margin.toFixed(2)} USDT @ ${leverage}x)
+
+    💰 <b>If TP hits:</b> +${profit.toFixed(2)} USDT (+${profitPct.toFixed(0)}% on margin)
+    🛑 <b>If SL hits:</b> -${loss.toFixed(2)} USDT (-${lossPct.toFixed(0)}% on margin)
+    ⚖️ <b>R/R:</b> ${rr.toFixed(2)}
 
     <b>Confidence:</b> ${signal.confidence}/10
 
     ⏳ <b>Expires:</b> ${expiryText}
 
     🧠 <b>Reason:</b>
-    ${signal.reasoning || 'No reasoning provided'}
+    ${esc(signal.reasoning || 'No reasoning provided')}
     `;
       return { text, options: { parse_mode: 'HTML' } };
     }, `sendSignalAlert:${agent.name}`);
