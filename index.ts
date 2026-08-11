@@ -1,4 +1,5 @@
 import 'dotenv/config';
+import http from 'node:http';
 import { getNewsContextForPrompt, hasRecentHighImpactNews, startNewsMonitor, stopNewsMonitor } from './markets/news.js';
 import { agentManager } from './agents/index.js';
 import { BybitWebSocket, candleBuffers, getCandleBuffer, onCandle, seedCandleBuffers } from "./markets/websocket.js";
@@ -343,6 +344,22 @@ function startChallengeChecker(): void {
     );
   }, CHALLENGE_HOURLY_MS);
 }
+
+function startHealthServer(): void {
+  const port = Number(process.env.PORT ?? 3000);
+  const server = http.createServer((_req, res) => {
+    res.writeHead(200, { 'Content-Type': 'text/plain' });
+    res.end('ok');
+  });
+  server.on('error', (err) => {
+    logger.error('Health server error', { error: err.message });
+  });
+  server.listen(port, () => {
+    logger.info(`Health server listening on port ${port}`);
+  });
+}
+
+startHealthServer();
 
 main().catch((error) => {
   logger.error('Fatal startup error', { error: error.message });
