@@ -20,6 +20,36 @@ import { prisma } from '../lib/prisma.js';
 const MIN_CANDLES_REQUIRED = 200; // need enough history for EMA200
 
 // ─────────────────────────────────────────────
+// Cost model — applied to every simulated fill so the backtest P&L reflects
+// what live trading actually costs. Without these, the backtest reports a
+// falsely rosy number (zero-cost, exact-level fills) that fails in production.
+// Rates are % and easy to tune; defaults are conservative Bybit-perp figures.
+// ─────────────────────────────────────────────
+const TAKER_FEE_PCT   = 0.055; // taker fee per side, % of notional
+const ENTRY_SLIP_PCT  = 0.02;  // adverse slippage on entry fill, %
+const STOP_SLIP_PCT   = 0.05;  // adverse slippage when a stop gaps through, %
+const EXIT_SLIP_PCT   = 0.02;  // adverse slippage on a discretionary market close, %
+// TP is a resting limit order — it fills at the level with no adverse slippage.
+
+// How many 1h candles a placed entry order rests before it expires unfilled.
+// Mirrors live PendingSignal expiry so the backtest doesn't fill stale orders.
+const ENTRY_EXPIRY_CANDLES = 4;
+
+// Adverse slippage: shift a fill price in the direction that hurts the trader.
+// LONG pays up on entry / receives less on exit; SHORT is the mirror.
+function applySlippage(
+  price:     number,
+  direction: 'LONG' | 'SHORT',
+  side:      'entry' | 'exit',
+  slipPct:   number,
+): number {
+  const worseUp =
+    (direction === 'LONG'  && side === 'entry') ||
+    (direction === 'SHORT' && side === 'exit');
+  return price * (worseUp ? 1 + slipPct / 100 : 1 - slipPct / 100);
+}
+
+// ─────────────────────────────────────────────
 // Main entry point
 // ─────────────────────────────────────────────
 
@@ -81,6 +111,13 @@ export async function runBacktest(
 // Walks candles one by one — never peeks ahead
 // ─────────────────────────────────────────────
 
+interface PendingEntry {
+  signal:          EntrySignal;
+  direction:       'LONG' | 'SHORT';
+  positionSize:    number;
+  expiresAtIndex:  number;
+}
+
 async function simulate(
   agent:   Agent,
   config:  BacktestConfig,
@@ -89,8 +126,9 @@ async function simulate(
   const trades:     BacktestTrade[]  = [];
   const candles1h   = candles['60'] ?? [];
 
-  let openTrade:    OpenTrade | null = null;
-  let state:        'IDLE' | 'IN_TRADE' = 'IDLE';
+  let openTrade:    OpenTrade | null      = null;
+  let pendingEntry: PendingEntry | null   = null;
+  let state:        'IDLE' | 'IN_TRADE'   = 'IDLE';
   let capitalValue  = config.initialCapital * (config.allocationPct / 100);
 
   // Start from MIN_CANDLES_REQUIRED so indicators have enough history
@@ -98,6 +136,61 @@ async function simulate(
 
     const currentCandle = candles1h[i];
     if (!currentCandle) continue;
+
+    // ── Resolve a resting entry order placed on an earlier candle ──
+    // The signal was authored at the open of a prior candle; it fills only when
+    // price actually trades through the named entry level (limit/stop), and
+    // expires unfilled after a few candles. This avoids the fantasy of an
+    // instant fill at the exact price on the decision candle.
+    if (pendingEntry) {
+      if (i >= pendingEntry.expiresAtIndex) {
+        pendingEntry = null;
+      } else if (
+        currentCandle.low  <= pendingEntry.signal.entry! &&
+        pendingEntry.signal.entry! <= currentCandle.high
+      ) {
+        const fillPrice = applySlippage(
+          pendingEntry.signal.entry!,
+          pendingEntry.direction,
+          'entry',
+          ENTRY_SLIP_PCT,
+        );
+
+        openTrade = {
+          id:             `bt_${i}`,
+          agentId:        agent.id,
+          pair:           config.pair,
+          direction:      pendingEntry.direction,
+          entryPrice:     fillPrice,
+          currentTp:      pendingEntry.signal.tp!,
+          currentSl:      pendingEntry.signal.sl!,
+          positionSize:   pendingEntry.positionSize,
+          positionValue:  pendingEntry.positionSize * fillPrice,
+          unrealisedPnl:  0,
+          unrealisedPct:  0,
+          openedAt:       new Date(currentCandle.openTime),
+          entryReasoning: pendingEntry.signal.reasoning,
+          mode:           'paper',
+          leverage:       agent.leverage ?? 10,
+        };
+
+        state        = 'IN_TRADE';
+        pendingEntry = null;
+
+        logger.info('Backtest entry filled', {
+          index:     i,
+          direction: openTrade.direction,
+          entry:     round(fillPrice),
+        });
+
+        // Don't evaluate TP/SL on the fill candle — start next candle to avoid
+        // resolving an intrabar move we can't order within.
+        continue;
+      }
+
+      // Still waiting on the resting order — don't seek a new signal meanwhile.
+      if (pendingEntry) continue;
+    }
 
     // ── Check if open trade TP/SL was hit ──
     if (state === 'IN_TRADE' && openTrade) {
@@ -138,7 +231,7 @@ async function simulate(
         const mtfData = buildMtfSnapshot(candles, i);
         if (!mtfData) continue;
 
-        const systemPrompt     = buildSystemPrompt(agent);
+        const systemPrompt     = buildSystemPrompt(agent, undefined, 'management');
         const managementPrompt = buildManagementPrompt(
           agent,
           openTrade,
@@ -163,7 +256,12 @@ async function simulate(
 
           // Force close
           if (decision.action === 'CLOSE') {
-            const exitPrice = currentCandle.close;
+            const exitPrice = applySlippage(
+              currentCandle.close,
+              openTrade.direction,
+              'exit',
+              EXIT_SLIP_PCT,
+            );
             const pnlPct    = calculatePnlPct(
               openTrade.direction,
               openTrade.entryPrice,
@@ -246,28 +344,16 @@ async function simulate(
 
     if (!validation.approved || !validation.positionSize) continue;
 
-    // Open simulated trade
-    openTrade = {
-      id:             `bt_${i}`,
-      agentId:        agent.id,
-      pair:           config.pair,
+    // Place a resting entry order — it fills on a later candle only if price
+    // actually trades through the entry level (see pending-entry block above).
+    pendingEntry = {
+      signal,
       direction:      signal.action as 'LONG' | 'SHORT',
-      entryPrice:     signal.entry,
-      currentTp:      signal.tp,
-      currentSl:      signal.sl,
       positionSize:   validation.positionSize,
-      positionValue:  validation.positionSize * signal.entry,
-      unrealisedPnl:  0,
-      unrealisedPct:  0,
-      openedAt:       new Date(currentCandle.openTime),
-      entryReasoning: signal.reasoning,
-      mode:           'paper',
-      leverage:       agent.leverage ?? 10,
+      expiresAtIndex: i + ENTRY_EXPIRY_CANDLES,
     };
 
-    state = 'IN_TRADE';
-
-    logger.info('Backtest trade opened', {
+    logger.info('Backtest entry order placed', {
       index:     i,
       direction: signal.action,
       entry:     signal.entry,
@@ -279,10 +365,16 @@ async function simulate(
   // Force close any trade still open at end of backtest
   if (openTrade && candles1h.length > 0) {
     const lastCandle = candles1h.at(-1)!;
+    const exitPrice  = applySlippage(
+      lastCandle.close,
+      openTrade.direction,
+      'exit',
+      EXIT_SLIP_PCT,
+    );
     const pnlPct     = calculatePnlPct(
       openTrade.direction,
       openTrade.entryPrice,
-      lastCandle.close,
+      exitPrice,
       openTrade.leverage,
     );
 
@@ -291,7 +383,7 @@ async function simulate(
       closeTime: new Date(lastCandle.openTime),
       direction: openTrade.direction,
       entry:     openTrade.entryPrice,
-      exit:      lastCandle.close,
+      exit:      exitPrice,
       pnlPct,
       outcome:   pnlPct > 0 ? 'win' : 'loss',
       reasoning: openTrade.entryReasoning + ' [force closed at backtest end]',
@@ -309,21 +401,31 @@ function checkTpSlHit(
   trade:  OpenTrade,
   candle: Candle,
 ): { exitPrice: number; reason: 'TP_HIT' | 'SL_HIT' } | null {
+  // Stop-first tie-break: when a single candle's range covers BOTH the stop and
+  // the target, we can't know which filled first intrabar, so we assume the
+  // worst case (stop hit first). Awarding the win here would inflate win rate.
+  // The stop fill also takes adverse slippage (it can gap through the level).
   if (trade.direction === 'LONG') {
+    if (candle.low <= trade.currentSl) {
+      return {
+        exitPrice: applySlippage(trade.currentSl, 'LONG', 'exit', STOP_SLIP_PCT),
+        reason:    'SL_HIT',
+      };
+    }
     if (candle.high >= trade.currentTp) {
       return { exitPrice: trade.currentTp, reason: 'TP_HIT' };
-    }
-    if (candle.low <= trade.currentSl) {
-      return { exitPrice: trade.currentSl, reason: 'SL_HIT' };
     }
   }
 
   if (trade.direction === 'SHORT') {
+    if (candle.high >= trade.currentSl) {
+      return {
+        exitPrice: applySlippage(trade.currentSl, 'SHORT', 'exit', STOP_SLIP_PCT),
+        reason:    'SL_HIT',
+      };
+    }
     if (candle.low <= trade.currentTp) {
       return { exitPrice: trade.currentTp, reason: 'TP_HIT' };
-    }
-    if (candle.high >= trade.currentSl) {
-      return { exitPrice: trade.currentSl, reason: 'SL_HIT' };
     }
   }
 
@@ -346,20 +448,25 @@ function buildMtfSnapshot(
   const candles5m  = candles['5']   ?? [];
   const candles1m  = candles['1']   ?? [];
 
-  const slice1h  = candles1h.slice(Math.max(0, index1h - 200), index1h);
+  // Decision time = the open of the current 1h candle. Only candles that had
+  // already OPENED strictly before that instant are known to the agent — a
+  // lower-TF candle opening at the cutoff has not closed yet. Slicing by
+  // timestamp (not index arithmetic) keeps every timeframe aligned and
+  // lookahead-free even when a feed has gaps or a ragged start.
+  const cutoff = candles1h[index1h]?.openTime;
+  if (cutoff === undefined) return null;
 
-  // Approximate indices for other timeframes
-  const index1d  = Math.floor(index1h / 24);
-  const index4h  = Math.floor(index1h / 4);
-  const index15m = index1h * 4;
-  const index5m  = index1h * 12;
-  const index1m  = index1h * 60;
+  const sliceUpTo = (arr: Candle[], n = 200): Candle[] => {
+    const eligible = arr.filter(c => c.openTime < cutoff);
+    return eligible.slice(-n);
+  };
 
-  const slice1d  = candles1d.slice(Math.max(0, index1d  - 200), index1d);
-  const slice4h  = candles4h.slice(Math.max(0, index4h  - 200), index4h);
-  const slice15m = candles15m.slice(Math.max(0,  index15m - 200), index15m);
-  const slice5m  = candles5m.slice(Math.max(0,   index5m  - 200), index5m);
-  const slice1m  = candles1m.slice(Math.max(0,   index1m  - 200), index1m);
+  const slice1h  = sliceUpTo(candles1h);
+  const slice1d  = sliceUpTo(candles1d);
+  const slice4h  = sliceUpTo(candles4h);
+  const slice15m = sliceUpTo(candles15m);
+  const slice5m  = sliceUpTo(candles5m);
+  const slice1m  = sliceUpTo(candles1m);
 
   if (slice1h.length < 50) return null;
 
@@ -569,7 +676,14 @@ function calculatePnlPct(
     ? ((exit - entry) / entry) * 100
     : ((entry - exit) / entry) * 100;
 
-  return round(raw * leverage);
+  // Return is on margin, so it's the price move × leverage. Fees are charged on
+  // notional (= margin × leverage) on both entry and exit, so as a % of margin
+  // the drag is feeRate × leverage per side, two sides. Slippage is already
+  // baked into the fill prices passed in.
+  const gross   = raw * leverage;
+  const feeDrag = 2 * TAKER_FEE_PCT * leverage;
+
+  return round(gross - feeDrag);
 }
 
 function emptyResult(config: BacktestConfig): BacktestResult {

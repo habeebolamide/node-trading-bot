@@ -1004,10 +1004,12 @@ export class AgentManager {
       : null;
 
     // System prompt carries the challenge block (if active) — single source
-    // of truth across entry and management.
+    // of truth across entry and management. Phase switches the JSON format
+    // schema + limitations block to the management contract.
     const systemPrompt = buildSystemPrompt(
       agent.toPromptAgent(),
       challengeContext ?? undefined,
+      'management',
     );
     const managementPrompt = buildManagementPrompt(
       agent.toPromptAgent(),

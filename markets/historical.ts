@@ -8,7 +8,7 @@ import { candleBuffers } from '../markets/websocket.js';
 // ─────────────────────────────────────────────
 
 const BASE_URL = process.env.BYBIT_TESTNET === 'true'
-    ? 'https://api-testnet.bybit.com'
+    ? 'https://api.bybit.com'
     : 'https://api.bybit.com';
 
 // ─────────────────────────────────────────────
@@ -107,37 +107,117 @@ export async function seedCandleBuffers(pairs: string[]): Promise<void> {
 }
 
 // ─────────────────────────────────────────────
-// Persist historical candles to DB
-// Uses upsert — safe to call multiple times
+// Fetch a full historical RANGE, paginating Bybit's 1000-candle cap.
+// The single-shot fetchHistoricalCandles above only returns the most recent N;
+// a backtest needs months of history, so we page backward from `endMs` until
+// the whole [startMs, endMs] window is covered.
+// category=linear — these are USDT perpetuals, matching the live feed.
 // ─────────────────────────────────────────────
 
-async function persistCandles(candles: Candle[]): Promise<void> {
-    for (const candle of candles) {
-        await prisma.candle.upsert({
-            where: {
-                pair_timeframe_timestamp: {
-                    pair: candle.pair,
-                    timeframe: candle.interval,
-                    timestamp: BigInt(candle.openTime),
-                },
-            },
-            update: {
-                open: candle.open,
-                high: candle.high,
-                low: candle.low,
-                close: candle.close,
-                volume: candle.volume,
-            },
-            create: {
-                pair: candle.pair,
-                timeframe: candle.interval,
-                timestamp: BigInt(candle.openTime),
-                open: candle.open,
-                high: candle.high,
-                low: candle.low,
-                close: candle.close,
-                volume: candle.volume,
-            },
-        });
+const PAGE_LIMIT = 1000;
+const PAGE_DELAY_MS = 150; // be polite to Bybit's rate limiter
+
+export async function fetchHistoricalRange(
+    pair: string,
+    timeframe: CandleInterval,
+    startMs: number,
+    endMs: number,
+): Promise<Candle[]> {
+    const byTime = new Map<number, Candle>();
+    let cursorEnd = endMs;
+
+    while (cursorEnd > startMs) {
+        const url = `${BASE_URL}/v5/market/kline?` +
+            `category=linear` +
+            `&symbol=${pair}` +
+            `&interval=${timeframe}` +
+            `&start=${startMs}` +
+            `&end=${cursorEnd}` +
+            `&limit=${PAGE_LIMIT}`;
+
+        let rows: any[][];
+        try {
+            const res = await fetch(url);
+            if (!res.ok) {
+                logger.error('Bybit range fetch failed', { status: res.status, pair, timeframe });
+                break;
+            }
+            const data = await res.json() as any;
+            if (data.retCode !== 0) {
+                logger.error('Bybit range error', { retMsg: data.retMsg, pair, timeframe });
+                break;
+            }
+            // Newest first — oldest last.
+            rows = data.result?.list ?? [];
+        } catch (error: any) {
+            logger.error('Bybit range fetch threw', { pair, timeframe, error: error.message });
+            break;
+        }
+
+        if (rows.length === 0) break;
+
+        let oldestInPage = cursorEnd;
+        for (const row of rows) {
+            const openTime = Number(row[0]);
+            oldestInPage = Math.min(oldestInPage, openTime);
+            if (openTime < startMs || openTime > endMs) continue;
+            byTime.set(openTime, {
+                pair,
+                interval: timeframe,
+                openTime,
+                open: parseFloat(row[1]),
+                high: parseFloat(row[2]),
+                low: parseFloat(row[3]),
+                close: parseFloat(row[4]),
+                volume: parseFloat(row[5]),
+                closeTime: openTime,
+            });
+        }
+
+        // Page backward. Stop if we've reached the start or made no progress.
+        if (oldestInPage <= startMs || oldestInPage >= cursorEnd) break;
+        cursorEnd = oldestInPage - 1;
+
+        await new Promise(r => setTimeout(r, PAGE_DELAY_MS));
     }
+
+    const candles = Array.from(byTime.values()).sort((a, b) => a.openTime - b.openTime);
+    logger.info('Historical range fetched', {
+        pair, timeframe, count: candles.length,
+        from: new Date(startMs).toISOString(),
+        to: new Date(endMs).toISOString(),
+    });
+    return candles;
+}
+
+// ─────────────────────────────────────────────
+// Persist historical candles to DB.
+// Bulk insert with skipDuplicates — historical OHLCV is immutable, so we never
+// need to update an existing row. Chunked to stay under statement limits.
+// Idempotent: re-running a backfill just skips rows already present.
+// ─────────────────────────────────────────────
+
+export async function persistCandles(candles: Candle[]): Promise<number> {
+    const CHUNK = 1000;
+    let written = 0;
+
+    for (let i = 0; i < candles.length; i += CHUNK) {
+        const chunk = candles.slice(i, i + CHUNK);
+        const res = await prisma.candle.createMany({
+            data: chunk.map(c => ({
+                pair: c.pair,
+                timeframe: c.interval,
+                timestamp: BigInt(c.openTime),
+                open: c.open,
+                high: c.high,
+                low: c.low,
+                close: c.close,
+                volume: c.volume,
+            })),
+            skipDuplicates: true,
+        });
+        written += res.count;
+    }
+
+    return written;
 }

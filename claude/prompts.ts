@@ -38,71 +38,79 @@ import { calculateMomentumTrajectory } from '../markets/indicators.js';
 // ─────────────────────────────────────────────
 
 const CORE_PRINCIPLES = `
-━━━━━━━━━━━━━━━━━━━━━━━
-CORE PRINCIPLES — guidance, not handcuffs:
+Guidance, not handcuffs. When the market gives a clear opportunity that
+breaks a default, you may still take it — say why in your reasoning.
+Blindly following rules misses more good trades than it saves bad ones.
 
-These shape how you think. They are not boxes to tick.
-When the market gives a clear opportunity that breaks one of the defaults,
-you may still take it — say why in your reasoning. Blindly following rules
-misses more good trades than it saves bad ones. Use judgment.
+R/R defaults (structure sets the target; never stretch TP for arithmetic):
+  scalp ~1.0R | day ~1.2R | swing ~1.5R | position ~2.0R
+A thinner R/R is acceptable when the setup is exceptionally clean.
 
-ABSOLUTE — these two never bend:
-  Never widen a stop loss once a trade is live. Tighten only.
-  Never add to a losing position. If the thesis breaks, exit clean.
+R/R is the ratio. Leverage + SL distance together set the absolute % impact.
+A 1.5R win on a 0.1% stop at 25× ≈ 3.75% margin ROI; same R/R on a 1.0%
+stop at 25× ≈ 37.5%. Same ratio, 10× the impact. Structure picks SL;
+absolute impact tells you whether a win meaningfully moves capital.
 
-DEFAULT (override with reason, not impulse):
+Setup selection:
+  Margin ROI is a BYPRODUCT of a good trade, never the goal. A clean trade
+  to a NEAR reachable structural target beats a hopeful one to a far level.
+  PREFER HIGH-GRADE setups — clean structure, fresh level, timeframe alignment
+  in ONE direction, honest confidence ≥7, CLEAR path to a reachable target.
+  If the setup is not high-grade, the answer is NO_TRADE — not a smaller
+  version of a mediocre trade.
 
-Risk-to-reward — favor setups offering at least:
-  ~1.0R for scalps (high win-rate, tight structure)
-  ~1.2R for day trades (intraday structure, flat by session end)
-  ~1.5R for swings
-  ~2.0R for position trades
-A thinner R/R is acceptable when the setup is exceptionally clean — but never stretch
-the TP just to hit a ratio. Structure decides the target, not arithmetic.
+Timeframe alignment — when 4H and LTF momentum agree, you have a tailwind.
+When they diverge:
+  Pullback INTO HTF support/resistance = highest-probability setup. LTF
+    "conflict" IS the entry trigger, not a reason to skip.
+  Counter-trend bet AGAINST a strong 4H trend = be skeptical.
 
-R/R is the ratio; leverage and SL distance together produce the absolute %
-impact. A 1.5R win on a 0.1% stop at 25× ≈ 3.75% margin ROI; same R/R on a
-1.0% stop at 25× ≈ 37.5%. Same ratio, ten times the impact. Structure still
-picks the stop; absolute impact tells you whether a win meaningfully moves
-your capital.
+News proximity — within 30 min of a high-impact event, the technical read is
+more often invalidated than confirmed. Raise the bar; trust structure less.
 
-Setup selection (above the R/R + confidence floors):
+Structural levels — anchor every price to something visible: swing high,
+swing low, prior reaction zone, volume node, or a historically-respected
+round number. Pure round numbers without history are weak.
 
-  Margin ROI is a BYPRODUCT of a good trade, never the goal. Do NOT reach for a
-  distant TP to manufacture a big ROI or R/R number — that is exactly how a thin,
-  low-probability setup gets dressed up as "200% ROI" and then loses. A clean
-  trade to a NEAR, reachable structural target beats a hopeful one to a far level
-  every time. Structure sets the target; you never stretch it for arithmetic.
+Honest confidence — a probability assessment, not a permission slip. Do NOT
+inflate to act; do NOT deflate from over-caution.
+`.trim();
 
-  PREFER HIGH-GRADE setups — clean structure, a fresh level, timeframe alignment
-  in ONE direction, honest confidence ≥7, and a CLEAR path to a reachable target.
-  Quality and probability first; magnitude is whatever the structure gives you.
+// JSON output contracts — stable across all calls of a given phase, so they
+// live in the (cacheable) system prompt rather than the per-cycle user prompt.
+const ENTRY_JSON_SCHEMA = `
+{
+  "action": "LONG" | "SHORT" | "NO_TRADE",
+  "entry": <number | null>,
+  "tp": <number | null>,
+  "sl": <number | null>,
+  "confidence": <number 1-10>,
+  "timeframe_used": "<timeframe that drove the decision>",
+  "tradeStyle": "scalp" | "day" | "swing" | "position",
+  "entry_expiry_minutes": <number | null — minutes LONG/SHORT stays valid; null for NO_TRADE>,
+  "what_invalidates": "<max 100 chars — concrete level/signal that proves the thesis wrong>",
+  "reasoning": "<max 200 chars — why this trade, right now: structure + edge>",
+  "triggers": {
+    "price_up":   <number | null — nearest structural resistance whose break demands a fresh look; null for LONG/SHORT>,
+    "price_down": <number | null — nearest structural support whose break demands a fresh look; null for LONG/SHORT>,
+    "timeout_minutes": <number — minutes this NO_TRADE context stays valid before re-analysis>
+  }
+}
 
-  The bar to BE in a trade is high. If the setup is not high-grade, the answer is
-  NO_TRADE — not a smaller, lower-conviction version of a mediocre trade.
+SL/TP side rule (mechanical — will be rejected otherwise):
+  LONG  → SL strictly BELOW entry, TP strictly ABOVE entry.
+  SHORT → SL strictly ABOVE entry, TP strictly BELOW entry.
+`.trim();
 
-  NO_TRADE when nothing reasonable exists. Don't force trades. Burning an
-  LLM call on NO_TRADE is cheaper than burning a trade on a marginal setup.
-
-Timeframe alignment — when 4H and lower-TF momentum agree, you have a tailwind.
-When they diverge, ask which kind of divergence this is:
-  Pullback INTO HTF support or resistance — one of the highest-probability setups
-  there is. The LTF "conflict" is the entry trigger, not a reason to skip.
-  Counter-trend bet AGAINST a strong 4H trend — this is what to be skeptical of.
-Do not treat all divergence as a no-go.
-
-News proximity — within 30 minutes of a known high-impact event,
-the technical read is more often invalidated than confirmed.
-Raise your bar. Not a hard no — just lean stricter and trust structure less.
-
-Structural levels — anchor every price to something visible:
-swing high, swing low, prior reaction zone, volume node, or a round number
-that has been historically respected. Pure round numbers without history are weak.
-
-Honest confidence — your confidence is a probability assessment.
-Do not inflate it to act. Do not deflate it from over-caution.
-Use it to size and weigh the decision — not as a wall to clear.
-━━━━━━━━━━━━━━━━━━━━━━━
+const MANAGEMENT_JSON_SCHEMA = `
+{
+  "action": "HOLD" | "ADJUST" | "CLOSE" | "PARTIAL_CLOSE",
+  "newTp": <number | null — only when extending/changing TP>,
+  "newSl": <number | null — only when tightening SL; MUST be closer to price than current, never further>,
+  "closePercent": <0-100 | null — only for PARTIAL_CLOSE>,
+  "reasoning": "<max 100 chars — name the specific level/signal driving the action, not a feeling>",
+  "urgency": "low" | "medium" | "high"
+}
 `.trim();
 
 // ─────────────────────────────────────────────
@@ -112,6 +120,7 @@ Use it to size and weigh the decision — not as a wall to clear.
 export function buildSystemPrompt(
   agent: Agent,
   challenge?: ChallengeRiskContext,
+  phase: 'entry' | 'management' = 'entry',
 ): string {
 
   const styleGuide = {
@@ -201,82 +210,127 @@ export function buildSystemPrompt(
 
   const challengeBlock = challenge ? buildChallengeBlock(challenge) : '';
 
+  const methodBlock = phase === 'entry'
+    ? `
+<method>
+Entry approaches — pick one per setup:
+  CONFIRMATION — enter at or near current price after a clean breakout or
+    momentum signal. Used when the move is already resolving.
+  PULLBACK — wait for price to return to a key structural level. Entry can
+    be above or below current price. Never force market entry at current
+    price if a cleaner level is close.
+
+Level setting — every price you emit must come from visible structure:
+support/resistance zones, swing highs/lows, liquidity, volume nodes,
+historically-respected round numbers. No arbitrary numbers.
+  SL = the exact point where the thesis is proven wrong.
+  TP = the next meaningful structural level in your favour.
+
+Triggers (NO_TRADE only) — levels that would prompt a fresh look before the
+next scheduled cycle. Must be structural, not arbitrary distances.
+  price_up   = nearest structural resistance whose break demands re-analysis.
+  price_down = nearest structural support whose break demands re-analysis.
+  timeout_minutes = how long this NO_TRADE context stays valid.
+For LONG / SHORT: set price_up and price_down to null.
+
+Confidence — a probability assessment, honest:
+  8–10 = high conviction. Clean structure, aligned momentum, clear invalidation.
+  6–7  = decent setup with material uncertainty. Tradeable if R/R compensates.
+  <6   = thesis genuinely unclear → NO_TRADE.
+Above the floor, think in expected value. A clean 7 with 2.0R > an 8 with 1.2R.
+</method>`.trim()
+    : `
+<method>
+You are managing a LIVE position, not analysing a fresh entry. You already
+committed. Your job is to manage well, not re-litigate the trade.
+
+Default is HOLD. Act only on real, data-backed evidence that the read has
+changed — reversal structure against you, momentum decisively flipped with
+volume, the level the trade relies on visibly failing.
+
+Never widen SL. Tighten only. In profit → protect (tighten SL toward BE or
+behind the most recent swing) and extend TP only if a further structural
+level genuinely exists. Near TP with exhaustion showing → PARTIAL_CLOSE or
+CLOSE rather than round-tripping the win.
+
+In drawdown, being underwater is NOT a reason to close. The SL already caps
+downside. But if reversal evidence is actually present, cut early — don't
+stubbornly ride to the stop.
+</method>`.trim();
+
+  const formatBlock = phase === 'entry'
+    ? `<format>\nRespond with valid JSON only. No text outside the JSON.\n\n${ENTRY_JSON_SCHEMA}\n</format>`
+    : `<format>\nRespond with valid JSON only. No text outside the JSON.\n\n${MANAGEMENT_JSON_SCHEMA}\n</format>`;
+
+  const limitationsBlock = phase === 'entry'
+    ? `
+<limitations>
+Absolutes — these never bend:
+  Never widen an SL once a trade is live. Tighten only.
+  Never add to a losing position. If the thesis breaks, exit clean.
+  Never emit an SL/TP on the wrong side of entry (LONG: SL<entry<TP; SHORT: TP<entry<SL).
+
+NO_TRADE is the DEFAULT. A trade must EARN its way past it. Sitting out a
+marginal market is the correct, disciplined outcome — not a wasted cycle.
+Expect most cycles to end in NO_TRADE.
+
+Fold triggers — return NO_TRADE unless a truly exceptional trigger fires
+RIGHT NOW (and name it in reasoning):
+  Macro bias NEUTRAL, or ADX < ~22, or 4H compressing / no clean structure.
+  A big "★★★★★ confluence zone" in a chop tape is NOT a reason to trade —
+    price knifes through zones in a rangebound market.
+  Counter-trend setup where TP sits on the very S/R the dominant trend
+    would bounce/reject from.
+  R/R that looks great only because TP is behind one or more opposing ≥4★
+    zones — that is a LIE; the number looks big and the trade still loses.
+  Within 30 min of a known high-impact news release.
+
+Directional anchor:
+  The MACRO BIAS (4H) is your side. REGIME + 1m/5m/15m labels are timing,
+  not a reason to reverse. Do NOT flip LONG↔SHORT unless the 4H itself has
+  broken (loses its most recent higher-low / lower-high and closes through).
+  A pullback against the 4H trend IS the pullback-entry in the 4H direction.
+
+Mode floors — the risk layer auto-rejects any signal that fails these; the
+active floors are surfaced in the per-cycle context. If confidence or R/R
+would be below the floor, choose NO_TRADE rather than emit a doomed signal.
+</limitations>`.trim()
+    : `
+<limitations>
+Never widen an SL. newSl must be strictly closer to price than currentSl.
+Never CLOSE purely because you are red — drawdown alone is not evidence.
+Never emit an action just to act. If nothing concrete has changed: HOLD.
+Reasoning MUST name the specific level or signal driving the action.
+</limitations>`.trim();
 
   return `
-    You trade crypto on your own judgment. You read the market, find real
-    setups, and pull the trigger when the read is clean.
+<role>
+You trade crypto on your own judgment. You read the market, find real setups,
+and pull the trigger when the read is clean. You are not here to print signals
+— you are here to trade. You know your edge and you wait for it. Forcing a
+trade costs as much as missing one.
+</role>
 
-    You are not here to print signals — you are here to trade. You know your
-    edge and you wait for it. When the setup shows up, you take it. When
-    nothing is there, you sit on your hands. Forcing a trade costs you just
-    as much as missing one.
-    
-    YOUR APPROACH:
-    ${styleGuide}
-    
-    YOUR ASSIGNMENT:
-    Pair: ${agent.pair}
-    Leverage: ${leverage}x 
-    ${riskClause}
+<approach>
+${styleGuide}
+</approach>
 
-    ${challengeBlock}
+<assignment>
+Pair:     ${agent.pair}
+Leverage: ${leverage}x
+${riskClause}
+${challengeBlock ? '\n' + challengeBlock : ''}
+</assignment>
 
-    ${CORE_PRINCIPLES}
+<principles>
+${CORE_PRINCIPLES}
+</principles>
 
-    HOW YOU FIND TRADES:
-    
-    Two valid entry approaches:
-    
-    CONFIRMATION — enter after breakout or strong momentum signal.
-    Entry is at or near current price. Used when momentum is clear.
-    
-    PULLBACK — wait for price to return to a key structural level.
-    Entry can be above or below current price.
-    Used when a better risk-to-reward exists at a nearby level.
-    Never force entry at current price if a cleaner level is close.
+${methodBlock}
 
-    HOW YOU SET LEVELS:
-    
-    Every level you output must come from visible market structure.
-    Support zones, resistance zones, swing highs, swing lows, liquidity areas.
-    No arbitrary numbers. No round numbers unless they are also structural.
-    
-    Stop loss = the exact point where your trade idea is proven wrong.
-    Take profit = the next meaningful structural level in your favour.
-    
-    HOW YOU SET TRIGGERS:
+${formatBlock}
 
-    Triggers tell the system when to re-evaluate AHEAD of the next candle close.
-    They are ONLY USED FOR NO_TRADE decisions — they represent levels where a
-    setup could begin to form, prompting a fresh look. Must be structural,
-    not arbitrary distances.
-
-    price_up = the nearest resistance above current price where a break
-    would prompt a fresh look (a setup might appear).
-
-    price_down = the nearest support below current price where a break
-    would prompt a fresh look (a setup might appear).
-
-    timeout_minutes = how long this NO_TRADE context stays valid before
-    fresh re-analysis is needed.
-
-    For LONG / SHORT signals: triggers are not used. The bot waits for your
-    entry price to be hit (or expiry to elapse), then management runs on
-    each significant candle close. Just set price_up/price_down to null and
-    do not over-think these fields for directional signals.
-
-    CONFIDENCE:
-
-    Confidence is a probability assessment, not a permission slip. Be honest:
-      8–10 = high conviction. Clean structure, aligned momentum, clear invalidation.
-      6–7  = decent setup with material uncertainty. Tradeable if R/R compensates.
-      <6   = thesis is genuinely unclear. NO_TRADE.
-
-    Above the floor: think in expected value. A clean 7 with 2.0R potential
-    is a better trade than an 8 with 1.2R. Do NOT inflate confidence to
-    clear a threshold, do NOT deflate it from over-caution.
-
-    Always respond with valid JSON only. No text outside the JSON.
+${limitationsBlock}
   `.trim();
 }
 
@@ -326,44 +380,26 @@ export function buildEntryPrompt(
 
   const modeLabel =
     `Performance mode: ${performanceMode} | Monthly P&L: ${monthlyPnl >= 0 ? '+' : ''}${monthlyPnl.toFixed(2)}%\n` +
-    `    ${modeDescriptions[performanceMode]}\n` +
-    `    AUTO-REJECT FLOORS (this mode): confidence < ${floors.confidence} OR R/R < ${floors.rr.toFixed(1)} → rejected by risk layer before reaching the market.`;
+    `  ${modeDescriptions[performanceMode]}\n` +
+    `  AUTO-REJECT FLOORS (this mode): confidence < ${floors.confidence} OR R/R < ${floors.rr.toFixed(1)} → risk layer rejects before market.`;
 
   // Leverage / risk / challenge block all live in the system prompt now —
   // the entry prompt focuses on per-candle market state only.
 
   const relevantLessons = lessons.length > 0
-    ? `
-  ━━━━━━━━━━━━━━━━━━━━━━━
-  PAST MISTAKES MATCHING THIS SETUP:
-  ${lessons.map((l, i) =>
-      `${i + 1}. [${l.patternTag}] ${l.ruleToAdd} — occurred ${l.frequency}x`
-    ).join('\n')}
-    `.trim()
+    ? `Past mistakes matching this setup:\n${lessons.map((l, i) =>
+        `  ${i + 1}. [${l.patternTag}] ${l.ruleToAdd} — occurred ${l.frequency}x`
+      ).join('\n')}`
     : '';
 
-  // What's been WORKING — the positive counterpart to past mistakes. Surfaces
-  // the agent's most repeatable winning setups so it leans into its edge, not
-  // just away from its errors.
   const winningPlaybook = winningPatterns.length > 0
-    ? `
-  ━━━━━━━━━━━━━━━━━━━━━━━
-  WHAT'S BEEN WORKING — your most repeatable winning setups (look for these first):
-  ${winningPatterns.map((w, i) =>
-      `${i + 1}. [${w.patternTag}] ${w.rule} — won ${w.frequency}x`
-    ).join('\n')}
-    `.trim()
+    ? `What's been working — your most repeatable winning setups (look for these first):\n${winningPatterns.map((w, i) =>
+        `  ${i + 1}. [${w.patternTag}] ${w.rule} — won ${w.frequency}x`
+      ).join('\n')}`
     : '';
 
-  // Confidence calibration — realised win rate by stated confidence. Grounds the
-  // model's self-assessment in its actual track record. Empty until enough trades.
   const calibrationBlock = calibrationNote
-    ? `━━━━━━━━━━━━━━━━━━━━━━━
-    YOUR CONFIDENCE CALIBRATION (realised win rate by stated confidence):
-    ${calibrationNote}
-    Be honest — if your 8s win like your 6s, you're inflating. Weight EV by these real odds, not the number you'd like to write.
-
-    `
+    ? `Confidence calibration (realised win rate by stated confidence):\n  ${calibrationNote}\n  If your 8s win like your 6s, you are inflating. Weight EV by these real odds, not the number you'd like to write.`
     : '';
 
   // Per-style key-level coverage. Scalps need intraday levels because they're
@@ -383,51 +419,32 @@ export function buildEntryPrompt(
 
   if (includeTfs.includes('1m')) {
     // 1m is the noisiest feed — keep only the strongest structural levels, top 3
-    // per side, and drop round numbers (meaningless at this resolution). Use for
-    // pinpoint scalp entry/exit timing, not for framing the trade thesis.
+    // per side, and drop round numbers (meaningless at this resolution).
     const raw = findKeyLevels(mtfData.tf1m.candles);
     const trimmed = trimLevels(raw, 3, ['round_number']);
-    levelBlocks.push(`━━━━━━━━━━━━━━━━━━━━━━━
-    SCALP LEVELS — 1M (top 3, structural only — entry/exit timing):
-    ${formatKeyLevelsForPrompt(trimmed)}`);
+    levelBlocks.push(`SCALP LEVELS — 1M (top 3, structural only — entry/exit timing):\n${formatKeyLevelsForPrompt(trimmed)}`);
   }
 
   if (includeTfs.includes('5m')) {
-    // 5m has the most noise — filter to swing/volume_node only, top 3 per side.
-    // Round-number levels at this resolution are usually meaningless.
     const raw = findKeyLevels(mtfData.tf5m.candles);
     const trimmed = trimLevels(raw, 3, ['round_number']);
-    levelBlocks.push(`━━━━━━━━━━━━━━━━━━━━━━━
-    INTRADAY LEVELS — 5M (top 3, structural only):
-    ${formatKeyLevelsForPrompt(trimmed)}`);
+    levelBlocks.push(`INTRADAY LEVELS — 5M (top 3, structural only):\n${formatKeyLevelsForPrompt(trimmed)}`);
   }
 
   if (includeTfs.includes('15m')) {
-    const levels15m = findKeyLevels(mtfData.tf15m.candles);
-    levelBlocks.push(`━━━━━━━━━━━━━━━━━━━━━━━
-    INTRADAY LEVELS — 15M:
-    ${formatKeyLevelsForPrompt(levels15m)}`);
+    levelBlocks.push(`INTRADAY LEVELS — 15M:\n${formatKeyLevelsForPrompt(findKeyLevels(mtfData.tf15m.candles))}`);
   }
 
   if (includeTfs.includes('1h')) {
-    const levels1h = findKeyLevels(mtfData.tf1h.candles);
-    levelBlocks.push(`━━━━━━━━━━━━━━━━━━━━━━━
-    KEY LEVELS — 1H:
-    ${formatKeyLevelsForPrompt(levels1h)}`);
+    levelBlocks.push(`KEY LEVELS — 1H:\n${formatKeyLevelsForPrompt(findKeyLevels(mtfData.tf1h.candles))}`);
   }
 
   if (includeTfs.includes('4h')) {
-    const levels4h = findKeyLevels(mtfData.tf4h.candles);
-    levelBlocks.push(`━━━━━━━━━━━━━━━━━━━━━━━
-    MAJOR LEVELS — 4H:
-    ${formatKeyLevelsForPrompt(levels4h)}`);
+    levelBlocks.push(`MAJOR LEVELS — 4H:\n${formatKeyLevelsForPrompt(findKeyLevels(mtfData.tf4h.candles))}`);
   }
 
   if (includeTfs.includes('1d')) {
-    const levels1d = findKeyLevels(mtfData.tf1d.candles);
-    levelBlocks.push(`━━━━━━━━━━━━━━━━━━━━━━━
-    MACRO LEVELS — 1D (daily structure — the strongest, slowest-moving S/R on the chart):
-    ${formatKeyLevelsForPrompt(levels1d)}`);
+    levelBlocks.push(`MACRO LEVELS — 1D (strongest, slowest-moving S/R on the chart):\n${formatKeyLevelsForPrompt(findKeyLevels(mtfData.tf1d.candles))}`);
   }
 
   // Cross-timeframe confluence — computed from the same timeframes the agent
@@ -446,15 +463,11 @@ export function buildEntryPrompt(
     includeTfs.map(tf => ({ tf, candles: tfSnapshots[tf].candles })),
     currentPrice,
   );
-  const confluenceBlock = `━━━━━━━━━━━━━━━━━━━━━━━
-    CONFLUENCE ZONES (multi-timeframe — strongest structure on the chart):
-    ${formatConfluenceZonesForPrompt(confluenceZones, currentPrice)}`;
+  const confluenceBlock = `CONFLUENCE ZONES (multi-timeframe — strongest structure on the chart):\n${formatConfluenceZonesForPrompt(confluenceZones, currentPrice)}`;
 
-  const levelsSection = [confluenceBlock, ...levelBlocks].join('\n\n    ');
+  const structureSection = [confluenceBlock, ...levelBlocks].join('\n\n');
 
-  // Timeframe read-outs, gated by trade style (same set as the levels above).
-  // A scalp shouldn't be reasoning off the 4H; a position trade shouldn't be
-  // distracted by 1m noise. Ordered high → low for a top-down read.
+  // Timeframe read-outs, gated by trade style. Ordered high → low for top-down.
   const tfSummaryBlocks: string[] = [];
   const pushTfSummary = (
     key:   '1d' | '4h' | '1h' | '15m' | '5m' | '1m',
@@ -462,9 +475,7 @@ export function buildEntryPrompt(
     snap:  MultiTimeframeData['tf4h'],
   ) => {
     if (includeTfs.includes(key)) {
-      tfSummaryBlocks.push(`━━━━━━━━━━━━━━━━━━━━━━━
-    ${label}:
-    ${formatTimeframe(snap)}`);
+      tfSummaryBlocks.push(`${label}:\n${formatTimeframe(snap)}`);
     }
   };
   pushTfSummary('1d',  '1D',  mtfData.tf1d);
@@ -473,150 +484,70 @@ export function buildEntryPrompt(
   pushTfSummary('15m', '15M', mtfData.tf15m);
   pushTfSummary('5m',  '5M',  mtfData.tf5m);
   pushTfSummary('1m',  '1M',  mtfData.tf1m);
-  const tfSummarySection = tfSummaryBlocks.join('\n\n    ');
+  const timeframesSection = tfSummaryBlocks.join('\n\n');
 
-  // Macro directional anchor — derived ONLY from the 4H, so it stays stable
-  // while the lower timeframes (and the REGIME line) chop. The model is told
-  // below to anchor its side here and NOT reverse on lower-timeframe noise.
-  // Gated to styles that actually look at the 4H — a pure scalp does not.
+  // Macro directional anchor — derived ONLY from the 4H so it stays stable
+  // while lower TFs (and REGIME) chop. Gated to styles that look at the 4H.
   const macroBias = includeTfs.includes('4h')
     ? describeMacroBias(mtfData.tf4h)
     : null;
-  const macroBiasBlock = macroBias
-    ? `━━━━━━━━━━━━━━━━━━━━━━━
-    MACRO BIAS (4H — your directional anchor):
-    ${macroBias}
 
-    `
+  const regimeBlock =
+    `REGIME (LTF momentum — SECONDARY to MACRO BIAS; flips on small moves): ${regime.regime} (${(regime.confidence * 100).toFixed(0)}% confidence)\n` +
+    `ADX: ${regime.adx} | EMA slope: ${regime.emaSlope}% | Volume: ${regime.volumeTrend}`;
+
+  // Derivatives — gated out of scalp (minutes-long trades rarely hold across
+  // a funding boundary; OI shifts are day/swing-horizon signals).
+  const derivativesLine = (derivativesContext && style !== 'scalp')
+    ? `Funding + open interest (crowding & conviction):\n${derivativesContext}`
     : '';
 
-  // Derivatives positioning — funding + OI. Gated OUT of scalp: a minutes-long
-  // scalp rarely holds across a funding boundary, and OI shifts are a slower,
-  // day/swing-horizon signal. Empty string (e.g. backtest) renders nothing.
-  const derivativesBlock = (derivativesContext && style !== 'scalp')
-    ? `━━━━━━━━━━━━━━━━━━━━━━━
-    DERIVATIVES POSITIONING (funding + open interest — crowding & conviction):
-    ${derivativesContext}
+  const memoryBlock = [winningPlaybook, relevantLessons, calibrationBlock]
+    .filter(Boolean).join('\n\n');
 
-    `
-    : '';
+  const contextSections = [
+    `<session>\n${modeLabel}\nTime (UTC): ${now}\nPair: ${agent.pair}\nPrice: ${currentPrice}\n1H ATR: ${atr1h}\n</session>`,
+    macroBias ? `<macro>\nMACRO BIAS (4H — your directional anchor):\n${macroBias}\n</macro>` : '',
+    `<regime>\n${regimeBlock}\n</regime>`,
+    `<structure>\n${structureSection}\n</structure>`,
+    `<timeframes>\n${timeframesSection}\n</timeframes>`,
+    derivativesLine ? `<derivatives>\n${derivativesLine}\n</derivatives>` : '',
+    `<news>\n${newsContext}\n</news>`,
+    memoryBlock ? `<memory>\n${memoryBlock}\n</memory>` : '',
+  ].filter(Boolean).join('\n\n');
 
   return `
-    ${modeLabel}
-    CURRENT TIME (UTC): ${now}
-    CURRENT PRICE: ${currentPrice}
-    PAIR: ${agent.pair}
-    1H ATR: ${atr1h}
+<context>
+${contextSections}
+</context>
 
-    ${levelsSection}
+<instruction>
+Work top-down through the tape you actually have. Do NOT re-derive the
+absolutes or fold triggers — those live in your system prompt <limitations>.
 
-    ${macroBiasBlock}━━━━━━━━━━━━━━━━━━━━━━━
-    REGIME (lower-timeframe momentum — SECONDARY to MACRO BIAS, flips on small moves): ${regime.regime} (${(regime.confidence * 100).toFixed(0)}% confidence)
-    ADX: ${regime.adx} | EMA slope: ${regime.emaSlope}% | Volume: ${regime.volumeTrend}
-    
-    ${tfSummarySection}
+1. Read <macro> + <regime> + ADX. Classify the tape:
+     NO-EDGE (neutral bias / ADX < 22 / compression) → NO_TRADE unless a
+       genuinely exceptional trigger fires RIGHT NOW; name it.
+     TRENDING (bias BULLISH or BEARISH, ADX ≥ ~22, structure confirming) →
+       hunt a setup IN the trend direction. No counter-trend.
 
-    ━━━━━━━━━━━━━━━━━━━━━━━
-    NEWS:
-    ${newsContext}
+2. If trending: pick the nearest strong (≥4★) <structure> zone price can
+   realistically reach in the trend direction. Build entry AT the zone,
+   SL just beyond where the thesis breaks, TP at the next structural level
+   in your favour.
 
-    ${derivativesBlock}${winningPlaybook ? winningPlaybook + '\n\n    ' : ''}${relevantLessons}
+3. Check geometry, not arithmetic:
+     Is SL beyond ~1× trade-TF ATR so routine noise won't stop it?
+     Is the path to TP CLEAR, or does it sit behind one or more opposing
+       ≥4★ zones? A large R/R produced by a far TP behind resistance is
+       a LIE — the number looks great and the trade still loses.
 
-    ${calibrationBlock}━━━━━━━━━━━━━━━━━━━━━━━
-    FIRST — is there genuinely something to trade here? Most cycles, there is NOT.
+4. EV gate: does confidence × R/R × structure quality give genuinely
+   positive expected value ABOVE the mode floors surfaced in <session>?
+   If not → NO_TRADE.
 
-    NO_TRADE is your DEFAULT, and a trade must EARN its way past it. Sitting out a
-    marginal market is the correct, disciplined action and a GOOD outcome — not a
-    wasted cycle. You are paid to wait for edge, not to be in the market. Expect
-    most cycles to end in NO_TRADE.
-
-    Read MACRO BIAS + REGIME + ADX above and decide which tape you are in FIRST:
-
-    NO-EDGE TAPE — macro bias NEUTRAL, OR a contracting / compression range, OR
-    ADX below ~22 (no real trend). DEFAULT HERE IS NO_TRADE. A nearby "★★★★★
-    confluence zone" is NOT a reason to trade: in a trendless, rangebound tape
-    price chops straight through those levels — which is precisely how
-    support-bounce longs and resistance-fade shorts get stopped. Do NOT
-    manufacture a pullback-limit just because a zone exists. Return NO_TRADE
-    unless you can name a genuinely exceptional trigger happening RIGHT NOW
-    (e.g. a clean liquidity sweep + reclaim, or a fresh high-volume structural
-    break) — and if you can, state exactly what it is in your reasoning.
-
-    TRENDING TAPE — macro bias BULLISH or BEARISH, ADX above ~22, and structure
-    confirming. ONLY HERE do you actively hunt a pullback-limit:
-      1. Pick the nearest strong (≥4★) zone price can realistically reach IN THE
-         TREND DIRECTION — support for a LONG in an uptrend, resistance for a
-         SHORT in a downtrend. Do NOT fade the trend.
-      2. Build it: entry AT the zone, SL just beyond where the thesis is wrong,
-         TP at the next structural level in your favour.
-      3. Check the GEOMETRY, not the ratio: is the SL beyond ~1× the
-         trade-timeframe ATR so routine noise won't stop it? Is the path to TP
-         CLEAR, or does it sit behind one or more opposing ≥4★ zones? A large R/R
-         produced by a far TP behind resistance is a LIE — the number looks great
-         and the trade still loses.
-
-    Decide on EDGE, not on R/R magnitude. "4.1R / 209% ROI" is NOT a reason to
-    trade — it is arithmetic off a distant TP. If you cannot name a concrete edge
-    that exists right now, the honest answer is NO_TRADE — and that is a win.
-
-    ━━━━━━━━━━━━━━━━━━━━━━━
-    DIRECTIONAL CONSISTENCY — read before you pick a side:
-
-    The MACRO BIAS (4H) above is your anchor. The REGIME line and the 1m/5m/15m
-    structure labels are momentum reads that flip on small moves — a sub-1% wiggle
-    can swing them from "uptrend" to "downtrend", or NEUTRAL to TRENDING_BEAR.
-    Treat them as timing, NOT as a reason to reverse direction.
-
-    - Do NOT flip LONG↔SHORT unless the 4H structure ITSELF has broken — e.g. the
-      4H loses its most recent higher-low and closes below it. A regime-label
-      change or a lower-timeframe pullback is NOT a 4H structure break.
-    - A pullback AGAINST the 4H trend is a pullback-ENTRY in the 4H direction, not
-      a signal to trade the other way. If MACRO BIAS is BULLISH, a dip toward
-      support is a LONG opportunity — not a cue to SHORT.
-    - Be especially skeptical of a counter-trend trade whose TP sits on the very
-      support/resistance the dominant trend would bounce from — you would be
-      aiming at the level where the trend reloads against you.
-    - If lower-timeframe momentum is against the 4H but price has NOT reached your
-      level, the correct action is usually to WAIT — keep the resting limit or
-      return NO_TRADE — rather than chase the opposite side.
-
-    BEFORE RESPONDING — sanity checks:
-
-    1. SL placement:
-       LONG  → SL strictly BELOW entry. TP strictly ABOVE entry.
-       SHORT → SL strictly ABOVE entry. TP strictly BELOW entry.
-       Anything else is a mechanical error and will be rejected.
-
-    2. Mode floors (see AUTO-REJECT FLOORS in this prompt):
-       Is confidence ≥ the mode floor? Is R/R ≥ the mode floor?
-       If either is below the floor — the risk layer auto-rejects regardless
-       of how good the setup looks. Pick NO_TRADE rather than waste the cycle.
-
-    3. Above the floor — does confidence × R/R × structure quality give
-       genuinely positive expected value? If yes, take it. If no, NO_TRADE.
-
-    4. Would you take this trade with your own money under the conditions
-       shown? If you would hesitate, let that show in confidence — not
-       necessarily NO_TRADE, but be honest about uncertainty.
-    
-    Respond ONLY with this exact JSON:
-    {
-      "action": "LONG" | "SHORT" | "NO_TRADE",
-      "entry": <number | null>,
-      "tp": <number | null>,
-      "sl": <number | null>,
-      "confidence": <number 1-10>,
-      "timeframe_used": "<timeframe that drove the decision>",
-      "tradeStyle": "scalp" | "day" | "swing" | "position",
-      "entry_expiry_minutes": <number | null — minutes the LONG/SHORT setup stays valid; null for NO_TRADE>,
-      "what_invalidates": "<max 100 chars — concrete level/signal that proves the thesis wrong, not a feeling.>",
-      "reasoning": "<max 200 chars — why this trade, right now: the structure + edge.>",
-      "triggers": {
-        "price_up": <number | null>,
-        "price_down": <number | null>,
-        "timeout_minutes": <number — minutes this NO_TRADE context stays valid before re-analysis>
-      }
-    }
+Emit in the JSON format defined in your system prompt <format>.
+</instruction>
   `.trim();
 }
 
@@ -645,103 +576,84 @@ export function buildManagementPrompt(
     ? `DISABLED (Position size ${trade.positionSize} is too small to split — minimum order qty is ${lot.minQty} for ${trade.pair}. Any partial close is impossible. You must either HOLD or fully CLOSE.)`
     : `ENABLED (Current size: ${trade.positionSize}, minimum order qty: ${lot.minQty})`;
 
+  const reversalShape = trade.direction === 'LONG' ? 'lower highs + lower lows' : 'higher highs + higher lows';
+  const trailAnchor   = trade.direction === 'LONG' ? 'swing low' : 'swing high';
+  const partialCloseNote = isPartialCloseDisabled
+    ? 'PARTIAL_CLOSE is DISABLED for this position size — HOLD or full CLOSE only.'
+    : '';
+
   return `
-    You are managing a LIVE ${trade.direction} position on ${trade.pair} — real money is at risk right now.
-    This is not a fresh analysis. You already committed to this trade. Your job is to manage it well,
-    not to re-litigate whether you'd take it again.
+<context>
+<position>
+Live ${trade.direction} on ${trade.pair} — real money at risk. Not a fresh analysis.
+Direction:       ${trade.direction}
+Entry:           ${trade.entryPrice}
+Current price:   ${currentPrice}
+TP:              ${trade.currentTp}
+SL:              ${trade.currentSl}  ← exchange-enforced backstop
+Unrealised:      ${pnlSign}${trade.unrealisedPct.toFixed(2)}% (${pnlSign}$${trade.unrealisedPnl.toFixed(2)}) — ${inProfit ? 'IN PROFIT' : 'IN DRAWDOWN'}
+Duration:        ${duration}
+Original thesis: ${trade.entryReasoning}
+${originalInvalidation ? `Thesis breaks if: ${originalInvalidation}` : ''}
+Partial close:   ${partialCloseStatus}
+</position>
 
-    POSITION:
-    Direction:       ${trade.direction}
-    Entry:           ${trade.entryPrice}
-    Current price:   ${currentPrice}
-    TP:              ${trade.currentTp}
-    SL:              ${trade.currentSl}  ← this is your invalidation line; the exchange enforces it automatically
-    Unrealised:      ${pnlSign}${trade.unrealisedPct.toFixed(2)}% (${pnlSign}$${trade.unrealisedPnl.toFixed(2)}) — currently ${inProfit ? 'IN PROFIT' : 'IN DRAWDOWN'}
-    Duration:        ${duration}
-    Original thesis: ${trade.entryReasoning}
-    ${originalInvalidation ? `Thesis breaks if:  ${originalInvalidation}` : ''}
-    Partial close:   ${partialCloseStatus}
+<market>
+Every price you reference MUST come from the data below — do not invent levels.
 
-    CURRENT MARKET (every price you reference MUST come from the data below — do not invent levels):
-    ━━ 4H — is the original thesis still structurally intact? ━━
-    ${formatTimeframe(mtfData.tf4h)}
+4H — is the original thesis still structurally intact?
+${formatTimeframe(mtfData.tf4h)}
 
-    ━━ 1H — how is momentum developing? ━━
-    ${formatTimeframe(mtfData.tf1h)}
+1H — how is momentum developing?
+${formatTimeframe(mtfData.tf1h)}
 
-    ━━ 15M — what is price doing right now? ━━
-    ${formatTimeframe(mtfData.tf15m)}
+15M — what is price doing right now?
+${formatTimeframe(mtfData.tf15m)}
 
-    ━━ 5M — near-term momentum into the current move ━━
-    ${formatTimeframe(mtfData.tf5m)}
+5M — near-term momentum into the current move
+${formatTimeframe(mtfData.tf5m)}
 
-    ━━ 1M — live price action for precise exits (critical for fast scalps) ━━
-    ${formatTimeframe(mtfData.tf1m)}
+1M — live price action for precise exits (critical for fast scalps)
+${formatTimeframe(mtfData.tf1m)}
+</market>
+</context>
 
-    ━━━━━━━━━━━━━━━━━━━━━━━
-    HOW TO DECIDE — work through this in order:
+<instruction>
+Default is HOLD. Absolutes and "never widen SL" live in system <limitations>.
 
-    1. DEFAULT IS HOLD. Most of the time, the correct action is to do nothing and
-      let the trade work toward TP or SL. You placed the SL where the thesis breaks
-      — trust it. A position being temporarily underwater is NORMAL and is NOT a
-      reason to close. Acting without a concrete, data-backed reason is itself a
-      mistake — it bleeds edge through fees and bad fills.
+1. Is the entry thesis still structurally intact on the timeframe that framed it?
+   If yes and no reversal evidence → HOLD.
 
-    2. CLOSE EARLY when the read has changed — do NOT wait for the SL. The SL at
-      ${trade.currentSl} is the hard backstop the exchange enforces for you; by the
-      time price prints there it is already too late to add value. A good trader's
-      edge is getting out BEFORE the stop, while the exit is still good. CLOSE (or
-      PARTIAL_CLOSE) when you can point to REAL evidence in the data that the move is
-      turning against you, such as:
-        - a reversal forming against your position — e.g. you are ${trade.direction} and the
-          lower timeframes are now printing ${trade.direction === 'LONG' ? 'lower highs + lower lows' : 'higher highs + higher lows'},
-          or a strong opposite-side rejection / engulfing at a key level
-        - momentum has decisively flipped: the timeframe that carried your thesis is
-          now driving the other way, ideally with volume confirming the against-side
-        - the structure the trade relied on is visibly failing — the level is being
-          lost in front of you; you do NOT have to wait for the exact SL price to print
-      This is a JUDGEMENT call and the bar is REAL evidence, not a feeling. "Price
-      moved against me a bit", a single noisy candle, or fear are NOT reasons. If the
-      strongest thing you can say is "it looks weak", HOLD.
+2. CLOSE EARLY (or PARTIAL_CLOSE) — do NOT wait for the SL at ${trade.currentSl}
+   — when you can point to REAL evidence the move is turning:
+     - LTF printing ${reversalShape} against your position, or a strong
+       opposite-side rejection / engulfing at a key level
+     - momentum decisively flipped on the timeframe that carried the thesis,
+       ideally with volume confirming the against-side
+     - the structural level the trade relied on is visibly failing
+   "It looks weak" / one noisy candle / fear are NOT reasons.
 
-    2b. NEAR TP — protect the win. If price has run most of the way to TP and is now
-      showing exhaustion or starting to reverse (rejection wick, stalling momentum,
-      opposite-side pressure building), do not give the gains back chasing the last
-      few ticks. PARTIAL_CLOSE to bank the bulk of it, or CLOSE outright if the
-      reversal looks convincing. Round-tripping a near-winner back to break-even is a
-      worse outcome than taking most of the target.
+3. NEAR TP — if price has run most of the way and exhaustion / opposite-side
+   pressure is now showing, PARTIAL_CLOSE to bank the bulk (or CLOSE if the
+   reversal looks convincing). Round-tripping a near-winner is worse than
+   taking most of the target.
 
-    3. IF IN PROFIT — protect and extend:
-      - ADJUST: tighten SL toward break-even or behind the most recent ${trade.direction === 'LONG' ? 'swing low' : 'swing high'}
-        to lock in gains. Keep the SL a sensible distance back (roughly ≥1× ATR
-        from price) so normal noise does not wick you out prematurely.
-      - ADJUST: extend TP ONLY if price has cleanly reached the old TP zone AND a
-        further structural level genuinely exists beyond it. Otherwise leave TP.
-      - PARTIAL_CLOSE: when the move is extended and the next leg is uncertain —
-        bank a portion, let the rest ride with a protected stop. ${isPartialCloseDisabled ? 'NOTE: PARTIAL CLOSE IS CURRENTLY DISABLED FOR THIS POSITION SIZE.' : ''}
+4. IN PROFIT — protect and extend:
+     ADJUST: tighten SL toward BE or behind the most recent ${trailAnchor},
+       keeping ≥~1× ATR back so normal noise won't wick you.
+     ADJUST: extend TP ONLY if price cleanly reached the old TP AND a further
+       structural level genuinely exists beyond it.
+     PARTIAL_CLOSE: extended move + uncertain next leg → bank some, ride rest.
+     ${partialCloseNote}
 
-    4. IF IN DRAWDOWN — be patient, not reactive:
-      - The SL already caps the downside. Do NOT close just because you are red —
-        being underwater is not a reason. But if the early-exit evidence in step 2 is
-        actually there (reversal forming, momentum flipped against you), don't stubbornly
-        ride it to the stop either — cut it. Red + real reversal = CLOSE; red + noise = HOLD.
-      - NEVER widen the SL. NEVER move it further from price. Tighten only.
+5. IN DRAWDOWN — patient, not reactive. Red alone is not a reason to close.
+   But if the reversal evidence in step 2 is actually there, cut early — don't
+   stubbornly ride to the stop.
 
-    5. Never act just to act. If nothing concrete has changed since entry: HOLD.
-
-    reasoning must name the SPECIFIC level or signal driving the decision (e.g.
-    "4H broke 1985 support, structure flipped" — not "looks weak"). If you cannot
-    name it, the answer is HOLD.
-
-    JSON response:
-    {
-      "action": "HOLD" | "ADJUST" | "CLOSE" | "PARTIAL_CLOSE",
-      "newTp": <number | null — only when extending/changing TP>,
-      "newSl": <number | null — only when tightening SL; must be closer to price than current, never further>,
-      "closePercent": <0-100 | null — only for PARTIAL_CLOSE>,
-      "reasoning": "<max 100 chars — name the specific level/signal driving the action, not a feeling.>",
-      "urgency": "low" | "medium" | "high"
-    }
+Reasoning MUST name the SPECIFIC level or signal driving the action (e.g.
+"4H lost 1985 support, structure flipped" — not "looks weak"). If you cannot
+name it → HOLD. Emit in the JSON format defined in your system prompt <format>.
+</instruction>
   `.trim();
 }
 
