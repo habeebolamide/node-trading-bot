@@ -32,3 +32,6 @@ logs/
 
 # Seed wallet roster (private — curated smart-money list)
 scripts/seed/wallets.txt
+
+# Helius raw debug dumps (per-wallet, can be large)
+scripts/seed/debug/

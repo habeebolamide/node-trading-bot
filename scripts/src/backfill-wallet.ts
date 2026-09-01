@@ -7,18 +7,25 @@
  *   npm run backfill-wallet --workspace @tip/scripts -- --file=scripts/seed/wallets.txt
  *
  * Reads addresses from --addresses=CSV and/or --file=path (one address per line, # comments ok).
+ *
+ * Flags:
+ *   --max-pages=N   cap history depth (default: full history, up to 100 pages)
+ *   --debug         log the Helius response per page (type breakdown, parsed vs own swaps) and
+ *                   dump the raw JSON to scripts/seed/debug/<wallet>.json for inspection
  */
-import { readFileSync } from 'node:fs';
-import { getConfig, loadEnv } from '@tip/domain';
+import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { getConfig, loadEnv, configureLogger, createLogger } from '@tip/domain';
 import { getDb, closeDb } from '@tip/database';
 import { HeliusRestClient } from '@tip/ingestion';
-import { backfillWallet } from '@tip/wallets';
+import { backfillWallet, type BackfillPageInfo } from '@tip/wallets';
 
 /* eslint-disable no-console */
 function arg(name: string, fallback = ''): string {
   const hit = process.argv.find((a) => a.startsWith(`--${name}=`));
   return hit ? hit.slice(name.length + 3) : fallback;
 }
+const has = (flag: string): boolean => process.argv.includes(`--${flag}`);
 
 function collectAddresses(): string[] {
   const out: string[] = [];
@@ -37,26 +44,58 @@ async function main(): Promise<void> {
   const config = getConfig();
   if (!config.HELIUS_API_KEY) throw new Error('HELIUS_API_KEY is required (set it in .env)');
 
+  // Route all logging through the file logger (logs/app.log at repo root) — the debug flag lifts
+  // the level to `debug` so per-page Helius detail is recorded.
+  const debug = has('debug');
+  const logFile = fileURLToPath(new URL('../../logs/app.log', import.meta.url));
+  configureLogger({ level: debug ? 'debug' : config.LOG_LEVEL, file: logFile });
+  const log = createLogger('backfill');
+
   const addresses = collectAddresses();
   if (addresses.length === 0) throw new Error('no addresses — pass --addresses=CSV or --file=path');
 
   const db = getDb();
   const rest = new HeliusRestClient({ apiKey: config.HELIUS_API_KEY });
-  console.log(`[backfill-wallet] ${addresses.length} wallet(s)`);
+  const maxPagesArg = arg('max-pages');
+  const maxPages = maxPagesArg ? Number(maxPagesArg) : undefined;
+  const debugDir = fileURLToPath(new URL('../seed/debug', import.meta.url));
+  log.info(`starting`, { wallets: addresses.length, maxPages: maxPages ?? 'full', debug, logFile });
 
   let totalTrades = 0;
   for (const [i, wallet] of addresses.entries()) {
     try {
-      const r = await backfillWallet(rest, db, wallet, { delayMs: 200, log: (m) => console.log(`  ${m}`) });
+      const rawAccum: unknown[] = [];
+      // Log every Helius page (type/source breakdown, parsed vs own swaps) through the logger.
+      const onPage = (info: BackfillPageInfo): void => {
+        const types: Record<string, number> = {};
+        for (const t of info.raw) {
+          const key = `${(t as { type?: string }).type ?? 'UNKNOWN'}/${(t as { source?: string }).source ?? '-'}`;
+          types[key] = (types[key] ?? 0) + 1;
+        }
+        log.debug(`helius page ${info.page} for ${wallet}`, {
+          rawCount: info.rawCount, parsedSwaps: info.parsedSwaps, ownSwaps: info.ownSwaps, types,
+        });
+        if (debug) rawAccum.push(...info.raw);
+      };
+
+      const opts = { delayMs: 200, log: (m: string) => log.info(m), onPage, ...(maxPages ? { maxPages } : {}) };
+      const r = await backfillWallet(rest, db, wallet, opts);
       totalTrades += r.trades;
-      console.log(`[${i + 1}/${addresses.length}] ${wallet}: ${r.insertedSwaps} new swaps, ${r.trades} trades`);
+
+      if (debug) {
+        mkdirSync(debugDir, { recursive: true });
+        const outFile = `${debugDir}/${wallet}.json`;
+        writeFileSync(outFile, JSON.stringify(rawAccum, null, 2));
+        log.info(`dumped raw Helius txns`, { count: rawAccum.length, file: outFile });
+      }
+      log.info(`[${i + 1}/${addresses.length}] ${wallet}`, { newSwaps: r.insertedSwaps, trades: r.trades });
     } catch (err) {
-      console.error(`[${i + 1}/${addresses.length}] ${wallet} FAILED:`, err instanceof Error ? err.message : err);
+      log.error(`[${i + 1}/${addresses.length}] ${wallet} FAILED`, err instanceof Error ? err.message : String(err));
     }
   }
 
   await closeDb(db);
-  console.log(`[backfill-wallet] done — ${totalTrades} trades across ${addresses.length} wallet(s)`);
+  log.info(`done`, { totalTrades, wallets: addresses.length });
 }
 
 main().catch((err: unknown) => {

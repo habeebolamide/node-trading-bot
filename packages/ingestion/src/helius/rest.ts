@@ -15,6 +15,8 @@ export interface AddressPage {
   lastSignature: string | null;
   /** Number of RAW txs in the page (swaps + non-swaps). `< limit` means end of history. */
   rawCount: number;
+  /** The raw Helius enhanced-tx objects for this page (full fields), for debug/inspection. */
+  raw: RawEnhancedTx[];
 }
 
 const BASE = 'https://api.helius.xyz';
@@ -81,6 +83,7 @@ export class HeliusRestClient implements SolanaDataProvider {
       swaps: parseHeliusWebhook(raw, new Date().toISOString()),
       lastSignature: raw.length > 0 ? (raw[raw.length - 1]!.signature ?? null) : null,
       rawCount: raw.length,
+      raw,
     };
   }
 }

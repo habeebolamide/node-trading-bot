@@ -6,9 +6,18 @@
  */
 import { randomUUID } from 'node:crypto';
 import { walletTransaction, type Db } from '@tip/database';
-import { type HeliusRestClient } from '@tip/ingestion';
+import { type HeliusRestClient, type RawEnhancedTx } from '@tip/ingestion';
 import { walletAddress } from '@tip/domain';
 import { reconstructWallet } from './persist.js';
+
+/** Per-page debug info surfaced to callers (the CLI --debug logger uses this). */
+export interface BackfillPageInfo {
+  page: number;
+  rawCount: number; // raw txns Helius returned this page
+  parsedSwaps: number; // swaps the parser recognized (any trader)
+  ownSwaps: number; // swaps kept (feePayer === this wallet)
+  raw: RawEnhancedTx[]; // full raw Helius objects, for dumping/inspection
+}
 
 export interface WalletBackfillOptions {
   /** Raw txs per page (Helius max 100). */
@@ -18,6 +27,8 @@ export interface WalletBackfillOptions {
   /** ms delay between pages (be polite to the API). */
   delayMs?: number;
   log?: (msg: string) => void;
+  /** Called once per fetched page — used by the --debug logger to inspect the Helius response. */
+  onPage?: (info: BackfillPageInfo) => void;
 }
 
 export interface WalletBackfillResult {
@@ -53,6 +64,8 @@ export async function backfillWallet(
     // people's trades under their addresses. This is the seeded wallet's OWN history (§4).
     const own = page.swaps.filter((s) => s.wallet === wallet);
     fetchedSwaps += own.length;
+
+    opts.onPage?.({ page: pageNum, rawCount: page.rawCount, parsedSwaps: page.swaps.length, ownSwaps: own.length, raw: page.raw });
 
     if (own.length > 0) {
       const inserted = await db
