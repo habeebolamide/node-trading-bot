@@ -26,3 +26,6 @@ logs/
 .idea/
 
 # NOTE: package-lock.json is committed (CLAUDE.md — npm workspaces, lockfile tracked).
+
+# Redis snapshot (redis-server started from repo root during dev)
+*.rdb

@@ -5,10 +5,9 @@
     "outDir": "dist"
   },
   "references": [
-    { "path": "../../packages/domain" },
-    { "path": "../../packages/events" },
-    { "path": "../../packages/database" },
-    { "path": "../../packages/ingestion" }
+    { "path": "../domain" },
+    { "path": "../events" },
+    { "path": "../database" }
   ],
   "include": ["src/**/*"],
   "exclude": ["dist", "**/*.test.ts"]

@@ -1,5 +1,5 @@
 {
-  "name": "@tip/domain",
+  "name": "@tip/ingestion",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -16,7 +16,12 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "dotenv": "^16.4.5",
-    "zod": "^3.23.8"
+    "@tip/database": "*",
+    "@tip/domain": "*",
+    "@tip/events": "*",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/ws": "^8.5.13"
   }
 }

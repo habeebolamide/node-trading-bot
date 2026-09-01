@@ -5,6 +5,7 @@
     { "path": "packages/domain" },
     { "path": "packages/events" },
     { "path": "packages/database" },
+    { "path": "packages/ingestion" },
     { "path": "apps/api" },
     { "path": "apps/worker" }
   ]

@@ -1,11 +1,12 @@
 import { createServer } from 'node:http';
-import { getConfig } from '@tip/domain';
+import { getConfig, loadEnv } from '@tip/domain';
 import { getDb, closeDb } from '@tip/database';
 import { createRedis, EventBus } from '@tip/events';
 import { createApp } from './app.js';
 
 /** Boot the API: validate env, wire real connections, listen, wire shutdown. */
 async function main(): Promise<void> {
+  loadEnv(); // hydrate process.env from repo-root .env (no-op in production)
   const config = getConfig(); // validates env; throws FatalError if bad
   const db = getDb();
   const redis = createRedis(config.REDIS_URL);
