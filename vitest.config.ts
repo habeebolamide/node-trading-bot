@@ -13,6 +13,7 @@ export default defineConfig({
       '@tip/events': pkg('./packages/events/src/index.ts'),
       '@tip/database': pkg('./packages/database/src/index.ts'),
       '@tip/ingestion': pkg('./packages/ingestion/src/index.ts'),
+      '@tip/evaluation': pkg('./packages/evaluation/src/index.ts'),
     },
   },
   test: {

@@ -6,7 +6,9 @@
     { "path": "packages/events" },
     { "path": "packages/database" },
     { "path": "packages/ingestion" },
+    { "path": "packages/evaluation" },
     { "path": "apps/api" },
-    { "path": "apps/worker" }
+    { "path": "apps/worker" },
+    { "path": "scripts" }
   ]
 }

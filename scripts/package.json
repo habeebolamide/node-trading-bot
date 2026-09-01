@@ -1,0 +1,16 @@
+{
+  "name": "@tip/scripts",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc --build",
+    "backfill": "tsx src/backfill-bybit.ts"
+  },
+  "dependencies": {
+    "@tip/database": "*",
+    "@tip/domain": "*",
+    "@tip/evaluation": "*",
+    "@tip/ingestion": "*"
+  }
+}

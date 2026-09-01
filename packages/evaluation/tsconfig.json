@@ -1,0 +1,14 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    "outDir": "dist"
+  },
+  "references": [
+    { "path": "../domain" },
+    { "path": "../database" },
+    { "path": "../ingestion" }
+  ],
+  "include": ["src/**/*"],
+  "exclude": ["dist", "**/*.test.ts"]
+}
