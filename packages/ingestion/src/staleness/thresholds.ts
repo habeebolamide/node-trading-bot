@@ -36,3 +36,10 @@ export const klineFeedId = (tf: Timeframe): string => `bybit.kline.${tf}`;
 export const TICKERS_FEED = 'bybit.tickers';
 export const LIQUIDATION_FEED = 'bybit.liquidation';
 export const POSITIONING_FEED = 'bybit.positioning_poll';
+export const HELIUS_WEBHOOK_FEED = 'helius.wallet_webhook';
+export const HELIUS_REST_FEED = 'helius.rest';
+
+/** `helius.rest` liveness threshold — same `3 × interval` rule as the polled positioning feed. */
+export function heliusRestThresholdMs(probeIntervalMs: number): number {
+  return 3 * probeIntervalMs;
+}

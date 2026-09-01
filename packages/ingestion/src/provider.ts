@@ -9,7 +9,7 @@
  * correctness the whole platform leans on (rules 21/22) needs this distinction present from
  * the first byte of ingestion.
  */
-import type { MarketSymbol, Timeframe } from '@tip/domain';
+import type { MarketSymbol, Timeframe, Mint, WalletAddress } from '@tip/domain';
 
 export interface Clocks {
   /** ISO — when the event actually happened, from the source payload. */
@@ -75,4 +75,37 @@ export interface HistoryQuery {
 export interface MarketDataProvider {
   getKlines(symbol: MarketSymbol, timeframe: Timeframe, q?: HistoryQuery): Promise<NormalizedKline[]>;
   getAccountRatio(symbol: MarketSymbol, period: string): Promise<NormalizedAccountRatio>;
+}
+
+// ── Solana / memecoin (Part II §7) ────────────────────────────
+
+/**
+ * A normalized on-chain swap by a wallet (§12). `amountSol` and `tokenAmount` are the
+ * deterministic on-chain legs; `amountUsd` is deliberately absent here — USD valuation is an
+ * M2 enrichment (SOL-price join), not something the parser invents (rule 14).
+ */
+export interface NormalizedWalletTx extends Clocks {
+  readonly signature: string; // the idempotency key (tx_hash, §29)
+  readonly wallet: WalletAddress;
+  readonly action: 'BUY' | 'SELL';
+  readonly mint: Mint; // the target (non-quote) token
+  readonly tokenAmount: string; // UI-adjusted target amount
+  readonly amountSol: string; // SOL (quote) leg
+  readonly blockTime: Date;
+  readonly slot: number | null;
+}
+
+export interface AddressHistoryQuery {
+  readonly before?: string; // signature to page before
+  readonly until?: string; // signature to page until
+  readonly limit?: number;
+}
+
+/**
+ * Solana provider seam. The historical half is a per-address parsed-transaction lookup (§4) —
+ * used both by the M2 wallet-scoring backfill and by the M1 liveness probe. Live delivery is via
+ * webhooks handled by the ingest consumer, not this interface.
+ */
+export interface SolanaDataProvider {
+  getAddressTransactions(address: WalletAddress, q?: AddressHistoryQuery): Promise<NormalizedWalletTx[]>;
 }

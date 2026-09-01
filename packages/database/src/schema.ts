@@ -101,7 +101,11 @@ export const walletTransaction = pgTable(
     wallet: text('wallet').notNull(),
     action: text('action').notNull(), // 'BUY' | 'SELL'
     mint: text('mint').notNull(),
-    amountUsd: numeric('amount_usd').notNull(),
+    // Deterministic on-chain amounts captured at ingestion (m1-helius-adapter):
+    amountSol: numeric('amount_sol').notNull().default('0'), // quote (SOL) leg of the swap
+    tokenAmount: numeric('token_amount').notNull().default('0'), // target token, UI-adjusted
+    // USD valuation is an M2 enrichment (SOL-price join) — null until then.
+    amountUsd: numeric('amount_usd'),
     blockTime: timestamp('block_time', { withTimezone: true, mode: 'date' }).notNull(),
     txHash: text('tx_hash').notNull(),
     slot: bigint('slot', { mode: 'number' }),

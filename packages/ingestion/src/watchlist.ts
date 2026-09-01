@@ -12,3 +12,11 @@ export const DEFAULT_PERP_SYMBOLS: readonly MarketSymbol[] = [
 
 /** Timeframes ingested live + backfilled (§30 pre-launch gate lists all six). */
 export const DEFAULT_TIMEFRAMES: readonly Timeframe[] = ['1m', '5m', '15m', '1h', '4h', '1d'];
+
+/**
+ * Canary wallet for the Helius webhook-liveness probe (§10). Any valid, reliably-active address
+ * works — the probe only proves REST reachability, not that this specific wallet traded. Default
+ * is Raydium's Authority V4 (a perpetually-busy program-owned account). Operators can point this
+ * at a wallet they actually watch for a stronger signal.
+ */
+export const HELIUS_CANARY_WALLET = '5Q544fKrFoe6tsEbD7S8EmxGTJYAKtTVhAW5Q5pge4j';

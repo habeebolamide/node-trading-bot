@@ -9,6 +9,12 @@ export { BybitWsClient, bybitPublicUrl, type BybitWsOptions, type SocketLike, ty
 export { BybitAdapter, type BybitAdapterOptions } from './bybit/adapter.js';
 export { AccountRatioPoller, type AccountRatioPollerOptions } from './bybit/poller.js';
 
+// Helius adapter
+export * from './helius/parse.js';
+export { HeliusRestClient, type HeliusRestOptions } from './helius/rest.js';
+export { registerHeliusIngestion, createHeliusHandler, type HeliusIngestionDeps } from './helius/ingest.js';
+export { HeliusLivenessProbe, type HeliusLivenessProbeOptions } from './helius/liveness.js';
+
 // Staleness
 export * from './staleness/thresholds.js';
 export { FeedMonitor, type FeedState, type FeedMonitorOptions } from './staleness/monitor.js';

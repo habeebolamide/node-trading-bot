@@ -6,8 +6,14 @@ import {
   BybitRestClient,
   AccountRatioPoller,
   FeedMonitor,
+  registerHeliusIngestion,
+  HeliusRestClient,
+  HeliusLivenessProbe,
+  HELIUS_WEBHOOK_FEED,
+  HELIUS_REST_FEED,
   DEFAULT_PERP_SYMBOLS,
   DEFAULT_TIMEFRAMES,
+  HELIUS_CANARY_WALLET,
 } from '@tip/ingestion';
 import { startWorkers } from './runner.js';
 // Side-effect imports that register queue processors go here as milestones add them.
@@ -25,8 +31,17 @@ async function main(): Promise<void> {
   // ── Bybit market-data ingestion (M1) ──────────────────────────
   const symbols = [...DEFAULT_PERP_SYMBOLS];
   const timeframes = [...DEFAULT_TIMEFRAMES];
-  const monitor = new FeedMonitor({
-    onStale: (id, age) => console.warn(`[staleness] ${id} STALE (${Math.round(age / 1000)}s since last msg)`),
+  // Forward-declared so the onStale callback can cross-check the Helius REST feed (§10).
+  let monitor: FeedMonitor;
+  monitor = new FeedMonitor({
+    onStale: (id, age) => {
+      // Helius webhook stale while REST is fresh ⇒ webhook path broken, not just quiet (§10).
+      if (id === HELIUS_WEBHOOK_FEED && !monitor.isStale(HELIUS_REST_FEED)) {
+        console.warn('[staleness] helius WEBHOOK path likely BROKEN — REST reachable but no webhooks arriving');
+      } else {
+        console.warn(`[staleness] ${id} STALE (${Math.round(age / 1000)}s since last msg)`);
+      }
+    },
     onRecover: (id, down) => console.log(`[staleness] ${id} recovered (was down ~${Math.round(down / 1000)}s)`),
   });
   const adapter = new BybitAdapter({
@@ -51,11 +66,32 @@ async function main(): Promise<void> {
   const monitorTimer = setInterval(() => monitor.check(), 5_000);
   console.log(`[worker] bybit ingestion live for ${symbols.join(', ')}`);
 
+  // ── Helius memecoin ingestion (M1) ────────────────────────────
+  // Always consume webhooks (drains the blockchain-ingestion queue + parses); the REST liveness
+  // probe only runs when a key is present.
+  const heliusLog = (level: 'info' | 'warn', msg: string): void =>
+    (level === 'warn' ? console.warn : console.log)(`[helius] ${msg}`);
+  registerHeliusIngestion({ bus, db, monitor, log: heliusLog });
+  let heliusProbe: HeliusLivenessProbe | undefined;
+  if (config.HELIUS_API_KEY) {
+    heliusProbe = new HeliusLivenessProbe({
+      rest: new HeliusRestClient({ apiKey: config.HELIUS_API_KEY }),
+      monitor,
+      canaryWallet: HELIUS_CANARY_WALLET,
+      log: heliusLog,
+    });
+    heliusProbe.start();
+    console.log('[worker] helius ingestion + liveness probe active');
+  } else {
+    console.log('[worker] helius ingestion active (no HELIUS_API_KEY — liveness probe off)');
+  }
+
   const shutdown = async (signal: string): Promise<void> => {
     console.log(`[worker] ${signal} — draining`);
     clearInterval(monitorTimer);
     poller.stop();
     adapter.stop();
+    heliusProbe?.stop();
     await bus.close(); // stops accepting, finishes in-flight
     await closeDb(db);
     process.exit(0);
