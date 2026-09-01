@@ -159,6 +159,78 @@ export const walletTrade = pgTable(
   ],
 );
 
+/** Wallet profile (§13). Identity + current rating status; the score itself lives in the log below. */
+export const wallet = pgTable('wallet', {
+  address: text('address').primaryKey(),
+  firstSeenAt: timestamp('first_seen_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+  lastScoredAt: timestamp('last_scored_at', { withTimezone: true, mode: 'date' }),
+  tradeCount: integer('trade_count').notNull().default(0), // CLOSED round-trips
+  status: text('status').notNull().default('unrated'), // 'rated' | 'unrated'
+});
+
+/**
+ * Append-only wallet-score log (§4, rules 8/16/21). "Score as of T" = the latest row with
+ * timestamp ≤ T. Never updated in place; a recompute writes a new row. `configVersion` pins the
+ * WalletScoringConfig that produced it so a weight change never blends history.
+ */
+export const walletScoreEvent = pgTable(
+  'wallet_score_event',
+  {
+    id: text('id').primaryKey(), // uuid
+    walletId: text('wallet_id').notNull(),
+    timestamp: timestamp('timestamp', { withTimezone: true, mode: 'date' }).notNull(),
+    score: numeric('score').notNull(),
+    configVersion: integer('config_version').notNull(),
+    inputsUsed: jsonb('inputs_used').notNull(), // raw sub-metrics + percentiles that produced the score
+  },
+  (t) => [index('wallet_score_event_wallet_ts_idx').on(t.walletId, t.timestamp)],
+);
+
+/** Per-wallet Brain memory (§16, §40.17). Holds early-entry aggregate stats + behavioral profile. */
+export const brainWalletMemory = pgTable('brain_wallet_memory', {
+  walletId: text('wallet_id').primaryKey(),
+  earlyEntry: jsonb('early_entry'), // { perHorizonMedian{}, peakMedian, coverage }
+  updatedAt: timestamp('updated_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+});
+
+/**
+ * Wallet-scoring config (§4/Task-1). Append-only, versioned — DOMAIN-LEVEL (a wallet score is a
+ * shared Brain fact, §15), distinct from the per-TradingAgent ScoringConfig (§8). Weight changes
+ * write a new row; every WalletScoreEvent FKs the version that produced it.
+ */
+export const walletScoringConfig = pgTable('wallet_scoring_config', {
+  version: integer('version').primaryKey(),
+  weights: jsonb('weights').notNull(), // {profitability, winRate, earlyEntry, consistency, specialization, tradeQuality, corroboration}
+  priorAlpha: numeric('prior_alpha').notNull(),
+  priorBeta: numeric('prior_beta').notNull(),
+  unratedMinTrades: integer('unrated_min_trades').notNull().default(10),
+  recomputeEveryNTrades: integer('recompute_every_n_trades').notNull().default(25),
+  createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+  active: boolean('active').notNull().default(true),
+});
+
+/**
+ * Per-trade forward-horizon returns (§3/§13) computed via the observed-swap price approximation.
+ * `forwardReturns` holds `{ '5m': number|null, … }` — null where no swap landed near the horizon
+ * (never fabricated). `coverage` = fraction of horizons with data, used to down-weight thin stats.
+ */
+export const tradeOutcome = pgTable(
+  'trade_outcome',
+  {
+    id: text('id').primaryKey(), // uuid
+    tradeId: text('trade_id').notNull(),
+    walletId: text('wallet_id').notNull(),
+    mint: text('mint').notNull(),
+    entryAt: timestamp('entry_at', { withTimezone: true, mode: 'date' }).notNull(),
+    entryPriceSol: numeric('entry_price_sol').notNull(),
+    forwardReturns: jsonb('forward_returns').notNull(),
+    peakReturn: numeric('peak_return'),
+    coverage: numeric('coverage').notNull(),
+    computedAt: timestamp('computed_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+  },
+  (t) => [index('trade_outcome_wallet_idx').on(t.walletId)],
+);
+
 export const schema = {
   domainEvent,
   processedEvent,
@@ -168,4 +240,9 @@ export const schema = {
   walletTransaction,
   token,
   walletTrade,
+  wallet,
+  walletScoreEvent,
+  brainWalletMemory,
+  walletScoringConfig,
+  tradeOutcome,
 };

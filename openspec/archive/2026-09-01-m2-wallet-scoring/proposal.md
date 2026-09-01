@@ -1,6 +1,29 @@
 # Change: m2-wallet-scoring
 
-**Status:** PROPOSED (scoping — awaiting review)
+> **COMPLETED 2026-09-01.** Shipped the §4/Task-6 scoring into `packages/wallets`: `stats.ts`
+> (Beta-Binomial shrinkage, percentile rank), `price-series.ts` (observed-swap series + forward
+> returns, null-on-gap), `early-entry.ts` (per-wallet aggregate → `trade_outcome` + coverage),
+> `metrics.ts` (the seven sub-metrics), `scoring.ts` (universe percentile-normalize + weighted
+> composite + UNRATED gate), `score-log.ts` (append-only `WalletScoreEvent` + `walletScoreAsOf(T)`
+> with NO current-score accessor — rule 21), `config.ts` (domain-level versioned
+> `WalletScoringConfig`, seeds the §4 default weights), and `recompute.ts` (`scoreAllWallets` full
+> pass). Migration 0003 (wallet, wallet_score_event, brain_wallet_memory, wallet_scoring_config,
+> trade_outcome) applied.
+>
+> **Verified:** typecheck green; **95/98 tests pass** (3 opt-in live skipped). Mandatory units:
+> shrinkage (2/2 < 350/500, n=0→base, monotonic), percentile normalization (boundaries,
+> single-wallet, empty), forward returns (null-on-gap, coverage, peak, entryPrice guard), scoring
+> (ordering, weight renormalization). Live-Postgres pass: a 12-trade wallet is RATED and scored, a
+> 3-trade wallet stays UNRATED with no score event, `walletScoreAsOf` never returns the future, and
+> profiles reflect status.
+>
+> **Deviations from spec:** none material. Both sign-off items confirmed by the user (domain-level
+> WalletScoringConfig; the MVP sub-metric formulas). The per-25-trades incremental trigger reuses
+> the full pass for MVP (cheap at ~100 wallets); a true incremental path is a documented later
+> optimization. Next: m2-seed-analysis (needs the ~100-wallet roster).
+
+**Status:** COMPLETED — archived
+**Original status:** PROPOSED (scoping — awaiting review)
 **Milestone:** M2 — Wallet Intelligence (§30), change 2 of 3
 **Implements:** Part II §3 (early-entry edge), §4 (wallet scoring, `WalletScoreEvent`, backfill),
 Task 6 (§34 — Beta-Binomial shrinkage, percentile normalization, n<10 unrated, recompute trigger),
