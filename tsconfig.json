@@ -1,0 +1,5 @@
+{
+  "//": "Solution-style root config. References are added as each workspace is created (OpenSpec change by change). `tsc --build` walks these in dependency order.",
+  "files": [],
+  "references": []
+}
