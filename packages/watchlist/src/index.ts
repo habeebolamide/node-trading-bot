@@ -6,3 +6,8 @@ export * from './buy-detector.js';
 export * from './clustering/cluster.js';
 export * from './clustering/funder-fetch.js';
 export * from './clustering/recompute.js';
+
+// Convergence (m3-convergence)
+export * from './convergence/aggregator.js';
+export * from './convergence/batching.js';
+export * from './convergence/emitter.js';

@@ -16,7 +16,7 @@ import {
   DEFAULT_TIMEFRAMES,
   HELIUS_CANARY_WALLET,
 } from '@tip/ingestion';
-import { HeliusSubscriptionManager, Watchlist, registerBuyDetector } from '@tip/watchlist';
+import { HeliusSubscriptionManager, Watchlist, registerBuyDetector, registerConvergenceEmitter, type Batcher } from '@tip/watchlist';
 import { startWorkers } from './runner.js';
 // Side-effect imports that register queue processors go here as milestones add them.
 
@@ -88,9 +88,10 @@ async function main(): Promise<void> {
     console.log('[worker] helius ingestion active (no HELIUS_API_KEY — liveness probe off)');
   }
 
-  // ── Watchlist BuyDetector + Helius subscription reconcile (M3) ────────────────
-  // BuyDetector consumes wallet.transaction.detected → filters to watched+rated-at-T →
-  // emits memecoin.wallet.buy.detected. Requires the Helius trio to reconcile the subscription.
+  // ── Watchlist BuyDetector + Convergence emitter + Helius subscription (M3) ──────
+  // BuyDetector: wallet.transaction.detected → watched+rated-at-T → memecoin.wallet.buy.detected
+  // Convergence: batches the above per mint → memecoin.wallet.convergence.detected
+  let convergenceBatcher: Batcher | undefined;
   if (config.HELIUS_API_KEY && config.HELIUS_WEBHOOK_SECRET && config.HELIUS_WEBHOOK_URL) {
     const rest = new HeliusRestClient({ apiKey: config.HELIUS_API_KEY });
     const admin = new HeliusWebhookAdmin({ apiKey: config.HELIUS_API_KEY });
@@ -112,9 +113,15 @@ async function main(): Promise<void> {
       watchlist,
       log: (msg, meta) => console.log(`[buy-detector] ${msg}`, meta ?? ''),
     });
+    const { batcher } = registerConvergenceEmitter({
+      db,
+      bus,
+      log: (msg, meta) => console.log(`[convergence] ${msg}`, meta ?? ''),
+    });
+    convergenceBatcher = batcher;
     try {
       await subscription.reconcileAll();
-      console.log('[worker] watchlist BuyDetector + subscription reconcile active');
+      console.log('[worker] watchlist BuyDetector + Convergence + subscription reconcile active');
     } catch (err) {
       console.warn('[worker] subscription reconcile failed on boot:', err instanceof Error ? err.message : err);
     }
@@ -128,6 +135,7 @@ async function main(): Promise<void> {
     poller.stop();
     adapter.stop();
     heliusProbe?.stop();
+    if (convergenceBatcher) await convergenceBatcher.drainAll(); // emit any pending batches
     await bus.close(); // stops accepting, finishes in-flight
     await closeDb(db);
     process.exit(0);

@@ -1,6 +1,30 @@
 # Change: m3-convergence
 
-**Status:** PROPOSED (scoping — awaiting review)
+> **COMPLETED 2026-09-01.** Grew `packages/watchlist/convergence`: `aggregator.ts` (pure —
+> per-cluster grouping, Task-6 clusterQuality cap, timeCompression taper §40.8, (wallet,sig)
+> dedup, solo-wallet fallback so single clusters still contribute), `batching.ts` (per-mint pen
+> with injectable timers + drainAll for graceful shutdown), `emitter.ts`
+> (createConvergenceEmitter / registerConvergenceEmitter — consumer on SIGNAL_PROCESSING that
+> loads active clusters via `activeClusterMap` and publishes MEMECOIN_WALLET_CONVERGENCE_DETECTED
+> with the full evidence package the Convergence Agent §40.8 will consume in M4).
+>
+> Worker wiring: registered alongside BuyDetector under the same Helius-trio gate; shutdown
+> drains pending pens before Redis/DB close.
+>
+> **Verified:** typecheck green; **140/143 tests pass** (3 opt-in live skipped). 14 new tests:
+> aggregator (6 — 3-distinct → count=3, shared-funder → count=1, solo fallback, cap, tight-vs-loose
+> score, sig dedup), batcher (3 — pen semantics, multi-mint independence, drainAll), emitter (4 —
+> injected clusters + fake bus/timers).
+>
+> **Deviations from spec:** none material. Token-claim pre-filter (§9a) is intentionally not wired
+> in M3 (needs TradingAgents at M4); the machinery hook is there. Wallet-exit event
+> (memecoin.wallet.exit.detected) lives with the Paper Engine (Part II §10) at M4.
+>
+> **Follow-ups:** batchingWindowMs is the §9a placeholder (5000ms) as a module constant. Tune
+> from seed-analysis and wire into ScoringConfig at M4. **M3 (all 3 changes) is complete.**
+
+**Status:** COMPLETED — archived
+**Original status:** PROPOSED (scoping — awaiting review)
 **Milestone:** M3 — Smart Money Radar (§30), change 3 of 3 (final)
 **Implements:** Part II §5 (funder-dedup convergence), §9a (batching window,
 `memecoin.wallet.buy.detected` fan-in), Task 6 (convergence math). §33 rules 12/17/19.
