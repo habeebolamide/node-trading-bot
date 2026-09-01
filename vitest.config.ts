@@ -17,6 +17,7 @@ export default defineConfig({
       '@tip/wallets': pkg('./packages/wallets/src/index.ts'),
       '@tip/watchlist': pkg('./packages/watchlist/src/index.ts'),
       '@tip/trading-agents': pkg('./packages/trading-agents/src/index.ts'),
+      '@tip/agents': pkg('./packages/agents/src/index.ts'),
     },
   },
   test: {

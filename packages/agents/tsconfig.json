@@ -1,0 +1,16 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    "outDir": "dist"
+  },
+  "references": [
+    { "path": "../domain" },
+    { "path": "../database" },
+    { "path": "../events" },
+    { "path": "../trading-agents" },
+    { "path": "../wallets" }
+  ],
+  "include": ["src/**/*"],
+  "exclude": ["dist", "**/*.test.ts"]
+}

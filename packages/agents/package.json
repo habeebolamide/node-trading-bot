@@ -1,0 +1,26 @@
+{
+  "name": "@tip/agents",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "build": "tsc --build",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@tip/database": "*",
+    "@tip/domain": "*",
+    "@tip/events": "*",
+    "@tip/trading-agents": "*",
+    "@tip/wallets": "*",
+    "drizzle-orm": "^0.36.4"
+  }
+}

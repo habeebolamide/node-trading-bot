@@ -1,6 +1,31 @@
 # Change: m4-memecoin-agents
 
-**Status:** PROPOSED (scoping)
+> **COMPLETED 2026-09-01.** Shipped `packages/agents` with the 5 memecoin composite-agents +
+> Token Risk hard veto + 2 features:
+> - `common/trigger-router.ts` (dispatch DomainEvents → matching AnalysisAgents; sink pattern)
+> - `common/token-candle.ts` (per-mint OHLCV on demand from wallet_transaction)
+> - `memecoin/smart-money.ts` (§40.7 — walletScore normalization + size-weighted confidence)
+> - `memecoin/convergence.ts` (§40.8 — packages M3 emitter output; cluster-count + timeCompression → confidence)
+> - `memecoin/momentum.ts` (§40.9 — slope + volume ratio + extension penalty; CONDITIONAL dead-candle skip)
+> - `memecoin/token-quality.ts` (§40.10 — unipolar; missing sub-feature caps confidence at 0.6)
+> - `memecoin/market-regime.ts` (§40.11 — SOL kline history → BULL/BEAR/RANGE/HIGH_VOL + bias)
+> - `memecoin/token-risk.ts` (§40.13 hard veto — 5 checks + fail-closed; `isVetoed` helper)
+> - `memecoin/features/early-entry.ts` (§40.17 — reads BrainWalletMemory.earlyEntry, coverage-weighted)
+> - `memecoin/features/freshness.ts` (§40.18 — `exp(-Δt/τ)`, τ=15s default)
+>
+> `memecoinAgents` array holds the 5 composite participants; Token Risk exported separately
+> because it's a hard veto, not a composite input.
+>
+> **Verified:** typecheck green; **201/204 tests pass** (3 opt-in live). 20 new tests: 17
+> covering all 5 agents + Token Risk (including every §40.13 veto condition + fail-closed on
+> missing metadata) + 3 TriggerRouter (dispatch, dedup guard, skipped-filter).
+>
+> **Deviations from spec:** none material. `token-candle.ts` invalidates via re-query (no
+> caching yet — MVP scale). Market Regime uses simplified ATR/slope thresholds instead of full
+> ADX; the deeper implementation lands with the perp variant in change 4. Next: m4-perp-agents.
+
+**Status:** COMPLETED — archived
+**Original status:** PROPOSED (scoping)
 **Milestone:** M4 — Agent Swarm (§30), change 3 of 5
 **Implements:** §40.7 Smart Money, §40.8 Convergence, §40.9 Momentum, §40.10 Token Quality,
 §40.11 Market Regime, §40.13 Token Risk (hard veto), §40.17 Early-Entry Edge feature,
