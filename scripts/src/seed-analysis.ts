@@ -6,6 +6,7 @@
  *   npm run build && npm run seed-analysis --workspace @tip/scripts
  */
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { and, eq, inArray } from 'drizzle-orm';
 import { loadEnv } from '@tip/domain';
 import { getDb, closeDb, walletTransaction, walletTrade } from '@tip/database';
@@ -23,7 +24,7 @@ function readRoster(path: string): string[] {
 
 async function main(): Promise<void> {
   loadEnv();
-  const path = process.argv.find((a) => a.startsWith('--file='))?.slice('--file='.length) ?? 'scripts/seed/wallets.txt';
+  const path = process.argv.find((a) => a.startsWith('--file='))?.slice('--file='.length) ?? fileURLToPath(new URL('../seed/wallets.txt', import.meta.url));
   const roster = readRoster(path);
   const db = getDb();
 
@@ -91,9 +92,11 @@ async function main(): Promise<void> {
   const freshness = analyzeFreshness(freshnessSamples);
 
   const doc = renderDoc({ roster: roster.length, buys: buys.length, clusters: clusters.length, batching, ladder, walletExit, freshness });
-  mkdirSync('docs/research', { recursive: true });
-  writeFileSync('docs/research/seed-history-analysis.md', doc);
-  console.log('[analysis] wrote docs/research/seed-history-analysis.md');
+  const outDir = fileURLToPath(new URL('../../docs/research', import.meta.url)); // repo-root docs/research
+  const outFile = `${outDir}/seed-history-analysis.md`;
+  mkdirSync(outDir, { recursive: true });
+  writeFileSync(outFile, doc);
+  console.log(`[analysis] wrote ${outFile}`);
   await closeDb(db);
 }
 

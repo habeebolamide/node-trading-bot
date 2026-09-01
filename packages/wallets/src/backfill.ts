@@ -48,13 +48,17 @@ export async function backfillWallet(
   for (let pageNum = 0; pageNum < maxPages; pageNum++) {
     const query = before === undefined ? { limit: pageLimit } : { before, limit: pageLimit };
     const page = await rest.getAddressTransactionsPage(addr, query);
-    fetchedSwaps += page.swaps.length;
+    // Helius returns every tx the address APPEARS in, incl. ones where it was only a counterparty.
+    // Keep only swaps this wallet actually made (it paid the fee) — otherwise we'd record other
+    // people's trades under their addresses. This is the seeded wallet's OWN history (§4).
+    const own = page.swaps.filter((s) => s.wallet === wallet);
+    fetchedSwaps += own.length;
 
-    if (page.swaps.length > 0) {
+    if (own.length > 0) {
       const inserted = await db
         .insert(walletTransaction)
         .values(
-          page.swaps.map((s) => ({
+          own.map((s) => ({
             id: randomUUID(),
             wallet: s.wallet,
             action: s.action,

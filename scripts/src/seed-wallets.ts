@@ -8,15 +8,19 @@
  *   npm run seed-wallets --workspace @tip/scripts -- --file=path/to/wallets.txt
  */
 import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { getConfig, loadEnv } from '@tip/domain';
 import { getDb, closeDb } from '@tip/database';
 import { HeliusRestClient } from '@tip/ingestion';
 import { backfillWallet, scoreAllWallets } from '@tip/wallets';
 
 /* eslint-disable no-console */
+// Default roster resolves relative to this file (scripts/src/), so it works regardless of cwd
+// (npm runs workspace scripts with cwd = scripts/). --file overrides with a caller-relative path.
+const DEFAULT_ROSTER = fileURLToPath(new URL('../seed/wallets.txt', import.meta.url));
 function rosterFile(): string {
   const hit = process.argv.find((a) => a.startsWith('--file='));
-  return hit ? hit.slice('--file='.length) : 'scripts/seed/wallets.txt';
+  return hit ? hit.slice('--file='.length) : DEFAULT_ROSTER;
 }
 
 function readRoster(path: string): string[] {
