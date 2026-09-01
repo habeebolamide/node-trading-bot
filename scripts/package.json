@@ -10,7 +10,8 @@
     "seed-wallets": "tsx src/seed-wallets.ts",
     "seed-analysis": "tsx src/seed-analysis.ts",
     "helius-webhook": "tsx src/helius-webhook.ts",
-    "score": "tsx src/score-wallets.ts"
+    "score": "tsx src/score-wallets.ts",
+    "recompute-clusters": "tsx src/recompute-clusters.ts"
   },
   "dependencies": {
     "@tip/database": "*",

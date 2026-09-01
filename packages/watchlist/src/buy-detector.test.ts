@@ -2,15 +2,8 @@ import { describe, it, expect, vi } from 'vitest';
 import { EVENT_NAMES, QUEUE_NAMES, type EventBus } from '@tip/events';
 import type { DomainEvent } from '@tip/domain';
 import type { Db } from '@tip/database';
-import { createBuyDetectorHandler, type BuyDetectorDeps } from './buy-detector.js';
+import { createBuyDetectorHandler, type BuyDetectorDeps, type ScoreLookup } from './buy-detector.js';
 import type { Watchlist } from './store.js';
-
-// The handler reads walletScoreAsOf directly from @tip/wallets. Mock it at the module boundary
-// so the test controls score presence without touching the DB.
-vi.mock('@tip/wallets', () => ({
-  walletScoreAsOf: vi.fn(),
-}));
-const { walletScoreAsOf } = await import('@tip/wallets');
 
 const buyEvent = (over: Record<string, unknown> = {}): DomainEvent => ({
   id: 'evt-1',
@@ -30,8 +23,10 @@ function harness(watched: boolean, score: { score: number } | null): { publish: 
   const publish = vi.fn(async () => ({ id: 'e' }));
   const bus = { publish } as unknown as EventBus;
   const watchlist = { isWatched: vi.fn(async () => watched) } as unknown as Watchlist;
-  const deps: BuyDetectorDeps = { db: {} as Db, bus, watchlist };
-  (walletScoreAsOf as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(score);
+  // Inject the score lookup rather than mocking @tip/wallets — keeps this test file isolated.
+  const scoreLookup: ScoreLookup = async () =>
+    score === null ? null : { score: score.score, timestamp: new Date(), configVersion: 1, inputsUsed: {} };
+  const deps: BuyDetectorDeps = { db: {} as Db, bus, watchlist, scoreLookup };
   return { publish, handler: createBuyDetectorHandler(deps) };
 }
 
@@ -49,7 +44,7 @@ describe('BuyDetector', () => {
   });
 
   it('drops UNRATED wallets at block time (rule 21)', async () => {
-    const { publish, handler } = harness(true, null); // walletScoreAsOf returns null
+    const { publish, handler } = harness(true, null);
     await handler(buyEvent());
     expect(publish).not.toHaveBeenCalled();
   });

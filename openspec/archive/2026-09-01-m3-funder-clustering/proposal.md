@@ -1,6 +1,30 @@
 # Change: m3-funder-clustering
 
-**Status:** PROPOSED (scoping — awaiting review)
+> **COMPLETED 2026-09-01.** Grew `packages/watchlist/clustering`: `funder-fetch.ts`
+> (`findFirstFunder` — page Helius backwards up to 20 pages, scan the oldest page forward for
+> the first inbound native ≥ 0.05 SOL, `inferredAtCap` flag on cap-truncated results),
+> `cluster.ts` (pure sliding-window clustering, ≥2 members, injectable id factory, deterministic),
+> `recompute.ts` (rated wallets → fetch missing funders → cluster → insert versioned run +
+> members + supersede prior active in one txn; `activeClusterMap` helper for change 3).
+> Schema migration 0005 (wallet_funder, cluster_run, wallet_cluster) applied. CLI:
+> `scripts/recompute-clusters`.
+>
+> **Verified:** typecheck green; **126/129 tests pass** (3 opt-in live skipped). 8 new tests:
+> cluster edge cases (6 — shared-funder-in-window, window-split, singleton drop, disjoint funders,
+> boundary at 48h, wallet dedup) + live-Postgres versioning (2 — 3-wallet cluster + supersede on
+> re-run).
+>
+> **Deviations from spec:** none material. Refactored BuyDetector (change 1) to accept an
+> injectable `ScoreLookup` — removes a `vi.mock('@tip/wallets')` that was bleeding across test
+> files. Secondary CEX-withdrawal heuristic (§5) is a future add without a schema break, as
+> designed.
+>
+> **Follow-ups:** run `npm run recompute-clusters --workspace @tip/scripts` after the first
+> handful of wallets are added — the current DB has 1 rated wallet so clusters will be empty.
+> Next: m3-convergence.
+
+**Status:** COMPLETED — archived
+**Original status:** PROPOSED (scoping — awaiting review)
 **Milestone:** M3 — Smart Money Radar (§30), change 2 of 3
 **Implements:** Part II §5 (interim funder-clustering heuristic — "buildable now from data
 already being ingested, no new provider needed"), Task 6 (convergence math). §33 rule 12.

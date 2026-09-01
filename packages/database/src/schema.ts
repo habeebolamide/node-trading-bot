@@ -244,6 +244,58 @@ export const watchedWallet = pgTable('watched_wallet', {
   unwatchedAt: timestamp('unwatched_at', { withTimezone: true, mode: 'date' }),
 });
 
+/**
+ * A wallet's first-hop SOL funder (m3-funder-clustering, Part II §5 interim heuristic). Cached
+ * once — a wallet's original funder doesn't change. `inferred_at_cap` = we hit the paging cap
+ * before reaching genesis; the oldest transfer we DID see is stored, flagged so downstream can
+ * apply a wider window if it wants.
+ */
+export const walletFunder = pgTable(
+  'wallet_funder',
+  {
+    walletId: text('wallet_id').primaryKey(),
+    funderAddress: text('funder_address').notNull(),
+    fundedAt: timestamp('funded_at', { withTimezone: true, mode: 'date' }).notNull(),
+    fundedSol: numeric('funded_sol').notNull(),
+    fetchedAt: timestamp('fetched_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+    inferredAtCap: boolean('inferred_at_cap').notNull().default(false),
+  },
+  (t) => [index('wallet_funder_funder_idx').on(t.funderAddress)],
+);
+
+/**
+ * One clustering pass. Versioned by run — every recompute writes a new run and flips prior
+ * runs' `status` from 'active' to 'superseded' in one transaction, so readers joining on
+ * `status='active'` never see partial data mid-flight.
+ */
+export const clusterRun = pgTable('cluster_run', {
+  runId: text('run_id').primaryKey(),
+  runAt: timestamp('run_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+  windowHours: integer('window_hours').notNull(),
+  walletCount: integer('wallet_count').notNull(),
+  clusterCount: integer('cluster_count').notNull(),
+  status: text('status').notNull().default('active'), // 'active' | 'superseded'
+});
+
+/**
+ * Cluster membership: `cluster_id` is shared across all members of one cluster within a run.
+ * Convergence readers (change 3) join here to `cluster_run.status='active'`.
+ */
+export const walletCluster = pgTable(
+  'wallet_cluster',
+  {
+    id: text('id').primaryKey(),
+    clusterId: text('cluster_id').notNull(),
+    walletId: text('wallet_id').notNull(),
+    clusterRunId: text('cluster_run_id').notNull(),
+    clusteredAt: timestamp('clustered_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+  },
+  (t) => [
+    index('wallet_cluster_run_cluster_idx').on(t.clusterRunId, t.clusterId),
+    index('wallet_cluster_wallet_run_idx').on(t.walletId, t.clusterRunId),
+  ],
+);
+
 export const schema = {
   domainEvent,
   processedEvent,
@@ -259,4 +311,7 @@ export const schema = {
   walletScoringConfig,
   tradeOutcome,
   watchedWallet,
+  walletFunder,
+  clusterRun,
+  walletCluster,
 };

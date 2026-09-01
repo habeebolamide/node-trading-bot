@@ -16,7 +16,7 @@ import type { DomainEvent } from '@tip/domain';
 import type { Db } from '@tip/database';
 import type { EventBus } from '@tip/events';
 import { EVENT_NAMES, QUEUE_NAMES } from '@tip/events';
-import { walletScoreAsOf } from '@tip/wallets';
+import { walletScoreAsOf, type WalletScoreRow } from '@tip/wallets';
 import type { Watchlist } from './store.js';
 
 /** Payload shape of a `wallet.transaction.detected` event (as emitted by the Helius ingestor). */
@@ -31,19 +31,26 @@ interface WalletTxPayload {
   slot: number | null;
 }
 
+/** Point-in-time score lookup. Injectable so tests don't need to stub the DB. */
+export type ScoreLookup = (walletId: string, at: Date) => Promise<WalletScoreRow | null>;
+
 export interface BuyDetectorDeps {
   db: Db;
   bus: EventBus;
   watchlist: Watchlist;
+  /** Defaults to walletScoreAsOf(db, ...) — pass a fake in tests. */
+  scoreLookup?: ScoreLookup;
   log?: (msg: string, meta?: unknown) => void;
 }
 
 /**
  * Handler for `wallet.transaction.detected` events. Split from `register()` so tests can drive it
- * directly with a fake event.
+ * directly with a fake event. `scoreLookup` is injectable — production wires it to
+ * `walletScoreAsOf(db, ...)` so the point-in-time rule (21) is preserved.
  */
 export function createBuyDetectorHandler(deps: BuyDetectorDeps): (event: DomainEvent) => Promise<void> {
   const log = deps.log ?? (() => {});
+  const scoreLookup: ScoreLookup = deps.scoreLookup ?? ((walletId, at) => walletScoreAsOf(deps.db, walletId, at));
   return async (event: DomainEvent) => {
     if (event.type !== EVENT_NAMES.WALLET_TRANSACTION_DETECTED) return;
     const p = event.payload as WalletTxPayload;
@@ -51,7 +58,7 @@ export function createBuyDetectorHandler(deps: BuyDetectorDeps): (event: DomainE
     if (!(await deps.watchlist.isWatched(p.wallet))) return;
 
     const blockTime = new Date(p.blockTime);
-    const score = await walletScoreAsOf(deps.db, p.wallet, blockTime);
+    const score = await scoreLookup(p.wallet, blockTime);
     if (!score) return; // UNRATED at T — drop; never retroactively promote
 
     await deps.bus.publish(QUEUE_NAMES.SIGNAL_PROCESSING, {
