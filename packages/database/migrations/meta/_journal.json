@@ -43,6 +43,13 @@
       "when": 1788280497211,
       "tag": "0005_flowery_night_thrasher",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1788297315641,
+      "tag": "0006_light_unus",
+      "breakpoints": true
     }
   ]
 }

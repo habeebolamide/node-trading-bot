@@ -9,6 +9,7 @@
     { "path": "packages/evaluation" },
     { "path": "packages/wallets" },
     { "path": "packages/watchlist" },
+    { "path": "packages/trading-agents" },
     { "path": "apps/api" },
     { "path": "apps/worker" },
     { "path": "scripts" }

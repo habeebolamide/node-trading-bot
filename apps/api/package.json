@@ -14,6 +14,7 @@
     "@tip/domain": "*",
     "@tip/events": "*",
     "@tip/ingestion": "*",
+    "@tip/trading-agents": "*",
     "@tip/watchlist": "*",
     "drizzle-orm": "^0.36.4",
     "express": "^4.21.1",

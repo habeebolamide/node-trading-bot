@@ -1,6 +1,25 @@
 # Change: m4-tradingagent
 
-**Status:** PROPOSED (scoping)
+> **COMPLETED 2026-09-01.** Shipped `packages/trading-agents`: `identity.ts` (TradingAgent
+> identity + §8 style→TF/TTL maps), `config.ts` (Zod ScoringConfig schema + domain-aware
+> validation — memecoin `maxConcurrentPositions=1` per §32, profit-ladder cumulative ≤ 1.0 and
+> strict ascending, perp rejects memecoin-only fields), `store.ts` (create + get + list +
+> updateConfig — the last two writes atomic in one txn: new version + flip active), and
+> `agent-interface.ts` (base AnalysisAgent, AgentOutput, AgentContext, Trigger types — as-of
+> readers only, no `latest()` in the replay path). Schema migration 0006 (trading_agent,
+> scoring_config append-only + unique(agentId, version), agent_performance skeleton,
+> brain_agent_memory skeleton) applied. `apps/api` gained POST/GET/GET-one/PATCH `/trading-agents`.
+>
+> **Verified:** typecheck green; **153/156 tests pass** (3 opt-in live skipped). 13 new tests:
+> config validation (7), live-DB store round-trip (1), API supertest (4 incl. 400 on §32
+> violation, 404 on unknown id, POST→PATCH→v2 round-trip), plus a config-Domain import
+> collision fixed inline.
+>
+> **Deviations from spec:** none material. `AgentPerformance` / `BrainAgentMemory` are empty
+> skeleton tables (populated when M6 outcomes + M5 standalone-accuracy land). Next: m4-signal-engine.
+
+**Status:** COMPLETED — archived
+**Original status:** PROPOSED (scoping)
 **Milestone:** M4 — Agent Swarm (§30), change 1 of 5
 **Implements:** §14 (TradingAgent vs Analysis Agent — the core terminology split), §8 (Agent
 Creation, trading style → TF/horizon mapping), §16 versioned config, Task 1 resolution

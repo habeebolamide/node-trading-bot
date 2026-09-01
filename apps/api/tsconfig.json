@@ -9,6 +9,7 @@
     { "path": "../../packages/events" },
     { "path": "../../packages/database" },
     { "path": "../../packages/ingestion" },
+    { "path": "../../packages/trading-agents" },
     { "path": "../../packages/watchlist" }
   ],
   "include": ["src/**/*"],

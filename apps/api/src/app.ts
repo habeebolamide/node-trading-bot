@@ -6,6 +6,7 @@ import { EVENT_NAMES, QUEUE_NAMES, type EventBus } from '@tip/events';
 import type { Watchlist } from '@tip/watchlist';
 import { safeEqual, withTimeout } from './util.js';
 import { walletsRouter } from './wallets.js';
+import { tradingAgentsRouter } from './trading-agents.js';
 
 export interface ApiDeps {
   db: Db;
@@ -35,6 +36,9 @@ export function createApp(deps: ApiDeps): Express {
 
   // Watchlist routes (m3-watchlist). Mounted only when a Watchlist service is provided.
   if (deps.watchlist) app.use('/wallets', walletsRouter(deps.watchlist));
+
+  // TradingAgent routes (m4-tradingagent). Always mounted — needs only DB access.
+  app.use('/trading-agents', tradingAgentsRouter(deps.db));
 
   // ── Liveness + dependency health ──────────────────────────────
   app.get('/health', async (_req: Request, res: Response) => {

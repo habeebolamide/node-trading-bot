@@ -296,6 +296,77 @@ export const walletCluster = pgTable(
   ],
 );
 
+/**
+ * TradingAgent (m4-tradingagent, §14) — user-created strategy entity. Identity
+ * (`{ id, domain, universe, tradingStyle }`) is immutable per §8/Task 1; everything tunable
+ * lives in the versioned `scoringConfig` table this points at. `active_config_version` FKs
+ * the current active row (see below).
+ */
+export const tradingAgent = pgTable('trading_agent', {
+  id: text('id').primaryKey(), // uuid
+  name: text('name').notNull(),
+  domain: text('domain').notNull(), // 'perp' | 'memecoin'
+  universe: text('universe').array().notNull(),
+  tradingStyle: text('trading_style').notNull(), // 'scalp' | 'day' | 'swing'
+  activeConfigVersion: integer('active_config_version').notNull(),
+  status: text('status').notNull().default('active'), // 'active' | 'blocked' | 'archived'
+  createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+});
+
+/**
+ * ScoringConfig (§8/§16) — APPEND-ONLY, versioned per TradingAgent. A promoted change writes a
+ * new row (never mutates); every Prediction / Signal FKs the specific `version` that produced
+ * it, so weight changes never silently blend track records (§33 rule 16).
+ */
+export const scoringConfig = pgTable(
+  'scoring_config',
+  {
+    id: text('id').primaryKey(), // uuid
+    tradingAgentId: text('trading_agent_id').notNull(),
+    version: integer('version').notNull(),
+    config: jsonb('config').notNull(), // full §8 schema (weights, thresholds, memecoin fields)
+    createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+    active: boolean('active').notNull().default(true),
+  },
+  (t) => [uniqueIndex('scoring_config_agent_version_uq').on(t.tradingAgentId, t.version)],
+);
+
+/**
+ * AgentPerformance skeleton (§16/Task-1). Populated as M6 Predictions resolve; per-TradingAgent
+ * per-Agent track record keyed by (agent_key, agent_version). Empty at M4 — the framework
+ * writes the initial row-shapes for M6 to update.
+ */
+export const agentPerformance = pgTable(
+  'agent_performance',
+  {
+    id: text('id').primaryKey(),
+    tradingAgentId: text('trading_agent_id').notNull(),
+    agentKey: text('agent_key').notNull(),
+    agentVersion: integer('agent_version').notNull(),
+    wins: integer('wins').notNull().default(0),
+    losses: integer('losses').notNull().default(0),
+    lastUpdatedAt: timestamp('last_updated_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex('agent_performance_key_uq').on(t.tradingAgentId, t.agentKey, t.agentVersion)],
+);
+
+/**
+ * BrainAgentMemory skeleton (§16 — standalone counterfactual accuracy per Agent, DOMAIN-wide).
+ * Populated in M5; empty at M4.
+ */
+export const brainAgentMemory = pgTable(
+  'brain_agent_memory',
+  {
+    id: text('id').primaryKey(),
+    domain: text('domain').notNull(),
+    agentKey: text('agent_key').notNull(),
+    agentVersion: integer('agent_version').notNull(),
+    standaloneAccuracy: numeric('standalone_accuracy'),
+    updatedAt: timestamp('updated_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex('brain_agent_memory_key_uq').on(t.domain, t.agentKey, t.agentVersion)],
+);
+
 export const schema = {
   domainEvent,
   processedEvent,
@@ -314,4 +385,8 @@ export const schema = {
   walletFunder,
   clusterRun,
   walletCluster,
+  tradingAgent,
+  scoringConfig,
+  agentPerformance,
+  brainAgentMemory,
 };
