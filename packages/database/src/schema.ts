@@ -367,6 +367,53 @@ export const brainAgentMemory = pgTable(
   (t) => [uniqueIndex('brain_agent_memory_key_uq').on(t.domain, t.agentKey, t.agentVersion)],
 );
 
+/**
+ * Signal (m4-signal-engine, §9, §36). Immutable after CONSUMED — but state field mutates through
+ * the §36 lifecycle (ACTIVE → EXPIRED/INVALIDATED/CONSUMED). `fingerprint` is a hash of
+ * (tradingAgentId, symbol, direction, tfCloseMinute) so re-arrivals within one candle dedup at
+ * the DB level (§9 correlation). `config_version` FKs the ScoringConfig row that produced it —
+ * rule 16, so a promoted weight change doesn't silently blend track records (§19 rule 10).
+ */
+export const signal = pgTable(
+  'signal',
+  {
+    id: text('id').primaryKey(),
+    tradingAgentId: text('trading_agent_id').notNull(),
+    symbol: text('symbol').notNull(),
+    domain: text('domain').notNull(),
+    direction: text('direction').notNull(), // STRONG_LONG | ... | STRONG_SHORT | NEUTRAL
+    compositeScore: numeric('composite_score').notNull(),
+    confidence: numeric('confidence').notNull(),
+    state: text('state').notNull().default('ACTIVE'), // ACTIVE | EXPIRED | INVALIDATED | CONSUMED
+    createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull(),
+    expiresAt: timestamp('expires_at', { withTimezone: true, mode: 'date' }).notNull(),
+    configVersion: integer('config_version').notNull(),
+    fingerprint: text('fingerprint').notNull(),
+    evidence: jsonb('evidence').notNull(), // { agentAgreement, dataQuality, subMetrics, ... }
+  },
+  (t) => [
+    uniqueIndex('signal_fingerprint_uq').on(t.fingerprint),
+    index('signal_agent_state_idx').on(t.tradingAgentId, t.state),
+  ],
+);
+
+/**
+ * signal_feature — per-agent contribution to a Signal (§22 attribution). One row per
+ * (signal, agent, agentVersion). Populated in the same transaction as the Signal insert.
+ */
+export const signalFeature = pgTable(
+  'signal_feature',
+  {
+    signalId: text('signal_id').notNull(),
+    agentKey: text('agent_key').notNull(),
+    agentVersion: integer('agent_version').notNull(),
+    score: numeric('score').notNull(),
+    confidence: numeric('confidence').notNull(),
+    features: jsonb('features').notNull(),
+  },
+  (t) => [primaryKey({ columns: [t.signalId, t.agentKey, t.agentVersion] })],
+);
+
 export const schema = {
   domainEvent,
   processedEvent,
@@ -389,4 +436,6 @@ export const schema = {
   scoringConfig,
   agentPerformance,
   brainAgentMemory,
+  signal,
+  signalFeature,
 };

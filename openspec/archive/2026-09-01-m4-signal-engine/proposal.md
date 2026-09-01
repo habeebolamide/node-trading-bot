@@ -1,6 +1,31 @@
 # Change: m4-signal-engine
 
-**Status:** PROPOSED (scoping)
+> **COMPLETED 2026-09-01.** Grew `packages/trading-agents` with the deterministic Signal Engine:
+> `scoring.ts` (weighted composite with §7-renormalized weights, per-domain direction bucket
+> mapping, memecoin long-only per §18), `confidence.ts` (Task-6 four-part formula, M4-stub
+> historicalEvidence=0.5 until M5), `fingerprint.ts` (§9 same-candle dedup key), `feature-
+> aggregator.ts` (per-bucket collection with newer-(agent,version) wins), `signal-lifecycle.ts`
+> (§36 pure state machine), `signal-store.ts` (atomic Signal + signal_feature insert, DB-level
+> unique-fingerprint dedup), and `signal-engine.ts` (the orchestrator: `admit` → aggregator →
+> `performFlush` → compose → confidence → createSignal → publish SIGNAL_CREATED + domain event).
+> `forceFlushBucket` / `drainAll` for deterministic tests + shutdown.
+>
+> Schema migration 0007 (signal, signal_feature) applied.
+>
+> **Verified:** typecheck green; **181/184 tests pass** (3 opt-in live skipped). 28 new tests
+> covering the mandatory CLAUDE.md invariants: scoring weight renormalization + threshold
+> boundaries + memecoin long-only, confidence formula + defensive renormalization + stub,
+> fingerprint per-axis uniqueness, lifecycle terminal-freeze, aggregator dedup + shutdown drain,
+> and live-Postgres end-to-end (composite → signal + both event types + DB-unique dedup on
+> re-arrival).
+>
+> **Deviations from spec:** none material. `SignalEngine.performFlush` (renamed from `flush`) returns
+> a promise the aggregator awaits — makes shutdown drains and test flushes reliable. Confidence's
+> `historicalEvidence` is stubbed at 0.5 until M5 BrainSetupMemory lands, per plan. Next:
+> m4-memecoin-agents.
+
+**Status:** COMPLETED — archived
+**Original status:** PROPOSED (scoping)
 **Milestone:** M4 — Agent Swarm (§30), change 2 of 5
 **Implements:** §9 (Signal Engine — deduplication, correlation, aggregation, prioritization,
 expiration), Part II §9 (memecoin composite) / Part III §3 (perp composite), §36 (Signal

@@ -6,7 +6,8 @@
   },
   "references": [
     { "path": "../domain" },
-    { "path": "../database" }
+    { "path": "../database" },
+    { "path": "../events" }
   ],
   "include": ["src/**/*"],
   "exclude": ["dist", "**/*.test.ts"]
