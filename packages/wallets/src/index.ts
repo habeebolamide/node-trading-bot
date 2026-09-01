@@ -1,7 +1,6 @@
 export * from './reconstruct.js';
 export * from './persist.js';
 export * from './backfill.js';
-export * from './classify.js';
 
 // Scoring (m2-wallet-scoring)
 export * from './stats.js';
