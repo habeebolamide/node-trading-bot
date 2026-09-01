@@ -9,7 +9,8 @@
     "backfill-wallet": "tsx src/backfill-wallet.ts",
     "seed-wallets": "tsx src/seed-wallets.ts",
     "seed-analysis": "tsx src/seed-analysis.ts",
-    "helius-webhook": "tsx src/helius-webhook.ts"
+    "helius-webhook": "tsx src/helius-webhook.ts",
+    "score": "tsx src/score-wallets.ts"
   },
   "dependencies": {
     "@tip/database": "*",
