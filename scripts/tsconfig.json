@@ -8,7 +8,8 @@
     { "path": "../packages/domain" },
     { "path": "../packages/database" },
     { "path": "../packages/ingestion" },
-    { "path": "../packages/evaluation" }
+    { "path": "../packages/evaluation" },
+    { "path": "../packages/wallets" }
   ],
   "include": ["src/**/*"],
   "exclude": ["dist", "**/*.test.ts"]

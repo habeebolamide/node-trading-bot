@@ -1,6 +1,25 @@
 # Change: m2-trade-reconstruction
 
-**Status:** PROPOSED (scoping — awaiting review)
+> **COMPLETED 2026-09-01.** Shipped `packages/wallets`: `reconstruct.ts` (pure, zero-import
+> average-cost round-trip reconstruction with SOL-denominated realized P&L — open/close/re-entry/
+> partial-sells/dust-close/oversell-clamp/zero-cost guard), `persist.ts` (deterministic recompute
+> as delete-then-insert per wallet+mint), `backfill.ts` (pages Helius history → upsert
+> `wallet_transaction` → reconstruct). Added `HeliusRestClient.getAddressTransactionsPage` so full
+> history pages reliably by the RAW signature/count (the parser keeps only swaps, which alone can't
+> drive pagination). Schema migration 0002 (`wallet_trade`) applied. `scripts/backfill-wallet` CLI
+> (--addresses / --file).
+>
+> **Verified:** typecheck green; **80/83 tests pass** (3 opt-in live skipped). 9 reconstruction
+> unit cases + a live-Postgres test (seeded swaps → two closed trades with correct ±0.5 realized
+> returns; re-run idempotent). Live smoke: the whole backfill chain ran against real Helius with no
+> error (paged→parsed→persisted→reconstructed). `trade_outcome` intentionally deferred to change 2
+> (it carries the forward-horizon returns).
+>
+> **Deviations from spec:** none material. Average-cost (not FIFO) reconstruction; dust threshold
+> 1%; a sell with no tracked position is skipped (untracked/airdropped tokens). Next: m2-wallet-scoring.
+
+**Status:** COMPLETED — archived
+**Original status:** PROPOSED (scoping — awaiting review)
 **Milestone:** M2 — Wallet Intelligence (§30), change 1 of 3
 **Implements:** Part II §2 (transaction/trade reconstruction, historical performance), §13
 (`WalletTrade`, `TradeOutcome`), §4 (backfill-on-add mechanism). §33 rules 8/12.

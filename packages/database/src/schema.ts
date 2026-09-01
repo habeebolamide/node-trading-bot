@@ -12,7 +12,7 @@
  * Timestamps are timestamptz. Idempotency/correctness is enforced by DB
  * constraints, never application check-then-write (§29, rule 12).
  */
-import { pgTable, text, integer, bigint, jsonb, numeric, timestamp, primaryKey, uniqueIndex, index } from 'drizzle-orm/pg-core';
+import { pgTable, text, integer, bigint, boolean, jsonb, numeric, timestamp, primaryKey, uniqueIndex, index } from 'drizzle-orm/pg-core';
 
 /**
  * Durable log of every event that crossed the bus (§13). Append-only.
@@ -127,6 +127,38 @@ export const token = pgTable('token', {
   metadata: jsonb('metadata'),
 });
 
+/**
+ * Reconstructed round-trip trade (m2-trade-reconstruction, §13 WalletTrade). Not an immutable
+ * fact like a Prediction — it's a deterministic VIEW over `wallet_transaction`, recomputed
+ * (delete-then-insert per wallet+mint) whenever that wallet's swaps change. Realized return is
+ * SOL-denominated. A position still held at reconstruction time stays status=OPEN (no outcome).
+ */
+export const walletTrade = pgTable(
+  'wallet_trade',
+  {
+    id: text('id').primaryKey(), // uuid v4
+    wallet: text('wallet').notNull(),
+    mint: text('mint').notNull(),
+    status: text('status').notNull(), // 'OPEN' | 'CLOSED'
+    openedAt: timestamp('opened_at', { withTimezone: true, mode: 'date' }).notNull(),
+    closedAt: timestamp('closed_at', { withTimezone: true, mode: 'date' }), // null while OPEN
+    buyCount: integer('buy_count').notNull(),
+    sellCount: integer('sell_count').notNull(),
+    totalSolIn: numeric('total_sol_in').notNull(),
+    totalSolOut: numeric('total_sol_out').notNull(),
+    tokensBought: numeric('tokens_bought').notNull(),
+    tokensSold: numeric('tokens_sold').notNull(),
+    realizedReturnPct: numeric('realized_return_pct'), // null while OPEN
+    won: boolean('won'), // null while OPEN
+    holdingPeriodSec: bigint('holding_period_sec', { mode: 'number' }), // null while OPEN
+    flags: text('flags').array().notNull().default([]),
+  },
+  (t) => [
+    index('wallet_trade_wallet_mint_idx').on(t.wallet, t.mint),
+    index('wallet_trade_wallet_opened_idx').on(t.wallet, t.openedAt),
+  ],
+);
+
 export const schema = {
   domainEvent,
   processedEvent,
@@ -135,4 +167,5 @@ export const schema = {
   openInterest,
   walletTransaction,
   token,
+  walletTrade,
 };

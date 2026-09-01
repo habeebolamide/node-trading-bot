@@ -6,12 +6,14 @@
   "scripts": {
     "build": "tsc --build",
     "backfill": "tsx src/backfill-bybit.ts",
+    "backfill-wallet": "tsx src/backfill-wallet.ts",
     "helius-webhook": "tsx src/helius-webhook.ts"
   },
   "dependencies": {
     "@tip/database": "*",
     "@tip/domain": "*",
     "@tip/evaluation": "*",
-    "@tip/ingestion": "*"
+    "@tip/ingestion": "*",
+    "@tip/wallets": "*"
   }
 }

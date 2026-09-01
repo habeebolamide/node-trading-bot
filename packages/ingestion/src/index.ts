@@ -11,7 +11,7 @@ export { AccountRatioPoller, type AccountRatioPollerOptions } from './bybit/poll
 
 // Helius adapter
 export * from './helius/parse.js';
-export { HeliusRestClient, type HeliusRestOptions } from './helius/rest.js';
+export { HeliusRestClient, type HeliusRestOptions, type AddressPage } from './helius/rest.js';
 export { registerHeliusIngestion, createHeliusHandler, type HeliusIngestionDeps } from './helius/ingest.js';
 export { HeliusLivenessProbe, type HeliusLivenessProbeOptions } from './helius/liveness.js';
 export {
