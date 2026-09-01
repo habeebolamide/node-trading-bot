@@ -1,6 +1,37 @@
 # Change: m4-risk-agent
 
-**Status:** PROPOSED (scoping)
+> **COMPLETED 2026-09-01 — M4 (all 5 changes) is done.** Grew `packages/agents/common/`:
+> - `risk-checks.ts` — pure `evaluatePerpRisk` / `evaluateMemecoinRisk`. Perp checks: S/R
+>   proximity against direction (0.3×ATR), funding percentile extremes (>95 / <5), OI >90
+>   percentile, ATR ratio >2.0, price extension >2 ATR from EMA(50). Memecoin checks: token
+>   age <5m, position notional >50% of pool-share cap, wallet below universe median.
+>   Aggregation: 0→LOW · 1→MEDIUM · 2→MEDIUM_HIGH · 3→HIGH · 4+→INVALIDATED.
+> - `risk-agent.ts` — `createRiskAgent(deps)` wraps injectable input loaders + persist +
+>   state transition. Consumes `SIGNAL_CREATED`, skips non-ACTIVE signals idempotently,
+>   writes `signal_risk` on every verdict, transitions the Signal to INVALIDATED and
+>   publishes `SIGNAL_INVALIDATED` when the level warrants it.
+>
+> Schema migration 0008 (`signal_risk`) applied.
+>
+> **Verified:** typecheck green; **239/242 tests pass** (3 opt-in live). 15 new tests:
+> pure risk-checks (12 — perp: 6 individual checks + aggregation → MEDIUM_HIGH → INVALIDATED;
+> memecoin: 4 individual + aggregation) + live-Postgres integration (3 — LOW keeps ACTIVE,
+> INVALIDATED flips state + publishes event, non-ACTIVE skipped).
+>
+> **Deviations from spec:** none material. Input loaders (`loadPerpInputs` / `loadMemecoinInputs`)
+> are injectable at wiring time — production will build these from M1 buffers + M4-signal-engine
+> stored features; MVP-tests inject snapshots directly. Rolling 30-day S/R and funding/OI
+> percentile computation is left to the wiring layer (M1's `fundingRate` / `openInterest` tables
+> already have the raw history).
+>
+> **M4 wrap-up:** all 14 Analysis Agents + 5 Features per Part IV §40 exist. TradingAgent CRUD
+> + versioned ScoringConfig, deterministic Signal Engine with §36 lifecycle, memecoin roster +
+> Token Risk hard veto, perp roster + Volume + Historical Edge stub, and Risk Agent gate — the
+> whole "signal generation → post-veto" chain works end-to-end. Ready for M5 (Brain memories
+> populating from resolved outcomes) and M6 (Predictions + Paper Engine consuming signals).
+
+**Status:** COMPLETED — archived
+**Original status:** PROPOSED (scoping)
 **Milestone:** M4 — Agent Swarm (§30), change 5 of 5 (final)
 **Implements:** §40.12 Risk Agent (post-aggregation veto, perp + memecoin variants), §36
 `INVALIDATED` state transition. §33 rule 12.

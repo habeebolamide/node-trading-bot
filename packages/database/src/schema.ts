@@ -414,6 +414,19 @@ export const signalFeature = pgTable(
   (t) => [primaryKey({ columns: [t.signalId, t.agentKey, t.agentVersion] })],
 );
 
+/**
+ * signal_risk (m4-risk-agent, §40.12). One row per scored Signal: the Risk Agent's verdict
+ * (level + flags). `INVALIDATED` risk_level is the trigger for transitioning the parent Signal
+ * to INVALIDATED (§36). Even LOW gets a row — dashboards want the full breakdown.
+ */
+export const signalRisk = pgTable('signal_risk', {
+  signalId: text('signal_id').primaryKey(),
+  riskLevel: text('risk_level').notNull(), // LOW | MEDIUM | MEDIUM_HIGH | HIGH | INVALIDATED
+  riskFlags: text('risk_flags').array().notNull().default([]),
+  evaluatedAt: timestamp('evaluated_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+  agentVersion: integer('agent_version').notNull(),
+});
+
 export const schema = {
   domainEvent,
   processedEvent,
@@ -438,4 +451,5 @@ export const schema = {
   brainAgentMemory,
   signal,
   signalFeature,
+  signalRisk,
 };
