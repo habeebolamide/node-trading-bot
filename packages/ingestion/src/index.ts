@@ -14,6 +14,13 @@ export * from './helius/parse.js';
 export { HeliusRestClient, type HeliusRestOptions } from './helius/rest.js';
 export { registerHeliusIngestion, createHeliusHandler, type HeliusIngestionDeps } from './helius/ingest.js';
 export { HeliusLivenessProbe, type HeliusLivenessProbeOptions } from './helius/liveness.js';
+export {
+  HeliusWebhookAdmin,
+  type HeliusWebhookAdminOptions,
+  type HeliusWebhook,
+  type HeliusWebhookConfig,
+  type HeliusWebhookType,
+} from './helius/webhooks.js';
 
 // Staleness
 export * from './staleness/thresholds.js';

@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "build": "tsc --build",
-    "backfill": "tsx src/backfill-bybit.ts"
+    "backfill": "tsx src/backfill-bybit.ts",
+    "helius-webhook": "tsx src/helius-webhook.ts"
   },
   "dependencies": {
     "@tip/database": "*",
