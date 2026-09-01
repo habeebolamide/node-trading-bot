@@ -7,6 +7,8 @@
     "build": "tsc --build",
     "backfill": "tsx src/backfill-bybit.ts",
     "backfill-wallet": "tsx src/backfill-wallet.ts",
+    "seed-wallets": "tsx src/seed-wallets.ts",
+    "seed-analysis": "tsx src/seed-analysis.ts",
     "helius-webhook": "tsx src/helius-webhook.ts"
   },
   "dependencies": {

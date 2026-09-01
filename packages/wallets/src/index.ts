@@ -11,3 +11,7 @@ export * from './config.js';
 export * from './early-entry.js';
 export { appendWalletScore, walletScoreAsOf, liveWalletScore, type WalletScoreRow } from './score-log.js';
 export { scoreAllWallets, type RecomputeOptions, type RecomputeResult } from './recompute.js';
+
+// Seed-history analysis (m2-seed-analysis)
+export * from './analysis/co-buy.js';
+export * from './analysis/seed-metrics.js';
