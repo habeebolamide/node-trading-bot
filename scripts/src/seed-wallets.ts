@@ -7,7 +7,8 @@
  *   npm run seed-wallets --workspace @tip/scripts            # reads scripts/seed/wallets.txt
  *   npm run seed-wallets --workspace @tip/scripts -- --file=path/to/wallets.txt
  */
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { getConfig, loadEnv } from '@tip/domain';
 import { getDb, closeDb } from '@tip/database';
@@ -16,11 +17,15 @@ import { backfillWallet, scoreAllWallets } from '@tip/wallets';
 
 /* eslint-disable no-console */
 // Default roster resolves relative to this file (scripts/src/), so it works regardless of cwd
-// (npm runs workspace scripts with cwd = scripts/). --file overrides with a caller-relative path.
+// (npm runs workspace scripts with cwd = scripts/). --file falls back to a repo-root-relative path.
+const REPO_ROOT = fileURLToPath(new URL('../..', import.meta.url));
 const DEFAULT_ROSTER = fileURLToPath(new URL('../seed/wallets.txt', import.meta.url));
 function rosterFile(): string {
   const hit = process.argv.find((a) => a.startsWith('--file='));
-  return hit ? hit.slice('--file='.length) : DEFAULT_ROSTER;
+  if (!hit) return DEFAULT_ROSTER;
+  const p = hit.slice('--file='.length);
+  const fromCwd = resolve(process.cwd(), p);
+  return existsSync(fromCwd) ? fromCwd : resolve(REPO_ROOT, p);
 }
 
 function readRoster(path: string): string[] {

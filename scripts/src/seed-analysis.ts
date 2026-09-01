@@ -5,9 +5,18 @@
  *
  *   npm run build && npm run seed-analysis --workspace @tip/scripts
  */
-import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { and, eq, inArray } from 'drizzle-orm';
+
+const REPO_ROOT = fileURLToPath(new URL('../..', import.meta.url));
+function resolvePath(p: string): string {
+  const fromCwd = resolve(process.cwd(), p);
+  if (existsSync(fromCwd)) return fromCwd;
+  const fromRoot = resolve(REPO_ROOT, p);
+  return existsSync(fromRoot) ? fromRoot : fromCwd;
+}
 import { loadEnv } from '@tip/domain';
 import { getDb, closeDb, walletTransaction, walletTrade } from '@tip/database';
 import {
@@ -24,7 +33,8 @@ function readRoster(path: string): string[] {
 
 async function main(): Promise<void> {
   loadEnv();
-  const path = process.argv.find((a) => a.startsWith('--file='))?.slice('--file='.length) ?? fileURLToPath(new URL('../seed/wallets.txt', import.meta.url));
+  const fileArg = process.argv.find((a) => a.startsWith('--file='))?.slice('--file='.length);
+  const path = fileArg ? resolvePath(fileArg) : fileURLToPath(new URL('../seed/wallets.txt', import.meta.url));
   const roster = readRoster(path);
   const db = getDb();
 

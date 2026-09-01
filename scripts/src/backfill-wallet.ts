@@ -13,9 +13,18 @@
  *   --debug         log the Helius response per page (type breakdown, parsed vs own swaps) and
  *                   dump the raw JSON to scripts/seed/debug/<wallet>.json for inspection
  */
-import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { getConfig, loadEnv, configureLogger, createLogger } from '@tip/domain';
+
+const REPO_ROOT = fileURLToPath(new URL('../..', import.meta.url));
+function resolvePath(p: string): string {
+  const fromCwd = resolve(process.cwd(), p);
+  if (existsSync(fromCwd)) return fromCwd;
+  const fromRoot = resolve(REPO_ROOT, p);
+  return existsSync(fromRoot) ? fromRoot : fromCwd;
+}
 import { getDb, closeDb } from '@tip/database';
 import { HeliusRestClient } from '@tip/ingestion';
 import { backfillWallet, type BackfillPageInfo } from '@tip/wallets';
@@ -33,7 +42,7 @@ function collectAddresses(): string[] {
   if (csv) out.push(...csv.split(',').map((a) => a.trim()).filter(Boolean));
   const file = arg('file');
   if (file) {
-    const lines = readFileSync(file, 'utf8').split('\n').map((l) => l.trim());
+    const lines = readFileSync(resolvePath(file), 'utf8').split('\n').map((l) => l.trim());
     out.push(...lines.filter((l) => l && !l.startsWith('#')));
   }
   return [...new Set(out)]; // dedupe
