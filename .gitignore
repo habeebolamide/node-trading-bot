@@ -29,3 +29,6 @@ logs/
 
 # Redis snapshot (redis-server started from repo root during dev)
 *.rdb
+
+# Seed wallet roster (private — curated smart-money list)
+scripts/seed/wallets.txt
