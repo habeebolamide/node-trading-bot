@@ -3,7 +3,9 @@ import { sql } from 'drizzle-orm';
 import type { Redis } from 'ioredis';
 import type { Db } from '@tip/database';
 import { EVENT_NAMES, QUEUE_NAMES, type EventBus } from '@tip/events';
+import type { Watchlist } from '@tip/watchlist';
 import { safeEqual, withTimeout } from './util.js';
+import { walletsRouter } from './wallets.js';
 
 export interface ApiDeps {
   db: Db;
@@ -11,6 +13,8 @@ export interface ApiDeps {
   bus: EventBus;
   /** Shared secret Helius sends in the Authorization header. Undefined = webhook disabled. */
   webhookSecret: string | undefined;
+  /** Watchlist service (m3-watchlist). Undefined = /wallets endpoints disabled. */
+  watchlist?: Watchlist;
   /** Process start time for uptime reporting. */
   startedAt?: number;
 }
@@ -28,6 +32,9 @@ export function createApp(deps: ApiDeps): Express {
   // Capture the raw body so a future signature scheme can verify bytes, while
   // still parsing JSON for convenience.
   app.use(express.json({ limit: '2mb' }));
+
+  // Watchlist routes (m3-watchlist). Mounted only when a Watchlist service is provided.
+  if (deps.watchlist) app.use('/wallets', walletsRouter(deps.watchlist));
 
   // ── Liveness + dependency health ──────────────────────────────
   app.get('/health', async (_req: Request, res: Response) => {

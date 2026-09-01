@@ -8,7 +8,9 @@
     { "path": "../../packages/domain" },
     { "path": "../../packages/events" },
     { "path": "../../packages/database" },
-    { "path": "../../packages/ingestion" }
+    { "path": "../../packages/ingestion" },
+    { "path": "../../packages/wallets" },
+    { "path": "../../packages/watchlist" }
   ],
   "include": ["src/**/*"],
   "exclude": ["dist", "**/*.test.ts"]

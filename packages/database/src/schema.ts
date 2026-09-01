@@ -231,6 +231,19 @@ export const tradeOutcome = pgTable(
   (t) => [index('trade_outcome_wallet_idx').on(t.walletId)],
 );
 
+/**
+ * Watchlist (m3-watchlist). Wallets the OPERATOR chose to actively monitor. Distinct from
+ * `wallet` — that's the platform-wide profile (anyone we've scored); `watched_wallet` is the
+ * subscription set the Helius webhook targets. `unwatched_at` is soft-delete: a wallet can be
+ * watched → unwatched → re-watched and the history stays queryable. Active = unwatched_at IS NULL.
+ */
+export const watchedWallet = pgTable('watched_wallet', {
+  address: text('address').primaryKey(),
+  note: text('note'),
+  watchedAt: timestamp('watched_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+  unwatchedAt: timestamp('unwatched_at', { withTimezone: true, mode: 'date' }),
+});
+
 export const schema = {
   domainEvent,
   processedEvent,
@@ -245,4 +258,5 @@ export const schema = {
   brainWalletMemory,
   walletScoringConfig,
   tradeOutcome,
+  watchedWallet,
 };

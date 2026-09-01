@@ -7,7 +7,9 @@
   "references": [
     { "path": "../../packages/domain" },
     { "path": "../../packages/events" },
-    { "path": "../../packages/database" }
+    { "path": "../../packages/database" },
+    { "path": "../../packages/ingestion" },
+    { "path": "../../packages/watchlist" }
   ],
   "include": ["src/**/*"],
   "exclude": ["dist", "**/*.test.ts"]

@@ -2,7 +2,9 @@ import { createServer } from 'node:http';
 import { getConfig, loadEnv } from '@tip/domain';
 import { getDb, closeDb } from '@tip/database';
 import { createRedis, EventBus } from '@tip/events';
-import { createApp } from './app.js';
+import { HeliusRestClient, HeliusWebhookAdmin } from '@tip/ingestion';
+import { HeliusSubscriptionManager, Watchlist } from '@tip/watchlist';
+import { createApp, type ApiDeps } from './app.js';
 
 /** Boot the API: validate env, wire real connections, listen, wire shutdown. */
 async function main(): Promise<void> {
@@ -12,13 +14,42 @@ async function main(): Promise<void> {
   const redis = createRedis(config.REDIS_URL);
   const bus = new EventBus(createRedis(config.REDIS_URL)); // bus owns its own connection
 
-  const app = createApp({
+  // Watchlist (m3-watchlist) is only enabled when the Helius keys + webhook URL are configured.
+  // Missing any of the three → the /wallets endpoints stay unmounted, but the rest of the API works.
+  let watchlist: Watchlist | undefined;
+  if (config.HELIUS_API_KEY && config.HELIUS_WEBHOOK_SECRET && config.HELIUS_WEBHOOK_URL) {
+    const rest = new HeliusRestClient({ apiKey: config.HELIUS_API_KEY });
+    const admin = new HeliusWebhookAdmin({ apiKey: config.HELIUS_API_KEY });
+    const subscription = new HeliusSubscriptionManager({
+      db,
+      admin,
+      config: { webhookURL: config.HELIUS_WEBHOOK_URL, authHeader: config.HELIUS_WEBHOOK_SECRET },
+      // eslint-disable-next-line no-console
+      log: (msg, meta) => console.log(`[helius-sub] ${msg}`, meta ?? ''),
+    });
+    watchlist = new Watchlist({
+      db,
+      rest,
+      subscription,
+      // eslint-disable-next-line no-console
+      log: (msg, meta) => console.log(`[watchlist] ${msg}`, meta ?? ''),
+    });
+    // eslint-disable-next-line no-console
+    console.log('[api] watchlist enabled (/wallets endpoints mounted)');
+  } else {
+    // eslint-disable-next-line no-console
+    console.log('[api] watchlist disabled — set HELIUS_API_KEY + HELIUS_WEBHOOK_SECRET + HELIUS_WEBHOOK_URL to enable');
+  }
+
+  const deps: ApiDeps = {
     db,
     redis,
     bus,
     webhookSecret: config.HELIUS_WEBHOOK_SECRET,
     startedAt: Date.now(),
-  });
+    ...(watchlist ? { watchlist } : {}),
+  };
+  const app = createApp(deps);
 
   const server = createServer(app);
 

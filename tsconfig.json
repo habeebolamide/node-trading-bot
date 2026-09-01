@@ -8,6 +8,7 @@
     { "path": "packages/ingestion" },
     { "path": "packages/evaluation" },
     { "path": "packages/wallets" },
+    { "path": "packages/watchlist" },
     { "path": "apps/api" },
     { "path": "apps/worker" },
     { "path": "scripts" }

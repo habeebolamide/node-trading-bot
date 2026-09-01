@@ -1,6 +1,28 @@
 # Change: m3-watchlist
 
-**Status:** PROPOSED (scoping — awaiting review)
+> **COMPLETED 2026-09-01.** Shipped `packages/watchlist` (`@tip/watchlist`): `store.ts` (Watchlist
+> service — add/list/remove with backfill+score+reconcile inline, soft-delete + resurrection,
+> base58 address validation), `subscription.ts` (HeliusSubscriptionManager.reconcile/reconcileAll
+> via registerOrUpdate, 100-cap free-tier guard), `buy-detector.ts` (queue consumer:
+> watched+BUY+rated-at-blockTime → publish memecoin.wallet.buy.detected with point-in-time score,
+> rule 21). Schema migration 0004 (watched_wallet) applied. `HELIUS_WEBHOOK_URL` added to config.
+> `apps/api` gained POST/GET/DELETE `/wallets` routes (mounted only when watchlist is configured);
+> `apps/worker` registers BuyDetector and reconciles subscription on boot when the Helius trio is
+> present, degrading gracefully otherwise.
+>
+> **Verified:** typecheck green; **118/121 tests pass** (3 opt-in live skipped). 16 new tests:
+> BuyDetector filters (5), SubscriptionManager (3), Wallets API (8: POST 201/200/400 +
+> ValidationError, GET list, DELETE 204/404, endpoints-disabled path). Live integration deferred
+> pending the Helius webhook subscription being set up in the operator's account.
+>
+> **Deviations from spec:** none material. Backfill runs inline in POST /wallets (as designed);
+> a job+status pattern is a documented later optimization if seeding a large batch.
+>
+> **Follow-ups:** the operator must set `HELIUS_WEBHOOK_URL` (public URL of api's /webhooks/helius)
+> to activate the auto-subscription. Next: m3-funder-clustering.
+
+**Status:** COMPLETED — archived
+**Original status:** PROPOSED (scoping — awaiting review)
 **Milestone:** M3 — Smart Money Radar (§30), change 1 of 3
 **Implements:** Part II §11 (manual watchlist, MVP), §7 (Helius live watching), §10 (event
 architecture), §29 (idempotency). §33 rules 12/17/19.

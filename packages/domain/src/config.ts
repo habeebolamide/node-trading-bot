@@ -37,6 +37,9 @@ const EnvSchema = z.object({
   // Memecoin provider — optional here, required by the Helius adapter itself.
   HELIUS_API_KEY: z.string().optional(),
   HELIUS_WEBHOOK_SECRET: z.string().optional(),
+  // Public URL of apps/api's /webhooks/helius — required for the watchlist to auto-manage the
+  // Helius subscription (m3-watchlist). Optional here so non-M3 workflows still boot.
+  HELIUS_WEBHOOK_URL: z.string().url().optional(),
 
   // LLM (Judge/autopsy, perp-only MVP) — optional; Judge degrades gracefully (§18).
   DEEPSEEK_API_KEY: z.string().optional(),

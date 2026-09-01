@@ -15,6 +15,7 @@ export default defineConfig({
       '@tip/ingestion': pkg('./packages/ingestion/src/index.ts'),
       '@tip/evaluation': pkg('./packages/evaluation/src/index.ts'),
       '@tip/wallets': pkg('./packages/wallets/src/index.ts'),
+      '@tip/watchlist': pkg('./packages/watchlist/src/index.ts'),
     },
   },
   test: {
