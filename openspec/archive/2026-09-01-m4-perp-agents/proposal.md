@@ -1,6 +1,34 @@
 # Change: m4-perp-agents
 
-**Status:** PROPOSED (scoping)
+> **COMPLETED 2026-09-01.** Grew `packages/agents/perp/` with all 6 perp Analysis Agents +
+> Volume feature + Historical Edge stub:
+> - `indicators.ts` (pure) — sma, ema series, rsi (Wilder), macdHistogram, atr, trueRange, percentile
+> - `momentum.ts` (§40.1) — EMA alignment + slope + RSI + MACD composite, confidence from
+>   agent-agreement, CONDITIONAL dead-candle skip
+> - `open-interest.ts` (§40.2) — 4-candle Δp × ΔOI → 2×2 quadrant with magnitude-scaled score
+> - `market-regime.ts` (§40.3) — EMA slope + ATR ratio → regime enum + directional bias
+> - `liquidation.ts` (§40.4) — imbalance × intensity contrarian score; risk flag on pure spike
+> - `funding.ts` (§40.5) — 30d percentile → symmetric-contrarian score; insufficient-history cap
+> - `positioning.ts` (§40.6) — L/S ratio symmetric-in-log-space contrarian
+> - `features/volume.ts` (§40.15) — 10-candle volume-signed direction
+> - `features/historical-edge-stub.ts` (§40.16) — INSUFFICIENT stub (M5 wires the real read)
+>
+> `perpAgents` array holds the 6 composite participants; the DB-reading agents (Momentum, OI,
+> Regime, Funding) query `market_candle`/`open_interest`/`funding_rate` (M1 tables) with
+> as-of-close filters.
+>
+> **Verified:** typecheck green; **224/227 tests pass** (3 opt-in live). 23 new tests: indicators
+> (11 — sma/ema, rsi up+down+insufficient, macd, atr, percentile, trueRange) + perp agents (12 —
+> liquidation LONG/SHORT/risk-flag/flat/fallback, positioning score mapping + emit + null-guard,
+> funding percentile mapping, volume empty/all-up/all-down, historical-edge-stub).
+>
+> **Deviations from spec:** none material. Momentum uses simplified indicator computation vs.
+> ADX-based Market Regime (deferred to a follow-up refinement). The full CADENCE roll-up for
+> Liquidation lives in a future addition; single-event evaluation + optional roll-up fields
+> from the ingestor covers MVP. Next: m4-risk-agent (final M4 piece).
+
+**Status:** COMPLETED — archived
+**Original status:** PROPOSED (scoping)
 **Milestone:** M4 — Agent Swarm (§30), change 4 of 5
 **Implements:** §40.1 Perp Momentum, §40.2 Open Interest, §40.3 Market Regime, §40.4
 Liquidation, §40.5 Funding, §40.6 Positioning, §40.15 Volume feature, §40.16 Historical Edge
