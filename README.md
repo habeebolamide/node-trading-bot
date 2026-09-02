@@ -135,19 +135,15 @@ Verify with `psql`:
 psql "$(grep ^DATABASE_URL .env | cut -d= -f2-)" -c "\dt public.*" | head
 ```
 
-**To WIPE the DB and re-migrate cleanly** (drops all test data):
+**To WIPE the DB and re-migrate cleanly** (drops every table + the drizzle journal, then
+re-applies every migration from `0000`):
 
 ```bash
-node -e "
-import('postgres').then(async ({default: postgres}) => {
-  const sql = postgres(process.env.DATABASE_URL);
-  await sql.unsafe('DROP SCHEMA public CASCADE; CREATE SCHEMA public; DROP SCHEMA IF EXISTS drizzle CASCADE;');
-  await sql.end();
-  console.log('DB wiped');
-});
-"
-npm run db:migrate --workspace @tip/database
+npm run db:reset --workspace @tip/database
 ```
+
+Destructive — read `.env`'s `DATABASE_URL` before running so you know which database you're
+wiping. Safe against your own dev DB, absolutely not against anything shared.
 
 ### 4 · (Optional) backfill historical perp data
 

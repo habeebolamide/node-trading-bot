@@ -19,7 +19,8 @@
     "build": "tsc --build",
     "test": "vitest run",
     "db:generate": "drizzle-kit generate",
-    "db:migrate": "drizzle-kit migrate"
+    "db:migrate": "drizzle-kit migrate",
+    "db:reset": "node -e \"import('postgres').then(async ({default:p})=>{const s=p(process.env.DATABASE_URL);await s.unsafe('DROP SCHEMA public CASCADE; CREATE SCHEMA public; DROP SCHEMA IF EXISTS drizzle CASCADE');await s.end();console.log('wiped')})\" && npm run db:migrate"
   },
   "dependencies": {
     "@tip/domain": "*",
