@@ -886,6 +886,40 @@ export const tradeAutopsy = pgTable(
   ],
 );
 
+
+/**
+ * LearningHypothesis (§24, m7-hypothesis-pipeline). One row per proposed weight/config change.
+ * This is the ONLY channel from an autopsy pattern to a `scoring_config` mutation. §24 verbatim:
+ * "Hard rule — no direct weight changes from a single autopsy, or even from an LLM's aggregate
+ * opinion." Every promoted hypothesis passes a backtest AND an out-of-sample confirmation.
+ *
+ * Status flow: PROPOSED → BACKTEST_PASSED → OOS_PENDING → PROMOTED  (happy path)
+ *                        ↘ REJECTED (any time)                       (rejection path)
+ *                        ↘ DEFERRED_BOOTSTRAP  → picked up by a later re-run
+ */
+export const learningHypothesis = pgTable(
+  'learning_hypothesis',
+  {
+    id: text('id').primaryKey(),
+    setupId: text('setup_id').notNull(),
+    domain: text('domain').notNull(),          // 'perp' in MVP (§24 memecoin deferral)
+    category: text('category').notNull(),      // failureCategory or successFactor slug
+    categoryKind: text('category_kind').notNull(), // 'FAILURE' | 'SUCCESS'
+    evidenceCount: numeric('evidence_count').notNull(), // effective-n at eligibility time
+    proposedChange: jsonb('proposed_change').notNull(),
+    status: text('status').notNull(),           // PROPOSED | BACKTEST_PASSED | OOS_PENDING | PROMOTED | REJECTED | DEFERRED_BOOTSTRAP
+    backtestResult: jsonb('backtest_result'),
+    oosResult: jsonb('oos_result'),
+    fromConfigVersion: integer('from_config_version'),
+    toConfigVersion: integer('to_config_version'),
+    createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+    resolvedAt: timestamp('resolved_at', { withTimezone: true, mode: 'date' }),
+  },
+  (t) => [
+    index('learning_hypothesis_status_setup_idx').on(t.status, t.setupId),
+  ],
+);
+
 export const schema = {
   domainEvent,
   processedEvent,
@@ -925,4 +959,5 @@ export const schema = {
   llmCallLog,
   judgeDecision,
   tradeAutopsy,
+  learningHypothesis,
 };

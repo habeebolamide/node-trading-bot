@@ -13,3 +13,8 @@ export * from './metrics/calibration.js';
 export * from './metrics/metrics.js';
 export * from './metrics/walk-forward.js';
 export * from './metrics/shadow.js';
+export * from './hypothesis/aggregate.js';
+export * from './hypothesis/backtest.js';
+export * from './hypothesis/pipeline.js';
+export * from './hypothesis/promote.js';
+export * from './hypothesis/propose.js';

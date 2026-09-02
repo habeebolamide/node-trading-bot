@@ -1,6 +1,35 @@
 # Change: m7-hypothesis-pipeline
 
-**Status:** PROPOSED (scoping)
+**Status:** COMPLETED — archived 2026-09-02 — M7 COMPLETE
+**Original status:** PROPOSED (scoping)
+
+> **COMPLETED.** Migration 0020: `learning_hypothesis` (id · setup_id · domain · category ·
+> category_kind · evidence_count · proposed_change · status · backtest_result · oos_result ·
+> from_config_version · to_config_version · created_at · resolved_at).
+> - `propose.ts` — deterministic `CATEGORY_TO_ADJUSTMENT_V1` table. LLM does NOT propose the
+>   number; the pattern (recurring category) triggers a proposal, the delta is code. Unknown
+>   category → null (structural refusal to guess). `applyWeightDelta` renormalizes to sum 1.
+> - `aggregate.ts` — recency-weighted effective-n per (setupId, category, kind); refuses to
+>   yield below **effective-n ≥ 20** (§24 eligibility floor, higher than Setup Memory's ≥ 10).
+> - `pipeline.ts` — `openHypotheses` sweep. Idempotent per (setupId, category, kind) via
+>   findExistingOpen for PROPOSED rows.
+> - `backtest.ts` — `pickBacktestFold` / `pickOOSFold` disjoint by construction; `isImprovement`
+>   requires accuracy AND meanAlpha UP AND **non-overlapping Wilson intervals** — the same "no
+>   measurable difference" bar M6c5's factor tertile check uses. §24's promotion gate.
+> - `promote.ts` — inserts a NEW `scoring_config` row via M4's `updateTradingAgentConfig`
+>   (versioned append-only, rule 16). Marks hypothesis PROMOTED with from/to version links.
+>
+> **Verified:** typecheck green; **607/610 tests pass** (3 opt-in live) across 3 consecutive
+> full-suite runs, 23 new — pure propose (10 incl. category-kind match guard, small-delta
+> policy, renormalization), pure backtest (5 incl. Wilson-overlap gate cites §24), live-DB
+> pipeline + promotion (8 incl. below-floor → no proposal, above-floor → PROPOSED row +
+> idempotent second sweep, unknown categories skipped, PROMOTION writes NEW scoring_config
+> without touching old, non-promotable status refused, structural rule-13 test that propose.ts
+> has no LLM import).
+>
+> **One test-fixture correction on the way through:** initial T/AS_OF pair set 30 days apart,
+> which decayed 25 raw autopsies to effective-n 19.7 — just below the 20 floor. Tightened to
+> a 1-hour window so decay doesn't confound the eligibility check.
 **Milestone:** M7 (change 6 of 6) — completes M7
 **Implements:** §24 hypothesis pipeline (aggregate → propose → backtest → out-of-sample →
 promote/reject) · §24 eligibility floor (effective-n ≥ 20, higher than Setup Memory's ≥ 10) ·
