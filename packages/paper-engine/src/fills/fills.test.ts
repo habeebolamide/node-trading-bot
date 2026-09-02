@@ -58,4 +58,31 @@ describe('memecoin fill (§20 AMM, rule 25)', () => {
     if (zeroFee.kind !== 'FILL' || highFee.kind !== 'FILL') throw new Error('should fill');
     expect(highFee.tokensOut).toBeLessThan(zeroFee.tokensOut);
   });
+
+  describe('§10 pool-share cap (HARD GATE, cap first then fill)', () => {
+    // ySol = 100 → maxPoolShare 0.01 caps notional at 1.0 SOL.
+    it('caps an oversized notional to maxPoolShare × ySol and flags it', () => {
+      const r = memecoinBuyFill({ solIn: 10, reserves, maxPoolShare: 0.01 });
+      if (r.kind !== 'FILL') throw new Error('should fill at the capped size');
+      expect(r.effectiveNotional).toBeCloseTo(1.0, 9); // 0.01 × 100
+      expect(r.poolShareCapped).toBe(true);
+      // Capped fill buys fewer tokens than the uncapped 10-SOL fill would.
+      const uncapped = memecoinBuyFill({ solIn: 10, reserves });
+      if (uncapped.kind !== 'FILL') throw new Error('uncapped should fill');
+      expect(r.tokensOut).toBeLessThan(uncapped.tokensOut);
+    });
+
+    it('does not cap (or flag) a notional already within the limit', () => {
+      const r = memecoinBuyFill({ solIn: 0.5, reserves, maxPoolShare: 0.01 });
+      if (r.kind !== 'FILL') throw new Error('should fill');
+      expect(r.effectiveNotional).toBeCloseTo(0.5, 9);
+      expect(r.poolShareCapped).toBeUndefined();
+    });
+
+    it('NO_FILL(BELOW_MIN_AFTER_CAP) when the cap pushes size under the usable minimum', () => {
+      const r = memecoinBuyFill({ solIn: 10, reserves, maxPoolShare: 0.01, minNotional: 2 });
+      expect(r.kind).toBe('NO_FILL');
+      if (r.kind === 'NO_FILL') expect(r.reason).toBe('BELOW_MIN_AFTER_CAP');
+    });
+  });
 });

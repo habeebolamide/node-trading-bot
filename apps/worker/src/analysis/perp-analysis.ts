@@ -16,11 +16,12 @@ import type { DomainEvent } from '@tip/domain';
 import { marketSymbol } from '@tip/domain';
 import type { EventBus } from '@tip/events';
 import { AsOfMarketData } from '@tip/evaluation';
-import { perpAgents, perpHistoricalEdge } from '@tip/agents';
-import { historicalEdge } from '@tip/brain';
+import { perpAgents, perpHistoricalEdge, PERP_HISTORICAL_EDGE_KEY } from '@tip/agents';
+import type { FeatureTuple } from '@tip/brain';
 import {
   SignalEngine, PRIMARY_TF,
-  type AgentContext, type ScoringConfig, type TradingAgentSnapshot, type TradingStyle,
+  type AgentContext, type AgentOutput, type FeatureContribution,
+  type ScoringConfig, type TradingAgentSnapshot, type TradingStyle,
 } from '@tip/trading-agents';
 
 interface KlinePayload {
@@ -68,14 +69,73 @@ export class PerpAnalysisTier {
       configVersion: cfg.version, config: cfg.config as ScoringConfig };
   }
 
-  /** Historical Edge feature contribution — the Brain read as of the bucket's primary-TF close. */
-  private async features(bucket: { symbol: string; primaryTfCloseAt: Date }, agent: TradingAgentSnapshot, _outputs: readonly unknown[]) {
-    void perpHistoricalEdge; void historicalEdge;
-    // Feature computed from the assembled outputs is out of scope for this MVP wiring — the
-    // Historical Edge Brain read requires the fingerprint tuple, which the FeatureAggregator
-    // doesn't yet assemble here. Return an empty contribution; the composite is unaffected
-    // (Historical Edge weight simply doesn't contribute until the tuple assembler lands).
-    return {};
+  /**
+   * Historical Edge feature contribution (§40.16) — reads the perp Brain as of the bucket's
+   * primary-TF close (never wall clock; rules 11/21/22). Assembles the FULL 8-dimension perp
+   * fingerprint tuple (rule 24) from the agents' outputs, then does the Brain read.
+   *
+   * Six of the eight dimensions are direct agent scores. The remaining two are derived from the
+   * fields those agents already emit:
+   *   • volatility ← Market Regime's `atrRatio`, mapped so 1.0→MED, 1.5→HIGH, 0.5→LOW.
+   *   • volume     ← Momentum's `currentVol/avgVol` expansion, signed by the momentum direction —
+   *                  a documented proxy for the §40.15 Volume feature (which needs a candle
+   *                  buffer). Confirming volume in the trade direction reads positive.
+   * If any dimension is missing (an agent skipped or was disabled), the fingerprint would be a
+   * partial tuple — rule 24 forbids that — so we return no contribution and the composite simply
+   * omits the 5% Historical Edge term rather than aliasing into a wrong cell.
+   */
+  private async features(
+    bucket: { symbol: string; primaryTfCloseAt: Date },
+    _agent: TradingAgentSnapshot,
+    outputs: readonly AgentOutput[],
+  ): Promise<FeatureContribution> {
+    const byKey = new Map(outputs.map((o) => [o.agent, o]));
+    const score = (k: string): number | undefined => byKey.get(k)?.score;
+
+    const momentum = byKey.get('perp.momentum');
+    const regime = byKey.get('perp.market_regime');
+
+    // Derived volatility from regime's ATR ratio: (ratio − 1)/0.5 clamped to [-1,1].
+    const atrRatio = regime?.features && typeof (regime.features as Record<string, unknown>).atrRatio === 'number'
+      ? (regime.features as { atrRatio: number }).atrRatio : undefined;
+    const volatility = atrRatio === undefined ? undefined : Math.max(-1, Math.min(1, (atrRatio - 1) / 0.5));
+
+    // Derived volume: expansion magnitude signed by momentum direction.
+    const mf = momentum?.features as { currentVol?: number; avgVol?: number } | undefined;
+    const volume = mf?.currentVol !== undefined && mf.avgVol !== undefined && mf.avgVol > 0
+      ? Math.max(-1, Math.min(1, (mf.currentVol / mf.avgVol - 1))) * Math.sign(momentum?.score ?? 0)
+      : undefined;
+
+    const tuple: Record<string, number | undefined> = {
+      momentum: score('perp.momentum'),
+      open_interest: score('perp.open_interest'),
+      market_regime: score('perp.market_regime'),
+      liquidation: score('perp.liquidation'),
+      funding: score('perp.funding'),
+      positioning: score('perp.positioning'),
+      volume,
+      volatility,
+    };
+    // Rule 24 — a partial tuple must not be fingerprinted. Bail cleanly if any dimension is absent.
+    if (Object.values(tuple).some((v) => v === undefined || !Number.isFinite(v))) return {};
+
+    let edge;
+    try {
+      edge = await perpHistoricalEdge(this.deps.db, tuple as FeatureTuple, bucket.primaryTfCloseAt);
+    } catch (e) {
+      this.log('historical edge read failed; composing without it', { err: String(e) });
+      return {};
+    }
+
+    // Contribute as a synthetic agent output (weighted 5% iff the config lists 'historical_edge')
+    // plus the Task-6 historicalEvidence confidence sub-metric.
+    const syntheticOutput: AgentOutput = {
+      agent: PERP_HISTORICAL_EDGE_KEY, agentVersion: 0,
+      direction: edge.score > 0 ? 'LONG' : edge.score < 0 ? 'SHORT' : 'NEUTRAL',
+      score: edge.score, confidence: edge.historicalEvidence,
+      features: { evidence: edge.evidence, effectiveN: edge.effectiveN, backoffDepth: edge.backoffDepth },
+    };
+    return { outputs: [syntheticOutput], historicalEvidence: edge.historicalEvidence };
   }
 
   /** Build a perp AgentContext bound to the bar close. Wallet readers inert (perp has no wallets). */

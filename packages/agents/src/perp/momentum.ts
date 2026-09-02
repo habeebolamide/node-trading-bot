@@ -10,6 +10,7 @@ import { and, asc, eq, lte } from 'drizzle-orm';
 import type { DomainEvent } from '@tip/domain';
 import { marketCandle } from '@tip/database';
 import type { AgentContext, AgentOutput, AnalysisAgent } from '@tip/trading-agents';
+import { ANALYSIS_TFS_FOR_PRIMARY } from '@tip/trading-agents';
 import { EVENT_NAMES } from '@tip/events';
 import { ema, rsi, macdHistogram, atr } from './indicators.js';
 
@@ -60,6 +61,33 @@ function stddev(xs: number[]): number {
   if (xs.length < 2) return 0;
   const m = xs.reduce((s, x) => s + x, 0) / xs.length;
   return Math.sqrt(xs.reduce((s, x) => s + (x - m) ** 2, 0) / (xs.length - 1));
+}
+
+
+/**
+ * Multi-TF confirmation (§8). Reads EMA(9,21,50) alignment on EACH analysis TF for the style and
+ * returns the FRACTION that agree with the primary-TF direction, in [0,1]. 1.0 = every TF aligns
+ * (strong confirmation); 0.33 = only the primary agrees (weak, likely a lower-TF head-fake).
+ * Used to scale Momentum's confidence — the plan's whole point of a multi-TF stack.
+ */
+async function multiTfConfirmation(
+  db: AgentContext['db'], symbol: string, primaryTf: string, at: Date, primarySign: number,
+): Promise<{ fraction: number; perTf: Record<string, number> }> {
+  const stack = ANALYSIS_TFS_FOR_PRIMARY[primaryTf as '5m' | '1h' | '4h'] ?? [primaryTf];
+  const perTf: Record<string, number> = {};
+  let agree = 0;
+  for (const tf of stack) {
+    const rows = await db.select({ close: marketCandle.close })
+      .from(marketCandle)
+      .where(and(eq(marketCandle.symbol, symbol), eq(marketCandle.timeframe, tf), lte(marketCandle.closeTime, at)))
+      .orderBy(asc(marketCandle.openTime)).limit(60);
+    if (rows.length < 30) { perTf[tf] = 0; continue; }
+    const closes = rows.map((r) => Number(r.close));
+    const sign = Math.sign(emaAlignment(closes));
+    perTf[tf] = sign;
+    if (primarySign !== 0 && sign === primarySign) agree++;
+  }
+  return { fraction: stack.length > 0 ? agree / stack.length : 0, perTf };
 }
 
 export const perpMomentumAgent: AnalysisAgent = {
@@ -113,7 +141,15 @@ export const perpMomentumAgent: AnalysisAgent = {
     const composite = Math.max(-1, Math.min(1, 0.4 * alignment + 0.3 * slope + 0.15 * rsiV + 0.15 * macd));
 
     const signs = [alignment, slope, rsiV, macd].map((s) => (s === 0 ? 0 : Math.sign(s)));
-    const confidence = Math.max(0.3, Math.min(1, 1 - stddev(signs) / 2));
+    const agentAgreement = Math.max(0.3, Math.min(1, 1 - stddev(signs) / 2));
+
+    // Multi-TF confirmation (§8). Read the analysis-TF stack; scale confidence by how many TFs
+    // agree with the primary-TF direction. A signal confirmed on 15m + 1h + 4h is worth more
+    // than one that only shows on the primary — a lower-TF head-fake gets down-weighted.
+    const mtf = await multiTfConfirmation(ctx.db, p.symbol, ctx.primaryTf, new Date(p.closeTime), Math.sign(composite));
+    // Blend: agent-internal agreement × TF-stack agreement. Full alignment keeps confidence;
+    // primary-only (fraction ≈ 1/3) roughly halves it.
+    const confidence = Math.max(0.2, Math.min(1, agentAgreement * (0.5 + 0.5 * mtf.fraction)));
 
     return {
       agent: KEY,
@@ -123,6 +159,7 @@ export const perpMomentumAgent: AnalysisAgent = {
       confidence,
       features: {
         symbol: p.symbol, alignment, slope, rsi: rsi(closes, 14), macd, currentVol, avgVol, atr14: a,
+        multiTfFraction: mtf.fraction, multiTfPerTf: mtf.perTf,
       },
     };
   },

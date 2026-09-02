@@ -8,7 +8,7 @@ import { eq } from 'drizzle-orm';
 import type { DomainEvent } from '@tip/domain';
 import { ValidationError, createLogger } from '@tip/domain';
 import { signalFeature, signalRisk, type Db } from '@tip/database';
-import { EVENT_NAMES, type EventBus, QUEUE_NAMES } from '@tip/events';
+import { EVENT_NAMES, type EventBus, QUEUE_NAMES, PRIORITY } from '@tip/events';
 import { callWithLog, type DeepSeekClient } from '@tip/llm';
 import type { AgentContext, AgentOutput, AnalysisAgent } from '@tip/trading-agents';
 import { buildJudgeEvidence } from './evidence.js';
@@ -108,7 +108,7 @@ export function createJudgeAgent(deps: JudgeDeps): AnalysisAgent {
             confidenceTag: j.confidenceTag,
             llmCallLogId: call.id,
           },
-        });
+        }, { priority: PRIORITY.FAST }); // §11 — the override gate must run ahead of analysis
       }
 
       // Return an AgentOutput for callers who want to compose downstream, though the composite

@@ -32,8 +32,10 @@ export interface PoolReserves {
 }
 
 export type FillResult =
-  | { readonly kind: 'FILL'; readonly price: number; readonly tokensOut: number; readonly effectiveNotional: number }
-  | { readonly kind: 'NO_FILL'; readonly reason: 'RESERVES_UNAVAILABLE' | 'INSUFFICIENT_LIQUIDITY' | 'ZERO_NOTIONAL'; readonly detail: string };
+  | { readonly kind: 'FILL'; readonly price: number; readonly tokensOut: number; readonly effectiveNotional: number;
+      /** True when the pool-share cap (§10) reduced the requested notional below what was asked. */
+      readonly poolShareCapped?: boolean }
+  | { readonly kind: 'NO_FILL'; readonly reason: 'RESERVES_UNAVAILABLE' | 'INSUFFICIENT_LIQUIDITY' | 'ZERO_NOTIONAL' | 'BELOW_MIN_AFTER_CAP'; readonly detail: string };
 
 /**
  * BUY: solIn → tokensOut against `(xToken, ySol)`. Constant-product with fee taken on the input:
@@ -42,20 +44,44 @@ export type FillResult =
  *
  * `NO_FILL(RESERVES_UNAVAILABLE)` is what §20 mandates when depth data is absent — this is the
  * type-level enforcement of rule 25.
+ *
+ * POOL-SHARE CAP (§10, HARD GATE per §9/§10): the notional may not exceed
+ * `maxPoolShare × ySol` (quote-side reserves; default 0.01). §10 is explicit — "Cap first, then
+ * fill. If the capped size falls below a usable minimum, output NO TRADE." The cap can only be
+ * applied HERE, at fill time, because §20 reads reserves at detection time — the planner that
+ * sized the position never saw them. `minNotional` (optional) is that usable-minimum floor;
+ * a cap that pushes the size under it returns NO_FILL(BELOW_MIN_AFTER_CAP) rather than filling a
+ * meaningless dust position.
  */
-export function memecoinBuyFill(input: { solIn: number; reserves: PoolReserves | null }): FillResult {
+export function memecoinBuyFill(input: {
+  solIn: number; reserves: PoolReserves | null; maxPoolShare?: number; minNotional?: number;
+}): FillResult {
   if (input.solIn <= 0) return { kind: 'NO_FILL', reason: 'ZERO_NOTIONAL', detail: `solIn=${input.solIn}` };
   if (!input.reserves) return { kind: 'NO_FILL', reason: 'RESERVES_UNAVAILABLE', detail: 'depth data absent at detection time' };
   const { xToken, ySol, fee } = input.reserves;
   if (xToken <= 0 || ySol <= 0) return { kind: 'NO_FILL', reason: 'INSUFFICIENT_LIQUIDITY', detail: `reserves x=${xToken} y=${ySol}` };
-  const solEffective = input.solIn * (1 - fee);
+
+  // Cap first (§10), then fill. Clamp the requested notional to maxPoolShare × quote reserves.
+  let solIn = input.solIn;
+  let poolShareCapped = false;
+  if (input.maxPoolShare !== undefined) {
+    const cap = input.maxPoolShare * ySol;
+    if (solIn > cap) { solIn = cap; poolShareCapped = true; }
+    if (input.minNotional !== undefined && solIn < input.minNotional) {
+      return { kind: 'NO_FILL', reason: 'BELOW_MIN_AFTER_CAP',
+        detail: `capped notional ${solIn} < min ${input.minNotional} (maxPoolShare=${input.maxPoolShare}, ySol=${ySol})` };
+    }
+  }
+
+  const solEffective = solIn * (1 - fee);
   const tokensOut = (xToken * solEffective) / (ySol + solEffective);
   if (tokensOut <= 0) return { kind: 'NO_FILL', reason: 'INSUFFICIENT_LIQUIDITY', detail: 'tokensOut≤0' };
   return {
     kind: 'FILL',
-    price: input.solIn / tokensOut,
+    price: solIn / tokensOut,
     tokensOut,
-    effectiveNotional: input.solIn,
+    effectiveNotional: solIn,
+    ...(poolShareCapped ? { poolShareCapped: true } : {}),
   };
 }
 

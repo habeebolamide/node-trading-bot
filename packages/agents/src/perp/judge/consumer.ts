@@ -22,7 +22,7 @@ import { and, eq, sql } from 'drizzle-orm';
 import type { DomainEvent } from '@tip/domain';
 import { createLogger } from '@tip/domain';
 import { judgeDecision, scoringConfig, signal, signalFeature, tradingAgent, type Db } from '@tip/database';
-import { EVENT_NAMES, QUEUE_NAMES, type EventBus } from '@tip/events';
+import { EVENT_NAMES, QUEUE_NAMES, PRIORITY, type EventBus } from '@tip/events';
 import { transitionSignal, type ScoringConfig, type TradingStyle } from '@tip/trading-agents';
 import type { AsOfMarketData } from '@tip/evaluation';
 import { decide, type JudgeAction } from './gate.js';
@@ -128,7 +128,7 @@ export async function handleJudgeEvaluation(
         eventTime: new Date().toISOString(),
         source: 'override-gate',
         payload: { signalId: p.signalId, domain: 'perp', reasons: ['STAND_ASIDE'] },
-      });
+      }, { priority: PRIORITY.FAST }); // §11 — Judge override drives immediate re-plan
     }
   } else if (action === 'FLIP') {
     if (deps.bus) {
@@ -142,7 +142,7 @@ export async function handleJudgeEvaluation(
           deterministicDirection: sig.direction,
           configVersion: cfgRow.version,
         },
-      });
+      }, { priority: PRIORITY.FAST }); // §11 — a flip must re-plan ahead of the analysis backlog
     }
   }
 

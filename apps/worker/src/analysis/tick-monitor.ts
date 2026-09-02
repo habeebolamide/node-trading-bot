@@ -18,7 +18,7 @@ import type { Db } from '@tip/database';
 import { paperPosition, prediction, tradingAgent } from '@tip/database';
 import type { DomainEvent } from '@tip/domain';
 import type { EventBus } from '@tip/events';
-import { EVENT_NAMES, QUEUE_NAMES } from '@tip/events';
+import { EVENT_NAMES, QUEUE_NAMES, PRIORITY } from '@tip/events';
 import {
   activatePendingPosition, closeRemaining, evalPendingTick, evalTick, expirePendingPosition,
   updateExcursion,
@@ -107,7 +107,7 @@ export async function processTick(deps: TickMonitorDeps, input: {
         type: decision.kind === 'STOP_LOSS' ? EVENT_NAMES.PAPER_TRADE_SL_HIT : EVENT_NAMES.PAPER_TRADE_TP_HIT,
         eventTime: input.now.toISOString(), source: 'tick-monitor',
         payload: { positionId: pos.id, price: decision.price },
-      });
+      }, { priority: PRIORITY.FAST }); // §11 reaction lane — a fill must not queue behind analysis
       await enterCooldown(deps.db, pos.predAgentId, COOLDOWN_MS, input.now); // IN_TRADE → COOLDOWN
       log('position closed', { positionId: pos.id, reason: decision.kind, price: decision.price });
     } else if (decision.kind === 'HORIZON_EXPIRY') {

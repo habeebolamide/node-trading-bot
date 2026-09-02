@@ -18,6 +18,24 @@ export interface TradingAgentIdentity {
 }
 
 /** Style → primary TF for CADENCE agents (§8 finalized mapping table). */
+/**
+ * Analysis timeframes per style (§8 table). The primary TF (middle of each band) fires the
+ * pipeline; the full stack is what CADENCE/CONDITIONAL agents read for multi-TF confirmation.
+ *   scalp: 1m · 5m · 15m   day: 15m · 1h · 4h   swing: 4h · 1d
+ */
+export const ANALYSIS_TFS: Record<TradingStyle, readonly ('1m'|'5m'|'15m'|'1h'|'4h'|'1d')[]> = {
+  scalp: ['1m', '5m', '15m'],
+  day: ['15m', '1h', '4h'],
+  swing: ['4h', '1d'],
+};
+
+/** Map a primary TF back to its style's analysis stack (agents get primaryTf, not style). */
+export const ANALYSIS_TFS_FOR_PRIMARY: Record<'5m'|'1h'|'4h', readonly ('1m'|'5m'|'15m'|'1h'|'4h'|'1d')[]> = {
+  '5m': ['1m', '5m', '15m'],
+  '1h': ['15m', '1h', '4h'],
+  '4h': ['4h', '1d'],
+};
+
 export const PRIMARY_TF: Record<TradingStyle, '5m' | '1h' | '4h'> = {
   scalp: '5m',
   day: '1h',

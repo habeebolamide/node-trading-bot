@@ -7,7 +7,7 @@
 import { randomUUID } from 'node:crypto';
 import type { DomainEvent } from '@tip/domain';
 import { withIdempotency, walletTransaction, token, type Db, type Tx } from '@tip/database';
-import { EVENT_NAMES, QUEUE_NAMES, type EventBus } from '@tip/events';
+import { EVENT_NAMES, QUEUE_NAMES, PRIORITY, type EventBus } from '@tip/events';
 import type { NormalizedWalletTx } from '../provider.js';
 import type { FeedMonitor } from '../staleness/monitor.js';
 import { HELIUS_WEBHOOK_FEED, FIXED_THRESHOLDS_MS } from '../staleness/thresholds.js';
@@ -78,12 +78,14 @@ export function createHeliusHandler(deps: HeliusIngestionDeps): (event: DomainEv
     });
 
     for (const n of result.newTxs) {
+      // §11 reaction lane — a smart-money buy/sell detection heads the detection→fill→alert path
+      // and must not queue behind heavy Brain/analysis jobs.
       await deps.bus.publish(QUEUE_NAMES.WALLET_ANALYSIS, {
         type: EVENT_NAMES.WALLET_TRANSACTION_DETECTED,
         eventTime: n.eventTime,
         source: 'helius-adapter',
         payload: n,
-      });
+      }, { priority: PRIORITY.FAST });
     }
     for (const mint of result.newMints) {
       await deps.bus.publish(QUEUE_NAMES.TOKEN_ANALYSIS, {

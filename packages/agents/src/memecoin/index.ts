@@ -30,3 +30,4 @@ export const memecoinAgents: readonly AnalysisAgent[] = [
   memecoinTokenQualityAgent,
   memecoinMarketRegimeAgent,
 ];
+export * from './token-claim.js';

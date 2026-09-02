@@ -928,6 +928,21 @@ export const learningHypothesis = pgTable(
   ],
 );
 
+
+/**
+ * active_token_claim (Part II §9a — audit #7). Platform-wide, token-keyed: NO two TradingAgents
+ * may hold the same mint at once, regardless of config. The mint is the PRIMARY KEY — the unique
+ * constraint IS the atomicity (§29 / rule 12: DB-level, never application check-then-write). A
+ * claim exists only while the token is actually HELD; it releases the instant the position closes
+ * on any exit (§10), never held for the whole TTL.
+ */
+export const activeTokenClaim = pgTable('active_token_claim', {
+  mint: text('mint').primaryKey(),
+  tradingAgentId: text('trading_agent_id').notNull(),
+  positionId: text('position_id'),
+  claimedAt: timestamp('claimed_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+});
+
 export const schema = {
   domainEvent,
   processedEvent,
@@ -968,4 +983,5 @@ export const schema = {
   judgeDecision,
   tradeAutopsy,
   learningHypothesis,
+  activeTokenClaim,
 };
