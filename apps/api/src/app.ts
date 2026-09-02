@@ -7,6 +7,7 @@ import type { Watchlist } from '@tip/watchlist';
 import { safeEqual, withTimeout } from './util.js';
 import { walletsRouter } from './wallets.js';
 import { tradingAgentsRouter } from './trading-agents.js';
+import { dashboardRouter } from './dashboard.js';
 
 export interface ApiDeps {
   db: Db;
@@ -39,6 +40,7 @@ export function createApp(deps: ApiDeps): Express {
 
   // TradingAgent routes (m4-tradingagent). Always mounted — needs only DB access.
   app.use('/trading-agents', tradingAgentsRouter(deps.db));
+  app.use('/api', dashboardRouter(deps.db));
 
   // ── Liveness + dependency health ──────────────────────────────
   app.get('/health', async (_req: Request, res: Response) => {

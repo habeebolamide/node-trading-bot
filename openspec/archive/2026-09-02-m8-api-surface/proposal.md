@@ -1,6 +1,16 @@
 # Change: m8-api-surface
 
-**Status:** PROPOSED (scoping)
+**Status:** COMPLETED — archived 2026-09-02
+**Original status:** PROPOSED (scoping)
+
+> **COMPLETED.** New `apps/api/src/dashboard.ts` mounted at `/api`. Read-only routes
+> projecting M6/M7 helpers verbatim: predictions listing/detail/attribution/autopsy, metrics
+> (headline/by-horizon/calibration/factor/bootstrap/shadow-vs-real/shadow-vs-baseline),
+> hypotheses queue, autopsies browser, brain reads (setup/agent/agents/market/wallet), signals
+> listing/detail, portfolios + positions, and an /overview KPI endpoint.
+>
+> **Verified:** typecheck green; **617/620 tests pass**, 10 new — live-DB integration covering
+> the endpoints named in proposal.md, including param-validation 400s.
 **Milestone:** M8 — Dashboard (change 1 of 6)
 **Implements:** §26 dashboard data needs · CLAUDE.md "you own the UX per Task 8"
 

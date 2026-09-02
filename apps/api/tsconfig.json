@@ -9,6 +9,9 @@
     { "path": "../../packages/events" },
     { "path": "../../packages/database" },
     { "path": "../../packages/ingestion" },
+    { "path": "../../packages/brain" },
+    { "path": "../../packages/evaluation" },
+    { "path": "../../packages/predictions" },
     { "path": "../../packages/trading-agents" },
     { "path": "../../packages/watchlist" }
   ],

@@ -18,7 +18,10 @@
     "@tip/watchlist": "*",
     "drizzle-orm": "^0.36.4",
     "express": "^4.21.1",
-    "ioredis": "^5.4.1"
+    "ioredis": "^5.4.1",
+    "@tip/brain": "*",
+    "@tip/evaluation": "*",
+    "@tip/predictions": "*"
   },
   "devDependencies": {
     "@types/express": "^4.17.21",
