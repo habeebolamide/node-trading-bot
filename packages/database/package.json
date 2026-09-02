@@ -20,7 +20,7 @@
     "test": "vitest run",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
-    "db:reset": "node -e \"import('postgres').then(async ({default:p})=>{const s=p(process.env.DATABASE_URL);await s.unsafe('DROP SCHEMA public CASCADE; CREATE SCHEMA public; DROP SCHEMA IF EXISTS drizzle CASCADE');await s.end();console.log('wiped')})\" && npm run db:migrate"
+    "db:reset": "tsx src/reset.ts && npm run db:migrate"
   },
   "dependencies": {
     "@tip/domain": "*",
@@ -29,6 +29,7 @@
   },
   "devDependencies": {
     "dotenv": "^16.4.5",
-    "drizzle-kit": "^0.28.1"
+    "drizzle-kit": "^0.28.1",
+    "tsx": "^4.19.2"
   }
 }
