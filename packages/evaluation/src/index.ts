@@ -8,3 +8,7 @@ export * from './outcome/feature-tuple.js';
 export * from './outcome/horizons.js';
 export * from './outcome/resolve.js';
 export * from './outcome/sweep.js';
+export * from './metrics/attribution.js';
+export * from './metrics/calibration.js';
+export * from './metrics/metrics.js';
+export * from './metrics/walk-forward.js';
