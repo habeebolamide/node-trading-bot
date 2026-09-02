@@ -16,3 +16,5 @@ export {
 } from './signal-store.js';
 export { canTransition, assertTransition, type SignalState } from './signal-lifecycle.js';
 export * from './signal-engine.js';
+export * from './agent-lifecycle.js';
+export * from './feed-block.js';

@@ -341,7 +341,15 @@ export const tradingAgent = pgTable('trading_agent', {
   universe: text('universe').array().notNull(),
   tradingStyle: text('trading_style').notNull(), // 'scalp' | 'day' | 'swing'
   activeConfigVersion: integer('active_config_version').notNull(),
-  status: text('status').notNull().default('active'), // 'active' | 'blocked' | 'archived'
+  status: text('status').notNull().default('active'), // ADMIN state: 'active' | 'blocked' | 'archived'
+  // §37 RUNTIME lifecycle — distinct from `status` (which is the user's pause/archive control).
+  // IDLE | WATCHING | PENDING_ENTRY | IN_TRADE | COOLDOWN | BLOCKED. BLOCKED and COOLDOWN are
+  // sticky (stored); the rest are derived from live signals + positions when not sticky.
+  lifecycleState: text('lifecycle_state').notNull().default('IDLE'),
+  // When a sticky state auto-clears: COOLDOWN → IDLE after the window; BLOCKED (daily loss) →
+  // IDLE at next UTC day. Null when the sticky state has no timer (e.g. feed-staleness BLOCKED,
+  // cleared when the feed recovers).
+  lifecycleUntil: timestamp('lifecycle_until', { withTimezone: true, mode: 'date' }),
   createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
 });
 

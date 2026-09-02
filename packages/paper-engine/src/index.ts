@@ -9,6 +9,7 @@
  * NO REAL-MONEY EXECUTION PATHS EXIST HERE. Rule 20 is absolute for MVP.
  */
 export * from './exit.js';
+export * from './daily-loss.js';
 export * from './fills/memecoin.js';
 export * from './fills/perp.js';
 export * from './portfolio.js';
