@@ -6,6 +6,8 @@ import { Table, Thead, Th, Tbody, Tr, Td } from '@/components/ui/Table';
 import { Tabs } from '@/components/ui/Tabs';
 import { useAgent, useAgents } from '@/hooks/useAgents';
 import { AgentTabs } from '@/components/AgentTabs';
+import { CreateAgentForm } from '@/components/CreateAgentForm';
+import { useState } from 'react';
 
 export function Agents() {
   const { id } = useParams();
@@ -15,9 +17,19 @@ export function Agents() {
 
 function AgentsList() {
   const q = useAgents();
+  const [showCreate, setShowCreate] = useState(false);
   return (
     <div>
-      <h1 className="mb-4 text-lg font-semibold">Trading Agents</h1>
+      <div className="mb-4 flex items-center justify-between">
+        <h1 className="text-lg font-semibold">Trading Agents</h1>
+        {!showCreate && (
+          <button onClick={() => setShowCreate(true)}
+            className="rounded-md bg-accent px-3 py-2 text-sm font-medium text-neutral-950 hover:bg-cyan-300">
+            + Create Agent
+          </button>
+        )}
+      </div>
+      {showCreate && <div className="mb-4"><CreateAgentForm onClose={() => setShowCreate(false)} /></div>}
       {q.isLoading ? <Skeleton className="h-40" />
        : q.isError ? <p className="text-red-300">API error: {(q.error as { message?: string }).message}</p>
        : (
