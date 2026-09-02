@@ -13,6 +13,7 @@
     { "path": "packages/agents" },
     { "path": "packages/brain" },
     { "path": "packages/planner" },
+    { "path": "packages/predictions" },
     { "path": "apps/api" },
     { "path": "apps/worker" },
     { "path": "scripts" }

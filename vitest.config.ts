@@ -20,6 +20,7 @@ export default defineConfig({
       '@tip/agents': pkg('./packages/agents/src/index.ts'),
       '@tip/brain': pkg('./packages/brain/src/index.ts'),
       '@tip/planner': pkg('./packages/planner/src/index.ts'),
+      '@tip/predictions': pkg('./packages/predictions/src/index.ts'),
     },
   },
   test: {

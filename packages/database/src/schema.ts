@@ -524,6 +524,97 @@ export const signalRisk = pgTable('signal_risk', {
   agentVersion: integer('agent_version').notNull(),
 });
 
+
+
+/**
+ * signal_no_trade (m6-predictions). When the Trade Planner returns a NO_TRADE, we record WHY
+ * against the signal rather than creating a Prediction — §19 defines a Prediction as carrying an
+ * entry reference and a horizon, which a veto doesn't have. This keeps §22 attribution and §32
+ * denominators honest: metrics measure trades actually taken, and the R:R gate's own accuracy
+ * becomes a separate M7 question against §18 shadow predictions.
+ */
+export const signalNoTrade = pgTable('signal_no_trade', {
+  signalId: text('signal_id').primaryKey(),
+  reason: text('reason').notNull(), // INSUFFICIENT_RR | CANNOT_SIZE_SAFELY | NO_STOP_DERIVABLE | STALE_OR_MISSING_DATA
+  detail: text('detail'),
+  vetoedAt: timestamp('vetoed_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+});
+
+/**
+ * Prediction (§19, m6-predictions). IMMUTABLE after creation (rule 10) — enforced by a Postgres
+ * trigger appended in the migration, not by convention. If a schema field seems to want UPDATE,
+ * you're modelling it wrong (rule 10).
+ *
+ * `config_version` is a MANDATORY FK to the exact scoring_config that produced it (§19, rule 16).
+ * Without it a promoted §24 hypothesis silently blends predictions made under two configs into
+ * one number and destroys the "did the weight change actually help" question.
+ *
+ * `signal_id` is unique — one signal → at most one prediction (§36 CONSUMED transition).
+ * `is_shadow` / `shadow_of` land here for §18's Judge-override machinery (M7); no writer creates
+ * shadow rows yet.
+ */
+export const prediction = pgTable(
+  'prediction',
+  {
+    id: text('id').primaryKey(),
+    tradingAgentId: text('trading_agent_id').notNull(),
+    signalId: text('signal_id').notNull(),
+    domain: text('domain').notNull(),
+    symbol: text('symbol').notNull(),
+    direction: text('direction').notNull(),
+    score: numeric('score').notNull(),
+    confidence: numeric('confidence').notNull(),
+    horizon: text('horizon').notNull(),
+    entry: numeric('entry').notNull(),
+    stopLoss: numeric('stop_loss').notNull(),
+    takeProfit: numeric('take_profit'), // null when a memecoin ladder is configured
+    positionSize: numeric('position_size').notNull(),
+    notional: numeric('notional').notNull(),
+    leverage: numeric('leverage'),          // perp only
+    requiredMargin: numeric('required_margin'),
+    riskReward: numeric('risk_reward').notNull(),
+    thesis: text('thesis'),                 // M7 (Judge) fills; null is valid
+    features: jsonb('features').notNull(),  // agent contributions — §22 attribution input
+    invalidators: jsonb('invalidators'),
+    configVersion: integer('config_version').notNull(),
+    isShadow: boolean('is_shadow').notNull().default(false),
+    shadowOf: text('shadow_of'),            // FK-shaped to prediction(id); M7 populates
+    createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex('prediction_signal_uq').on(t.signalId),
+    index('prediction_agent_created_idx').on(t.tradingAgentId, t.createdAt),
+  ],
+);
+
+/**
+ * PredictionOutcome (§21, m6-outcome-engine will fill this). One row per (prediction, horizon).
+ * Deliberately NOT trigger-locked like `prediction` — it accrues per horizon as each elapses.
+ * The CLAIM is frozen; the MEASUREMENT builds up over time.
+ *
+ * `outcome_resolution` (TICK | CANDLE_1M_CONSERVATIVE, §21) keeps live and seeded populations
+ * separable in reporting forever even though the Brain aggregates them together.
+ */
+export const predictionOutcome = pgTable(
+  'prediction_outcome',
+  {
+    predictionId: text('prediction_id').notNull(),
+    horizon: text('horizon').notNull(),
+    resolvedAt: timestamp('resolved_at', { withTimezone: true, mode: 'date' }).notNull(),
+    returnPct: numeric('return_pct').notNull(),
+    benchmarkReturnPct: numeric('benchmark_return_pct'),
+    alpha: numeric('alpha'),
+    mfe: numeric('mfe'),
+    mae: numeric('mae'),
+    hitTarget: boolean('hit_target').notNull().default(false),
+    hitInvalidation: boolean('hit_invalidation').notNull().default(false),
+    holdingPeriodSec: bigint('holding_period_sec', { mode: 'number' }),
+    won: boolean('won').notNull(),
+    outcomeResolution: text('outcome_resolution').notNull(),
+  },
+  (t) => [primaryKey({ columns: [t.predictionId, t.horizon] })],
+);
+
 /**
  * BrainSetupOccurrence (m5-brain-core, §41). Append-only log — one row per closed prediction
  * per fingerprint rung. History is NEVER deleted (Part II §8: "older occurrences count less,
@@ -608,4 +699,7 @@ export const schema = {
   brainSetupMemory,
   brainTokenMemory,
   brainAgentOccurrence,
+  signalNoTrade,
+  prediction,
+  predictionOutcome,
 };
