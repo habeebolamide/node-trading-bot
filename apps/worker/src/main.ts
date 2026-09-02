@@ -18,6 +18,13 @@ import {
 } from '@tip/ingestion';
 import { HeliusSubscriptionManager, Watchlist, registerBuyDetector, registerConvergenceEmitter, type Batcher } from '@tip/watchlist';
 import { startWorkers } from './runner.js';
+import { PerpAnalysisTier } from './analysis/perp-analysis.js';
+import { registerJudgeTier } from './analysis/judge-tier.js';
+import { registerTickMonitor } from './analysis/tick-monitor.js';
+import { EVENT_NAMES, QUEUE_NAMES } from '@tip/events';
+import { createDeepSeekClient } from '@tip/llm';
+import { tickLifecycle } from '@tip/trading-agents';
+import type { DomainEvent } from '@tip/domain';
 // Side-effect imports that register queue processors go here as milestones add them.
 
 /* eslint-disable no-console */
@@ -67,6 +74,27 @@ async function main(): Promise<void> {
   poller.start();
   const monitorTimer = setInterval(() => monitor.check(), 5_000);
   console.log(`[worker] bybit ingestion live for ${symbols.join(', ')}`);
+
+  // ── Analysis tier (M4–M7): kline → agents → signals → risk → judge → prediction → paper ──
+  const perpAnalysis = new PerpAnalysisTier({ db, bus, log: (m, meta) => console.log(`[analysis] ${m}`, meta ?? '') });
+  // Consume perp klines for the analysis tier + the tick monitor. Both read the market queue.
+  bus.createWorker<{ symbol: string; timeframe: string; closeTime: string }>(QUEUE_NAMES.MARKET_INGESTION, async (event: DomainEvent<{ symbol: string; timeframe: string; closeTime: string }>) => {
+    if (event.type === EVENT_NAMES.PERP_KLINE_CLOSED) await perpAnalysis.onKline(event as never);
+  });
+  registerTickMonitor({ db, bus, log: (m, meta) => console.log(`[tick] ${m}`, meta ?? '') });
+  console.log('[worker] analysis tier + tick monitor live');
+
+  // ── Judge tier (M7) — only when a DeepSeek key is configured (§18 graceful degradation) ──
+  if (config.DEEPSEEK_API_KEY) {
+    const llm = createDeepSeekClient({ apiKey: config.DEEPSEEK_API_KEY });
+    registerJudgeTier({ db, bus, llm, log: (m, meta) => console.log(`[judge] ${m}`, meta ?? '') });
+    console.log('[worker] judge tier live (DeepSeek)');
+  } else {
+    console.log('[worker] judge tier OFF — no DEEPSEEK_API_KEY (predictions stay deterministic)');
+  }
+
+  // ── Lifecycle sweep — clears expired COOLDOWN / daily-loss BLOCKED every 30s (§37) ──
+  const lifecycleTimer = setInterval(() => { void tickLifecycle(db).catch(() => undefined); }, 30_000);
 
   // ── Helius memecoin ingestion (M1) ────────────────────────────
   // Always consume webhooks (drains the blockchain-ingestion queue + parses); the REST liveness
@@ -132,6 +160,7 @@ async function main(): Promise<void> {
   const shutdown = async (signal: string): Promise<void> => {
     console.log(`[worker] ${signal} — draining`);
     clearInterval(monitorTimer);
+    clearInterval(lifecycleTimer);
     poller.stop();
     adapter.stop();
     heliusProbe?.stop();

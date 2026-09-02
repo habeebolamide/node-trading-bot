@@ -5,6 +5,14 @@
     "outDir": "dist"
   },
   "references": [
+    { "path": "../../packages/trading-agents" },
+    { "path": "../../packages/llm" },
+    { "path": "../../packages/evaluation" },
+    { "path": "../../packages/paper-engine" },
+    { "path": "../../packages/predictions" },
+    { "path": "../../packages/planner" },
+    { "path": "../../packages/brain" },
+    { "path": "../../packages/agents" },
     { "path": "../../packages/domain" },
     { "path": "../../packages/events" },
     { "path": "../../packages/database" },

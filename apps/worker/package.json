@@ -16,6 +16,14 @@
     "@tip/ingestion": "*",
     "@tip/wallets": "*",
     "@tip/watchlist": "*",
-    "ioredis": "^5.4.1"
+    "ioredis": "^5.4.1",
+    "@tip/agents": "*",
+    "@tip/brain": "*",
+    "@tip/planner": "*",
+    "@tip/predictions": "*",
+    "@tip/paper-engine": "*",
+    "@tip/evaluation": "*",
+    "@tip/llm": "*",
+    "@tip/trading-agents": "*"
   }
 }
