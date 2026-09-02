@@ -79,24 +79,21 @@ describe('composeSignal', () => {
     expect(r!.contributingCount).toBe(1);
   });
 
-  it('agentAgreement: 100% when all contributing scores share sign', () => {
-    const r = composeSignal(
-      [out('a', 0.6), out('b', 0.4)],
-      { a: 0.5, b: 0.5 },
-      perpThresholds,
-      'perp',
-    );
-    expect(r!.agentAgreement).toBe(1);
+  it('agentAgreement: full 1.0 only when scores are IDENTICAL (zero dispersion), audit-2 Task-6 fix', () => {
+    const identical = composeSignal([out('a', 0.5), out('b', 0.5)], { a: 0.5, b: 0.5 }, perpThresholds, 'perp');
+    expect(identical!.agentAgreement).toBe(1); // stddev = 0
+    const spread = composeSignal([out('a', 0.6), out('b', 0.4)], { a: 0.5, b: 0.5 }, perpThresholds, 'perp');
+    expect(spread!.agentAgreement).toBeCloseTo(0.9, 6); // stddev = 0.1
   });
 
-  it('agentAgreement drops when signs conflict', () => {
+  it('agentAgreement drops sharply when signs conflict (large dispersion)', () => {
     const r = composeSignal(
       [out('a', 0.6), out('b', -0.4)],
       { a: 0.5, b: 0.5 },
       perpThresholds,
       'perp',
     );
-    expect(r!.agentAgreement).toBeCloseTo(0.5, 6);
+    expect(r!.agentAgreement).toBeCloseTo(0.5, 6); // stddev = 0.5 → 1 − 0.5
   });
 
   it('clamps composite to [-1, +1] after rounding', () => {

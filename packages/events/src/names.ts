@@ -44,6 +44,10 @@ export const EVENT_NAMES = {
   // Build-time addition (audit-2 #1 — entry orchestrator): the §11 fast lane's entry receipt.
   // Added to the plan's §10 list in the same change, per CLAUDE.md "done" rules.
   PAPER_TRADE_OPENED: 'paper_trade.opened',
+  // §18 Judge disagreement outcomes — audit-2 finding: gate emitted string literals with no
+  // subscriber. Named here so shadow-trade insertion + downstream metrics stay one contract.
+  SIGNAL_FLIPPED: 'signal.flipped',
+  SIGNAL_STOOD_ASIDE: 'signal.stood_aside',
 
   // ── Referenced by Part IV (§40) and the lifecycle sections (§36) ──
   PERP_KLINE_CLOSED: 'perp.kline.closed',

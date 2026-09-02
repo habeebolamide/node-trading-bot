@@ -512,6 +512,10 @@ paper_trade.tp_hit
 paper_trade.sl_hit
 paper_trade.opened     (build-time addition, audit-2 entry orchestrator — the §11 fast lane's
                         entry receipt, emitted after the paper fill commits)
+signal.flipped         (build-time addition, §18 gate → shadow-inserter subscribes to insert the
+                        DETERMINISTIC-direction shadow prediction for §23 evaluation)
+signal.stood_aside     (build-time addition, §18 gate → shadow-inserter subscribes to insert the
+                        DETERMINISTIC-direction shadow when the Judge stood aside)
 ```
 
 Use a standard event envelope:

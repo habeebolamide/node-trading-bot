@@ -141,6 +141,15 @@ export function precisionRecall(input: { tp: number; fp: number; fn: number }): 
  * §8 uses for Setup Memory. The bar defaults to effective-n 30 (three times the §41 trust floor),
  * settable so a stricter domain can raise it.
  */
+/**
+ * Domain minimums for the §32 bootstrap-window bar (audit-2 finding: was one flat `minN=30`
+ * for both, the plan is explicit that the maturity bar is per-domain and asymmetric):
+ *   perp: 30 resolved predictions (three times the §41 trust floor)
+ *   memecoin: 15 (memecoin has no historical backtest, so live evidence accumulates slower —
+ *             a stricter bar would leave every metric permanently flagged).
+ */
+const DOMAIN_MIN_N: Record<Domain, number> = { perp: 30, memecoin: 15 };
+
 export async function isBootstrapping(
   db: Db,
   input: { domain: Domain; configVersion: number; horizon: string; asOf: Date; minN?: number },
@@ -156,14 +165,14 @@ export async function isBootstrapping(
       lte(prediction.createdAt, input.asOf),
     ));
   const n = Number(rows[0]?.n ?? 0);
-  const minN = input.minN ?? 30;
+  const minN = input.minN ?? DOMAIN_MIN_N[input.domain];
   const bootstrapping = n < minN;
   return {
     n,
     bootstrapping,
     message: bootstrapping
-      ? `bootstrapping: ${n} resolved < minN ${minN} — §32 bootstrap window applies, treat headline metrics as directional only`
-      : `sufficient: ${n} resolved ≥ minN ${minN}`,
+      ? `bootstrapping (${input.domain}): ${n} resolved < minN ${minN} — §32 bootstrap window applies, treat headline metrics as directional only`
+      : `sufficient (${input.domain}): ${n} resolved ≥ minN ${minN}`,
   };
 }
 

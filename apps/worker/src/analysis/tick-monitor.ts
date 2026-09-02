@@ -88,13 +88,16 @@ export async function processTick(deps: TickMonitorDeps, input: {
     takeProfit: paperPosition.takeProfit, ladderState: paperPosition.ladderState,
     openedAtProcessing: paperPosition.openedAtProcessing,
     predAgentId: prediction.tradingAgentId, horizon: prediction.horizon,
+    invalidators: prediction.invalidators,
   })
     .from(paperPosition)
     .innerJoin(prediction, eq(prediction.id, paperPosition.predictionId))
+    // Include shadows (audit-2 #12): the tick monitor drives the counterfactual close for
+    // Judge FLIP/STAND_ASIDE shadow positions too. `openPositionCount` (capacity) already
+    // excludes shadows, so a shadow position never blocks a real entry.
     .where(and(
       eq(paperPosition.symbol, input.symbol),
       inArray(paperPosition.state, ['OPEN', 'PENDING_ENTRY']),
-      eq(paperPosition.isShadow, false),
     ));
 
   for (const pos of positions) {
@@ -124,6 +127,39 @@ export async function processTick(deps: TickMonitorDeps, input: {
     const favourable = dir === 'LONG' ? input.high : input.low;
     await updateExcursion(deps.db, pos.id, favourable);
     await updateExcursion(deps.db, pos.id, adverse);
+
+    // §36 Judge invalidator monitoring (audit-2 #13: the plan says "the tick monitor watches
+    // signal invalidation conditions too — same monitor, third responsibility"). A price_above
+    // / price_below firing forces the position closed at that level; stop_moved raises the
+    // stop; ttl_expired / funding_extreme are handled by the horizon path / dedicated feeds.
+    const invalidators = (pos.invalidators as Array<{ type: string; value?: number; price?: number }> | null) ?? [];
+    for (const inv of invalidators) {
+      if ((inv.type === 'price_above' && inv.value !== undefined && input.high >= inv.value) ||
+          (inv.type === 'price_below' && inv.value !== undefined && input.low <= inv.value)) {
+        await closeRemaining(deps.db, { positionId: pos.id, price: inv.value!, reason: 'STOP_LOSS', clocks });
+        await enterCooldown(deps.db, pos.predAgentId, COOLDOWN_MS, input.now);
+        await tripDailyLossIfCrossed(deps, pos.predAgentId, input.now);
+        log('closed by Judge invalidator', { positionId: pos.id, invalidator: inv.type, price: inv.value });
+        continue;
+      }
+      if (inv.type === 'stop_moved' && inv.price !== undefined) {
+        // Only tighten in the trade's favour (never widen the stop against us).
+        const cur = Number(pos.currentStop);
+        if (dir === 'LONG' && inv.price > cur) await deps.db.update(paperPosition).set({ currentStop: String(inv.price) }).where(eq(paperPosition.id, pos.id));
+        if (dir === 'SHORT' && inv.price < cur) await deps.db.update(paperPosition).set({ currentStop: String(inv.price) }).where(eq(paperPosition.id, pos.id));
+      }
+    }
+    // Re-read after any stop_moved edit so the exit evaluation below sees the new level.
+    if (invalidators.some((i) => i.type === 'stop_moved')) {
+      const r = (await deps.db.select({ stop: paperPosition.currentStop, state: paperPosition.state })
+        .from(paperPosition).where(eq(paperPosition.id, pos.id)).limit(1))[0];
+      if (!r || r.state !== 'OPEN') continue;
+      pos.currentStop = r.stop;
+    } else {
+      // If price_above / price_below closed the position above, skip further evaluation.
+      const r = (await deps.db.select({ state: paperPosition.state }).from(paperPosition).where(eq(paperPosition.id, pos.id)).limit(1))[0];
+      if (!r || r.state !== 'OPEN') continue;
+    }
 
     const ladderState = (pos.ladderState as { firedRungs?: number[] } | null);
     // Real planning horizon from the prediction (audit-2 #4: was hardcoded +4h — a swing

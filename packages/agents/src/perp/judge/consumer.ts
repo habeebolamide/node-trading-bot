@@ -119,7 +119,10 @@ export async function handleJudgeEvaluation(
     }
   }
 
-  // STAND_ASIDE: invalidate the signal, no real Prediction (§36).
+  // STAND_ASIDE: invalidate the signal, no real Prediction (§36). Emits BOTH the generic
+  // signal.invalidated (drives lifecycle-style re-plan) and signal.stood_aside (audit-2 #12
+  // hook — shadow-prediction inserter subscribes to the latter so §18/§23 shadow evaluation
+  // finally has data to compare against).
   if (action === 'STAND_ASIDE') {
     await transitionSignal(deps.db, p.signalId, 'INVALIDATED');
     if (deps.bus) {
@@ -128,12 +131,24 @@ export async function handleJudgeEvaluation(
         eventTime: new Date().toISOString(),
         source: 'override-gate',
         payload: { signalId: p.signalId, domain: 'perp', reasons: ['STAND_ASIDE'] },
-      }, { priority: PRIORITY.FAST }); // §11 — Judge override drives immediate re-plan
+      }, { priority: PRIORITY.FAST });
+      await deps.bus.publish(QUEUE_NAMES.SIGNAL_PROCESSING, {
+        type: EVENT_NAMES.SIGNAL_STOOD_ASIDE,
+        eventTime: new Date().toISOString(),
+        source: 'override-gate',
+        payload: {
+          signalId: p.signalId,
+          deterministicDirection: sig.direction,
+          configVersion: cfgRow.version,
+          signalScore: Number(sig.compositeScore),
+          confidence: Number(sig.confidence),
+        },
+      }, { priority: PRIORITY.FAST });
     }
   } else if (action === 'FLIP') {
     if (deps.bus) {
       await deps.bus.publish(QUEUE_NAMES.SIGNAL_PROCESSING, {
-        type: 'signal.flipped',
+        type: EVENT_NAMES.SIGNAL_FLIPPED,
         eventTime: new Date().toISOString(),
         source: 'override-gate',
         payload: {

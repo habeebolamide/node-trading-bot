@@ -44,10 +44,20 @@ export function directionFromComposite(score: number, thresholds: ScoringConfig[
 }
 
 /** Fraction of contributing agents whose signed score agrees with the composite's sign. */
-function computeAgentAgreement(contribScores: number[], compositeSign: number): number {
-  if (contribScores.length === 0 || compositeSign === 0) return 1;
-  const agree = contribScores.filter((s) => Math.sign(s) === compositeSign || s === 0).length;
-  return agree / contribScores.length;
+/**
+ * §Task 6 / Part III §3 agent-agreement metric — audit-2 finding: was implemented as the
+ * FRACTION whose sign matched the composite, so two agents at +0.05 / +0.95 scored the same
+ * agreement as two at +0.5 / +0.5. Plan spec: `1 − normalized dispersion of agent scores`.
+ * Standard deviation of scores in [-1,1] is at most 1 (bounded population), so
+ * `1 − stddev(scores)` is a valid [0,1] agreement metric. `compositeSign` is unused now (the
+ * dispersion is direction-agnostic) — the parameter is kept for callsite stability.
+ */
+function computeAgentAgreement(contribScores: number[], _compositeSign: number): number {
+  if (contribScores.length === 0) return 1;
+  const m = contribScores.reduce((s, x) => s + x, 0) / contribScores.length;
+  const variance = contribScores.reduce((s, x) => s + (x - m) ** 2, 0) / contribScores.length;
+  const stddev = Math.sqrt(variance);
+  return Math.max(0, Math.min(1, 1 - stddev));
 }
 
 export function composeSignal(

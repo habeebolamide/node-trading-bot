@@ -24,6 +24,7 @@ import { createJudgeTierHandlers } from './analysis/judge-tier.js';
 import { createTickHandler } from './analysis/tick-monitor.js';
 import { createWalletExitHandler } from './analysis/wallet-exit-monitor.js';
 import { createEntryOrchestrator, expireStaleSignals } from './analysis/entry-orchestrator.js';
+import { createShadowInserter } from './analysis/shadow-inserter.js';
 import { loadPerpRiskInputs } from './analysis/risk-inputs.js';
 import { createRiskAgent } from '@tip/agents';
 import { blockAgentsForStaleFeed, unblockAgentsForRecoveredFeed } from '@tip/trading-agents';
@@ -156,6 +157,13 @@ async function main(): Promise<void> {
     log: (m, meta) => console.log(`[entry] ${m}`, meta ?? ''),
   }));
   console.log('[worker] entry orchestrator live (signal → prediction → paper open)');
+
+  // Shadow inserter (§18, audit-2 #12) — subscribes to signal.flipped / signal.stood_aside
+  // and materializes the counterfactual shadow prediction + paper position so §23's
+  // "is the LLM worth it" question finally has data.
+  signalProcessingHandlers.push(createShadowInserter({
+    db, bus, log: (m, meta) => console.log(`[shadow] ${m}`, meta ?? ''),
+  }));
 
   // Telegram fast-lane alerts (§11, audit #12) — receipts of committed fills/closes only.
   if (config.TELEGRAM_BOT_TOKEN && config.TELEGRAM_CHAT_ID) {
