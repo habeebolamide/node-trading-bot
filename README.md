@@ -145,10 +145,13 @@ npm run db:reset --workspace @tip/database
 Destructive — read `.env`'s `DATABASE_URL` before running so you know which database you're
 wiping. Safe against your own dev DB, absolutely not against anything shared.
 
-### 4 · (Optional) backfill historical perp data
+### 4 · Backfill historical perp data (skip for UI exploration only)
 
-For **perp Brain seeding** (§25 pre-launch gate) you need ≥ 6 months of 1m/5m/15m/1h/4h/1d klines
-+ funding + OI for the symbols you'll trade. Skip if you only want to explore the UI.
+The perp Brain won't have anything to seed FROM until you load real historical bars. §25
+mandates ≥ 6 months of 1m/5m/15m/1h/4h/1d klines + funding + OI for the symbols you'll trade.
+
+**Skip this only if you're clicking around the UI to explore the shape.** Skip it and every
+perp signal will run with an empty Brain — see step 7 for what that means.
 
 ```bash
 npm run backfill --workspace @tip/scripts --   --months=6   --symbols=BTCUSDT,ETHUSDT,SOLUSDT
@@ -207,9 +210,30 @@ curl -X PATCH http://localhost:8000/trading-agents/<id> \
   -d '{"config": { … }}'
 ```
 
-### 7 · (Optional) pre-launch Brain seeding — perp only
+### 7 · Pre-launch Brain seeding — perp only, gate before you act on anything
 
-§30 requires the system not go live with an empty perp Brain. Needs step 4 completed first.
+§30 is explicit: **the system does not go live with an empty perp Brain.** Needs step 4 first.
+
+**What "empty Brain" actually means, precisely** — the system still boots, agents still
+produce signals, predictions still get created, the Paper Engine still opens positions. But
+until seeding runs (or enough live paper trades have resolved), every one of these degrades
+silently:
+
+| Piece | Empty-Brain behaviour | What it should do |
+|---|---|---|
+| **Historical Edge feature** (5% of both composites, §40.16/§40.19) | Returns `INSUFFICIENT`, score 0 | Signed contribution scaled by Wilson CI width |
+| **`historicalEvidence` confidence sub-metric** (Task 6, 25% of confidence) | Held at the 0.25 no-Brain floor | `f(effective-n, Wilson width)` on real data |
+| **Setup Memory backoff** | Falls all the way to the global base rate (0.5^5 attenuation ≈ 0.011 for memecoin, 0.5^8 ≈ 0.004 for perp) | Answers from the tightest rung that clears effective-n 10 |
+| **Agent Memory §16 standalone accuracy** | `null` for every agent | Populates as counterfactuals accrue |
+| **Calibration curve** | Empty until predictions resolve | Populates over time either way |
+
+Same signals, same predictions, but the composite score and confidence are running blind on
+the historical-context axis. **Don't launch a real research question against an empty Brain
+— the numbers will look confident because they defaulted to safe values, not because they're
+informed.**
+
+Two ways to fix that: seed (perp, this section) or wait through the bootstrap window (both
+domains, §32 — memecoin has no other choice, per below).
 
 ```bash
 # List existing agents to get an id
@@ -232,6 +256,13 @@ npm run seed-brain --workspace @tip/scripts -- \
 The report ends with a fingerprints-at-trust count and (if applicable) a **look-ahead warning
 when the seeded win rate exceeds 72%** — §25 flags that pattern as a bug, not edge. Read the
 report; only launch when the trust fraction looks reasonable.
+
+**Memecoin does not get seeded.** §25 scopes memecoin out of historical backtest entirely —
+Helius' free tier has no bulk historical archive, and paying for one is a future decision. So
+the memecoin Brain warms up purely from live paper trades, and its bootstrap window is
+genuinely longer than perp's (§32). This is expected behaviour, not a missing feature — a
+call to `seed-brain` with a memecoin agent throws with the §25 citation rather than silently
+skipping.
 
 ---
 
