@@ -8,6 +8,7 @@
     { "path": "../domain" },
     { "path": "../database" },
     { "path": "../brain" },
+    { "path": "../llm" },
     { "path": "../events" },
     { "path": "../trading-agents" },
     { "path": "../wallets" }

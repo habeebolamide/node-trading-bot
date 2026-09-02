@@ -1,6 +1,22 @@
 # Change: m7-judge-agent
 
-**Status:** PROPOSED (scoping)
+**Status:** COMPLETED — archived 2026-09-02
+**Original status:** PROPOSED (scoping)
+
+> **COMPLETED.** New `packages/agents/perp/judge/`:
+> - `evidence.ts` — `buildJudgeEvidence(db, signalId)` reads signal + signal_feature +
+>   signal_risk + Brain.setup(). NO raw OHLCV in the prompt (rule 14).
+> - `schema.ts` — Zod `JudgeOutput` with closed `JudgeInvalidator` discriminated union
+>   (`price_above` | `price_below` | `ttl_expired` | `funding_extreme` | `stop_moved`).
+> - `prompts.ts` — `JUDGE_PROMPTS[JUDGE_VERSION_CURRENT]`; a prompt change bumps the version.
+> - `index.ts` — `createJudgeAgent({llm, bus})` EVENT trigger. Memecoin throws with §40.14
+>   citation. Risk INVALIDATED short-circuits without an LLM call. LLM failure returns null
+>   (no signal_feature row, no event) → gate defaults to DEFER by absence (§18 LLM-failure).
+>
+> **Verified:** typecheck green; **551/554 tests pass** (3 opt-in live). 15 new: schema (7 incl.
+> closed-vocabulary + runaway-guard), prompts (4), live-DB integration (4 incl. memecoin
+> refused, Risk-INVALIDATED short-circuit, happy path with signed signal_feature + published
+> event + llm_call_log, LLM failure writes only the log row).
 **Milestone:** M7 (change 2 of 6)
 **Implements:** §18 (Judge synthesis + independent direction/confidence) · §40.14 Judge Agent
 (LLM, perp-only in MVP) · §33 rules 13, 14 · §36 (signal lifecycle interaction)

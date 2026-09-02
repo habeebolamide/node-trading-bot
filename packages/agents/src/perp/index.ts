@@ -28,3 +28,4 @@ export const perpAgents: readonly AnalysisAgent[] = [
   perpFundingAgent,
   perpPositioningAgent,
 ];
+export * from './judge/index.js';
