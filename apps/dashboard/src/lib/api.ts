@@ -14,8 +14,12 @@ async function jsonOrThrow<T>(res: Response): Promise<T> {
   return body as T;
 }
 
+/** Absolute path support: a path starting with '/../' escapes the /api base to the api root
+ *  (used for /trading-agents, an older M4 route not under /api). */
 export async function apiGet<T>(path: string, params?: Record<string, string | number | undefined>): Promise<T> {
-  const url = new URL(BASE + path, window.location.origin);
+  const url = path.startsWith('/../')
+    ? new URL(path.slice(3), window.location.origin)
+    : new URL(BASE + path, window.location.origin);
   if (params) for (const [k, v] of Object.entries(params)) if (v !== undefined) url.searchParams.set(k, String(v));
   const res = await fetch(url.toString(), { headers: { accept: 'application/json' } });
   return jsonOrThrow<T>(res);

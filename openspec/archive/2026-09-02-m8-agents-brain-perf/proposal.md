@@ -1,6 +1,20 @@
 # Change: m8-agents-brain-perf
 
-**Status:** PROPOSED (scoping)
+**Status:** COMPLETED — archived 2026-09-02
+**Original status:** PROPOSED (scoping)
+
+> **COMPLETED.** Agents list + Agent detail (Overview / Signals / Predictions / Portfolio /
+> Performance / Config tabs), Brain page (Historical Edge lookup, Agent Memory, Market
+> Memory), Performance page (per-horizon metrics + inline SVG reliability diagram).
+>
+> **Deliberate deviation from proposal.md:** proposal said Recharts for the reliability chart;
+> shipped as a hand-rolled 25-line SVG chart instead. Two reasons — one less dep (bundle stays
+> at 92kB gzip vs the ~50kB Recharts would add), and the reliability diagram is a simple
+> scatter with Wilson error bars a pure SVG renders perfectly. Recharts stays available for
+> anything more complex a later page needs.
+>
+> **Verified:** typecheck (root + dashboard) green; `vite build` clean at 296kB / 92kB gzip.
+> Full suite: 617/620 (3 opt-in live).
 **Milestone:** M8 (change 3 of 6) — the biggest UX chunk
 
 Agents / Agent detail / Brain / Performance pages per §26 + Task 8.

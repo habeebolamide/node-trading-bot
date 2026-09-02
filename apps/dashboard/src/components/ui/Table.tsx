@@ -11,6 +11,10 @@ export function Thead({ children }: { children: React.ReactNode }) {
 export function Th({ className, children, ...rest }: ThHTMLAttributes<HTMLTableCellElement>) {
   return <th className={cn('px-3 py-2 font-medium', className)} {...rest}>{children}</th>;
 }
+export function Tbody({ children }: { children: React.ReactNode }) {
+  return <tbody>{children}</tbody>;
+}
+
 export function Tr({ className, children, ...rest }: HTMLAttributes<HTMLTableRowElement>) {
   return <tr className={cn('border-b border-neutral-900/50 hover:bg-neutral-900/40', className)} {...rest}>{children}</tr>;
 }
