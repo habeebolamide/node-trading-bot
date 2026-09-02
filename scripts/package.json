@@ -11,13 +11,15 @@
     "seed-analysis": "tsx src/seed-analysis.ts",
     "helius-webhook": "tsx src/helius-webhook.ts",
     "score": "tsx src/score-wallets.ts",
-    "recompute-clusters": "tsx src/recompute-clusters.ts"
+    "recompute-clusters": "tsx src/recompute-clusters.ts",
+    "seed-brain": "tsx src/seed-brain.ts"
   },
   "dependencies": {
     "@tip/database": "*",
     "@tip/domain": "*",
     "@tip/evaluation": "*",
     "@tip/ingestion": "*",
-    "@tip/wallets": "*"
+    "@tip/wallets": "*",
+    "@tip/seeding": "*"
   }
 }

@@ -1,0 +1,17 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": { "rootDir": "src", "outDir": "dist" },
+  "references": [
+    { "path": "../agents" },
+    { "path": "../brain" },
+    { "path": "../database" },
+    { "path": "../domain" },
+    { "path": "../evaluation" },
+    { "path": "../events" },
+    { "path": "../planner" },
+    { "path": "../predictions" },
+    { "path": "../trading-agents" }
+  ],
+  "include": ["src/**/*"],
+  "exclude": ["dist", "**/*.test.ts"]
+}

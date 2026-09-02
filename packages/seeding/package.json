@@ -1,0 +1,22 @@
+{
+  "name": "@tip/seeding",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": { ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" } },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "scripts": { "build": "tsc --build", "test": "vitest run" },
+  "dependencies": {
+    "@tip/agents": "*",
+    "@tip/brain": "*",
+    "@tip/database": "*",
+    "@tip/domain": "*",
+    "@tip/evaluation": "*",
+    "@tip/events": "*",
+    "@tip/planner": "*",
+    "@tip/predictions": "*",
+    "@tip/trading-agents": "*",
+    "drizzle-orm": "^0.36.4"
+  }
+}

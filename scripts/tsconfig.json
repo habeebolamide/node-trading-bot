@@ -9,6 +9,7 @@
     { "path": "../packages/database" },
     { "path": "../packages/ingestion" },
     { "path": "../packages/evaluation" },
+    { "path": "../packages/seeding" },
     { "path": "../packages/wallets" }
   ],
   "include": ["src/**/*"],
