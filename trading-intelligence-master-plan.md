@@ -2332,7 +2332,7 @@ BLOCKED        → external stop (daily loss limit hit, risk kill-switch, data f
                  down) — independent of any single symbol.
 ```
 
-**Max concurrent positions** (config field, default 1) governs capacity: while `IN_TRADE`, the agent can still open a second position on a different watched symbol only if under this limit; otherwise it stays `WATCHING` on that symbol (`SIGNAL_ACTIVE` was a stray name; the state list above is authoritative) until capacity frees up (current trade closes, or it's below the configured max).
+**Max concurrent positions** (config field, default 1) governs capacity: while `IN_TRADE`, the agent can still open a second position on a different watched symbol only if under this limit; otherwise it stays `WATCHING` on that symbol (`SIGNAL_ACTIVE` was a stray name; the state list above is authoritative) until capacity frees up (current trade closes, or it's below the configured max). *(MVP resolution, audit-2 sync: for the initial release both `maxConcurrentPositions` and `universe.length` are FIXED at 1 per perp agent — one agent, one coin, one open position. The multi-position semantics above stay valid as documentation and will apply again when the fixed constraints are relaxed. Consequences: the `maxCorrelatedExposure` cap below rarely binds, and the capacity-refusal branch in the entry orchestrator is defensive for future scale rather than a common path today.)*
 
 ### Portfolio-level risk (resolved — was previously per-trade only, and referenced but unspecified)
 
