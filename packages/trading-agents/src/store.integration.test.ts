@@ -30,7 +30,7 @@ describe.skipIf(!DATABASE_URL)('trading-agent store (integration, Postgres)', ()
       config: {
         riskPercent: 0.01,
         minRR: 1.5,
-        maxConcurrentPositions: 2,
+        maxConcurrentPositions: 1,
         leverageMax: 10,
         agentWeights: { 'perp.momentum': 0.2 },
         signalThresholds: { strongLong: 0.7, long: 0.45, weakLong: 0.2, weakShort: -0.2, short: -0.45, strongShort: -0.7 },
@@ -48,7 +48,7 @@ describe.skipIf(!DATABASE_URL)('trading-agent store (integration, Postgres)', ()
     const v2 = await updateTradingAgentConfig(db, created1.id, {
       riskPercent: 0.02,
       minRR: 2,
-      maxConcurrentPositions: 2,
+      maxConcurrentPositions: 1,
       leverageMax: 10,
       agentWeights: { 'perp.momentum': 0.3, 'perp.funding': 0.1 },
       signalThresholds: { strongLong: 0.7, long: 0.45, weakLong: 0.2, weakShort: -0.2, short: -0.45, strongShort: -0.7 },

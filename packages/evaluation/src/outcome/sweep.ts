@@ -38,10 +38,18 @@ export interface SweepStats {
   errors: number;
 }
 
-/** Return the prediction's T1: the fill_at_processing on its paper_position, or createdAt as fallback. */
-async function t1For(db: Db, predictionId: string, createdAt: Date): Promise<Date> {
-  const p = (await db.select({ t: paperPosition.openedAtProcessing }).from(paperPosition).where(eq(paperPosition.predictionId, predictionId)).limit(1))[0];
-  return p?.t ?? createdAt;
+/**
+ * The prediction's T1 (§21): the paper position's `openedAtProcessing`, or `createdAt` if
+ * there's no position (seeded predictions, or predictions from an older run). Returns null
+ * for positions that never actually opened — a PENDING_ENTRY that hasn't crossed the limit yet
+ * or an EXPIRED one whose LIMIT window elapsed. Those predictions have nothing to resolve.
+ */
+async function t1For(db: Db, predictionId: string, createdAt: Date): Promise<Date | null> {
+  const p = (await db.select({ t: paperPosition.openedAtProcessing, state: paperPosition.state })
+    .from(paperPosition).where(eq(paperPosition.predictionId, predictionId)).limit(1))[0];
+  if (!p) return createdAt; // no paper position — seeded / older; use signal time
+  if (p.state === 'PENDING_ENTRY' || p.state === 'EXPIRED') return null;
+  return p.t;
 }
 
 /** Fetch 1m bars in [from, to] — for CANDLE_1M_CONSERVATIVE resolution. */
@@ -76,6 +84,7 @@ export async function resolvePrediction(
   const p = (await db.select().from(prediction).where(eq(prediction.id, input.predictionId)).limit(1))[0];
   if (!p) return 0;
   const t1 = await t1For(db, p.id, p.createdAt);
+  if (!t1) return 0; // LIMIT never filled — nothing to resolve, no Brain occurrence
   const horizons = horizonSet(input.style);
 
   // Which horizons have already been resolved?

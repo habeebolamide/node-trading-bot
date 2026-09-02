@@ -1,6 +1,7 @@
 /**
  * ScoringConfig schema (§8) — Zod-validated. Domain-specific validation enforces:
  *   - memecoin: maxConcurrentPositions is FIXED at 1 (§32 domain rule)
+ *   - perp:     maxConcurrentPositions is FIXED at 1 (operator preference — one coin at a time)
  *   - profit ladder: cumulative sellFraction ≤ 1.0 (Part II §10 write-time check)
  *   - minRR ≥ 0; riskPercent ∈ (0, 1]; leverageMax perp-only
  *
@@ -85,6 +86,12 @@ export const ScoringConfigInputSchema = z.object({
     standAsideDetConfMin: 0.7,
     standAsideLlmConfMax: 0.7,
   }),
+  // Perp LIMIT-order support (m6-limit-orders-perp). Default MARKET preserves every
+  // existing agent's behaviour. `limitPullbackAtr` is how far the LIMIT sits from the signal-time
+  // close, in ATR units — 0.3 is a modest pullback, tuned to fill often on typical intraday
+  // retrace without straying so far the trade rarely triggers.
+  entryType: z.enum(['MARKET', 'LIMIT']).default('MARKET'),
+  limitPullbackAtr: z.number().gt(0).default(0.3),
   // Memecoin-only:
   stopPct: z.number().gt(0).lt(1).optional(),
   takeProfitPct: z.number().gt(0).optional(),
@@ -103,12 +110,24 @@ export function validateScoringConfig(input: unknown, domain: Domain): ScoringCo
   }
   const cfg = parsed.data;
 
+  if (domain === 'perp') {
+    // Operator preference — one coin at a time per perp agent. Users wanting broader concurrent
+    // exposure create additional TradingAgents (same discipline as §32 memecoin: "users wanting
+    // more concurrent exposure create more TradingAgents; that keeps each agent's portfolio,
+    // risk gates and track record cleanly separable").
+    if (cfg.maxConcurrentPositions !== 1) {
+      throw new ValidationError('perp: maxConcurrentPositions must be 1 — one coin at a time per agent; add more agents for broader concurrent exposure');
+    }
+  }
   if (domain === 'memecoin') {
     if (cfg.maxConcurrentPositions !== 1) {
       throw new ValidationError('memecoin: maxConcurrentPositions must be 1 (§32 domain rule — one position at a time)');
     }
     if (cfg.leverageMax !== undefined) {
       throw new ValidationError('memecoin: leverageMax is not applicable (spot, no leverage)');
+    }
+    if (cfg.entryType === 'LIMIT') {
+      throw new ValidationError('memecoin: entryType must be MARKET (Part II §10 — no LIMIT, no PENDING_ENTRY on an AMM)');
     }
     if (cfg.profitLadder) {
       const cumulative = cfg.profitLadder.reduce((s, r) => s + r.sellFraction, 0);
@@ -165,4 +184,11 @@ export const DEFAULT_AGENT_WEIGHTS: Record<Domain, Record<string, number>> = {
     freshness: 0.05,
     historical_edge: 0.05,
   },
+};
+
+/** LIMIT expiry (§8 table). Missed-fill window per style: 6 × primary-TF. Ignored for MARKET. */
+export const LIMIT_EXPIRY_MS: Record<'scalp' | 'day' | 'swing', number> = {
+  scalp: 30 * 60_000,      // 6 × 5m
+  day:   6 * 60 * 60_000,  // 6 × 1h
+  swing: 24 * 60 * 60_000, // 6 × 4h
 };

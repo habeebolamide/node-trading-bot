@@ -20,7 +20,7 @@
  */
 import type { LadderRungConfig } from './types.js';
 
-export type ExitReason = 'STOP_LOSS' | 'WALLET_EXIT' | 'LADDER_RUNG' | 'TAKE_PROFIT' | 'HORIZON_EXPIRY';
+export type ExitReason = 'STOP_LOSS' | 'WALLET_EXIT' | 'LADDER_RUNG' | 'TAKE_PROFIT' | 'HORIZON_EXPIRY' | 'LIMIT_EXPIRY';
 
 export type ExitDecision =
   | { readonly kind: 'STOP_LOSS'; readonly price: number }
@@ -28,6 +28,9 @@ export type ExitDecision =
   | { readonly kind: 'LADDER_RUNG'; readonly rungIndex: number; readonly rungPrice: number; readonly sellFraction: number; readonly postTakeAction: LadderRungConfig['postTakeAction'] | null }
   | { readonly kind: 'TAKE_PROFIT'; readonly price: number }
   | { readonly kind: 'HORIZON_EXPIRY' }
+  /** m6-limit-orders-perp — PENDING_ENTRY-only. Return one of these OR NONE, never both. */
+  | { readonly kind: 'ACTIVATE_LIMIT'; readonly fillPrice: number }
+  | { readonly kind: 'EXPIRE_LIMIT' }
   | { readonly kind: 'NONE' };
 
 export interface PositionState {
@@ -147,4 +150,30 @@ export function applyPostTakeAction(input: {
     return Math.max(input.currentStop, trailed);
   }
   return input.currentStop;
+}
+
+
+/**
+ * PENDING_ENTRY tick evaluator (m6-limit-orders-perp). Two questions:
+ *   1. Has the limit filled? LONG: `price ≤ limit`; SHORT: `price ≥ limit`.
+ *   2. Has the LIMIT expiry window elapsed?
+ *
+ * SL/TP/ladder never fire on a pending position — there's nothing to close yet. Kept as a
+ * separate function so the main `evalTick` can stay LONG/SHORT-agnostic about state.
+ */
+export interface EvalPendingInput {
+  direction: 'LONG' | 'SHORT';
+  limitPrice: number;
+  price: number;
+  now: Date;
+  expiresAt: Date;
+}
+export function evalPendingTick(i: EvalPendingInput): ExitDecision {
+  // Expiry check first — a bar that both fills AND expires resolves as FILL (fill takes
+  // precedence because it happened during the valid window). But an unambiguous expiry with
+  // no crossing is the common case; this ordering only matters for the pathological both-true.
+  const filled = i.direction === 'LONG' ? i.price <= i.limitPrice : i.price >= i.limitPrice;
+  if (filled) return { kind: 'ACTIVATE_LIMIT', fillPrice: i.limitPrice };
+  if (i.now >= i.expiresAt) return { kind: 'EXPIRE_LIMIT' };
+  return { kind: 'NONE' };
 }

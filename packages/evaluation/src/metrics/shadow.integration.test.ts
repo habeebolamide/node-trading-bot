@@ -10,7 +10,7 @@ import { compareShadowVsBaseline, compareShadowVsReal } from './shadow.js';
 
 const DATABASE_URL = process.env.DATABASE_URL;
 const CFG_BASE = {
-  riskPercent: 0.01, minRR: 1.5, maxConcurrentPositions: 2, leverageMax: 10,
+  riskPercent: 0.01, minRR: 1.5, maxConcurrentPositions: 1, leverageMax: 10,
   agentWeights: { 'perp.momentum': 1 },
   confidenceWeights: { signalStrength: 0.3, agentAgreement: 0.3, historicalEvidence: 0.25, dataQuality: 0.15 },
   signalThresholds: { strongLong: 0.7, long: 0.45, weakLong: 0.2, weakShort: -0.2, short: -0.45, strongShort: -0.7 },

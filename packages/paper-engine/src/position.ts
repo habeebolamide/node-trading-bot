@@ -9,7 +9,7 @@
  * `remaining_size` and optionally the stop (via `applyPostTakeAction` in exit.ts).
  */
 import { randomUUID } from 'node:crypto';
-import { and, eq, sql } from 'drizzle-orm';
+import { and, eq, inArray, sql } from 'drizzle-orm';
 import { paperPosition, paperPositionFill, type Db } from '@tip/database';
 import type { Domain } from '@tip/trading-agents';
 import { applyPnl } from './portfolio.js';
@@ -41,7 +41,7 @@ export interface PositionRow {
   symbol: string;
   domain: Domain;
   direction: 'LONG' | 'SHORT';
-  state: 'OPEN' | 'CLOSED';
+  state: 'OPEN' | 'CLOSED' | 'PENDING_ENTRY' | 'EXPIRED';
   entryPrice: number;
   size: number;
   remainingSize: number;
@@ -63,7 +63,7 @@ function toRow(r: typeof paperPosition.$inferSelect): PositionRow {
   return {
     id: r.id, portfolioId: r.portfolioId, predictionId: r.predictionId,
     symbol: r.symbol, domain: r.domain as Domain, direction: r.direction as 'LONG' | 'SHORT',
-    state: r.state as 'OPEN' | 'CLOSED',
+    state: r.state as PositionRow['state'],
     entryPrice: Number(r.entryPrice), size: Number(r.size), remainingSize: Number(r.remainingSize),
     currentStop: Number(r.currentStop),
     takeProfit: r.takeProfit === null ? null : Number(r.takeProfit),
@@ -240,8 +240,90 @@ export async function openPositionCount(db: Db, portfolioId: string): Promise<nu
     .from(paperPosition)
     .where(and(
       eq(paperPosition.portfolioId, portfolioId),
-      eq(paperPosition.state, 'OPEN'),
+      inArray(paperPosition.state, ['OPEN', 'PENDING_ENTRY']),
       eq(paperPosition.isShadow, false),
     ));
   return Number(r[0]!.n);
+}
+
+
+/**
+ * m6-limit-orders-perp — open a PENDING_ENTRY paper position. Same shape as `openPosition` but
+ * `state='PENDING_ENTRY'`, `remaining_size = size` (we track full size for later activation),
+ * `openedAtProcessing` is set to the SIGNAL time (activation updates it to the fill time so
+ * §21 T1 stays honest). No cash is committed at this point — the trade could never fill.
+ *
+ * `plannedEntryPrice` (i.e. the limit price) IS the `entryPrice` column — a small dual meaning
+ * that keeps the schema unchanged. On activation the entry stays put (that IS the fill price
+ * by construction of a resting limit), and `currentStop` / `takeProfit` were already sized
+ * against it. So activation is really just a state flip + a fill row + a clock update.
+ */
+export async function openPendingPosition(db: Db, i: OpenPositionInput): Promise<PositionRow> {
+  return db.transaction(async (tx) => {
+    const id = randomUUID();
+    await tx.insert(paperPosition).values({
+      id, portfolioId: i.portfolioId, predictionId: i.predictionId,
+      symbol: i.symbol, domain: i.domain, direction: i.direction,
+      state: 'PENDING_ENTRY',
+      entryPrice: String(i.entryPrice), size: String(i.size), remainingSize: String(i.size),
+      currentStop: String(i.currentStop),
+      takeProfit: i.takeProfit === null ? null : String(i.takeProfit),
+      ladderState: { firedRungs: [] },
+      openedAtEvent: i.openedAtEvent, openedAtProcessing: i.openedAtProcessing,
+    });
+    const row = (await tx.select().from(paperPosition).where(eq(paperPosition.id, id)).limit(1))[0]!;
+    return toRow(row);
+  });
+}
+
+/**
+ * PENDING_ENTRY → OPEN on limit fill. `fillPrice` is passed in for future extension (a gap
+ * across the limit could fill worse than the limit itself), but in MVP a resting limit fills
+ * AT its price by construction and callers should pass the limit as `fillPrice`.
+ *
+ * Records a `LIMIT_FILL` reason on the fill row so downstream tooling can distinguish it from
+ * an ENTRY (which represented an immediate MARKET fill).
+ */
+export async function activatePendingPosition(db: Db, input: {
+  positionId: string; fillPrice: number; clocks: FillClocks;
+}): Promise<PositionRow> {
+  return db.transaction(async (tx) => {
+    const r = (await tx.select().from(paperPosition).where(eq(paperPosition.id, input.positionId)).limit(1))[0];
+    if (!r) throw new Error(`position ${input.positionId} not found`);
+    if (r.state !== 'PENDING_ENTRY') return toRow(r); // idempotent — already activated or expired
+    await tx.update(paperPosition).set({
+      state: 'OPEN',
+      entryPrice: String(input.fillPrice), // in case future gap-fill semantics allow worse fills
+      openedAtEvent: input.clocks.fillAtEvent,
+      openedAtProcessing: input.clocks.fillAtProcessing,
+    }).where(eq(paperPosition.id, input.positionId));
+    await tx.insert(paperPositionFill).values({
+      id: randomUUID(), positionId: input.positionId,
+      fillAtEvent: input.clocks.fillAtEvent, fillAtProcessing: input.clocks.fillAtProcessing,
+      sizeFraction: '1', price: String(input.fillPrice), reason: 'LIMIT_FILL', isFinal: false,
+    });
+    const updated = (await tx.select().from(paperPosition).where(eq(paperPosition.id, input.positionId)).limit(1))[0]!;
+    return toRow(updated);
+  });
+}
+
+/**
+ * PENDING_ENTRY → EXPIRED on LIMIT-expiry window elapsed. No P&L (the trade never opened),
+ * no closing fill row (nothing to close). The `close_reason` = `LIMIT_EXPIRY` makes it visible
+ * to reporting and to the Outcome Engine, which skips resolution for EXPIRED positions —
+ * they never happened.
+ */
+export async function expirePendingPosition(db: Db, positionId: string, at: Date): Promise<PositionRow> {
+  return db.transaction(async (tx) => {
+    const r = (await tx.select().from(paperPosition).where(eq(paperPosition.id, positionId)).limit(1))[0];
+    if (!r) throw new Error(`position ${positionId} not found`);
+    if (r.state !== 'PENDING_ENTRY') return toRow(r);
+    await tx.update(paperPosition).set({
+      state: 'EXPIRED',
+      closedAt: at,
+      closeReason: 'LIMIT_EXPIRY',
+    }).where(eq(paperPosition.id, positionId));
+    const updated = (await tx.select().from(paperPosition).where(eq(paperPosition.id, positionId)).limit(1))[0]!;
+    return toRow(updated);
+  });
 }

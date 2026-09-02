@@ -5,7 +5,7 @@ import { ValidationError } from '@tip/domain';
 const basePerp = {
   riskPercent: 0.01,
   minRR: 1.5,
-  maxConcurrentPositions: 3,
+  maxConcurrentPositions: 1, // one coin at a time per perp agent — operator preference
   leverageMax: 10,
   agentWeights: { 'perp.momentum': 0.2 },
   signalThresholds: { strongLong: 0.7, long: 0.45, weakLong: 0.2, weakShort: -0.2, short: -0.45, strongShort: -0.7 },
@@ -35,7 +35,11 @@ describe('validateScoringConfig — perp', () => {
 });
 
 describe('validateScoringConfig — memecoin (§32)', () => {
-  it('rejects maxConcurrentPositions != 1 (domain rule)', () => {
+  it('rejects maxConcurrentPositions != 1 (perp — operator preference; one coin at a time)', () => {
+    expect(() => validateScoringConfig({ ...basePerp, maxConcurrentPositions: 2 }, 'perp')).toThrow(ValidationError);
+  });
+
+  it('rejects maxConcurrentPositions != 1 (memecoin — §32 domain rule)', () => {
     expect(() => validateScoringConfig({ ...baseMemecoin, maxConcurrentPositions: 3 }, 'memecoin')).toThrow(ValidationError);
   });
   it('rejects leverageMax (memecoin is spot)', () => {
@@ -103,7 +107,7 @@ describe('DEFAULT_AGENT_WEIGHTS (Part II §9 / Part III §3)', () => {
 
   it('validateScoringConfig accepts a config built from the defaults', () => {
     const cfg = validateScoringConfig({
-      riskPercent: 0.01, minRR: 1.5, maxConcurrentPositions: 2, leverageMax: 10,
+      riskPercent: 0.01, minRR: 1.5, maxConcurrentPositions: 1, leverageMax: 10,
       agentWeights: DEFAULT_AGENT_WEIGHTS.perp,
       signalThresholds: { strongLong: 0.7, long: 0.45, weakLong: 0.2, weakShort: -0.2, short: -0.45, strongShort: -0.7 },
     }, 'perp');

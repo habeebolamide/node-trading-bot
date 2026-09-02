@@ -50,7 +50,21 @@ export async function planPerp(i: PerpPlanInputs): Promise<PlanResult> {
   const a = atr(bars, ATR_PERIOD);
   if (!a || a <= 0) return { kind: 'NO_TRADE', reason: 'NO_STOP_DERIVABLE', detail: 'ATR unavailable' };
 
-  const entry = bars[bars.length - 1]!.close;
+  const lastClose = bars[bars.length - 1]!.close;
+  // LIMIT entry: pull back from the close by `limitPullbackAtr × ATR` in the direction that
+  // gives us a BETTER fill (LONG buys lower, SHORT sells higher). Guard against a degenerate
+  // ATR read producing an unreachable limit (5×ATR is defensive, not tuned).
+  const entryType = i.config.entryType ?? 'MARKET';
+  const pullback = (i.config.limitPullbackAtr ?? 0.3) * a;
+  let entry: number;
+  if (entryType === 'MARKET') {
+    entry = lastClose;
+  } else {
+    entry = i.direction === 'LONG' ? lastClose - pullback : lastClose + pullback;
+    if (entry <= 0 || Math.abs(entry - lastClose) > 5 * a) {
+      return { kind: 'NO_TRADE', reason: 'STALE_OR_MISSING_DATA', detail: `LIMIT ${entry.toFixed(2)} too far from close ${lastClose.toFixed(2)}` };
+    }
+  }
   const pivots = collapsePivots(swingPivots(structureBars, PIVOT_K), a, COLLAPSE_ATR_FACTOR);
   const { supportBelow, resistanceAbove } = nearestLevels(entry, pivots);
 
@@ -99,7 +113,7 @@ export async function planPerp(i: PerpPlanInputs): Promise<PlanResult> {
 
   const horizon = planningHorizon(i.style, 'perp');
   const setup: TradeSetup = {
-    symbol: i.symbol, domain: 'perp', direction: i.direction, entryType: 'MARKET',
+    symbol: i.symbol, domain: 'perp', direction: i.direction, entryType,
     entry, stopLoss, takeProfit,
     riskReward: rr,
     positionSize: sizing.positionSize, notional: sizing.notional,

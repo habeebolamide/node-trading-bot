@@ -24,9 +24,15 @@ export function CreateAgentForm({ onClose }: { onClose: () => void }) {
     if (current === perpJson || current === memeJson || current === '') {
       setConfigText(JSON.stringify(d === 'perp' ? DEFAULT_CONFIG_PERP : DEFAULT_CONFIG_MEMECOIN, null, 2));
     }
-    // Memecoin default is day-suitable; leave the style alone.
-    if (d === 'memecoin' && universeInput.trim() === 'BTCUSDT, ETHUSDT, SOLUSDT') {
-      setUniverseInput('');
+    if (d === 'memecoin') {
+      // Memecoin agents don't pre-declare a token list — they REACT to watched-wallet buys via
+      // the M3 watchlist. The api still requires a non-empty universe[], so 'SOLANA' is a
+      // sentinel scope label. Style is meaningful only for Signal-TTL (§8, 10m/30m/2h), so
+      // we default it to 'day' and hide the field.
+      setUniverseInput('SOLANA');
+      setStyle('day');
+    } else if (universeInput.trim() === 'SOLANA' || universeInput.trim() === '') {
+      setUniverseInput('BTCUSDT, ETHUSDT, SOLUSDT');
     }
   };
 
@@ -69,19 +75,35 @@ export function CreateAgentForm({ onClose }: { onClose: () => void }) {
               ))}
             </div>
           </div>
-          <div>
-            <label className="text-xs text-neutral-400">Style</label>
-            <select value={style} onChange={(e) => setStyle(e.target.value as 'scalp' | 'day' | 'swing')}
-              className="mt-1 w-full rounded-md border border-neutral-800 bg-neutral-950 px-3 py-2 text-sm">
-              <option value="scalp">scalp</option><option value="day">day</option><option value="swing">swing</option>
-            </select>
-          </div>
-          <div>
-            <label className="text-xs text-neutral-400">Universe (comma-separated)</label>
-            <input value={universeInput} onChange={(e) => setUniverseInput(e.target.value)}
-              placeholder={domain === 'perp' ? 'BTCUSDT, ETHUSDT' : 'Solana mint addresses…'}
-              className="mt-1 w-full rounded-md border border-neutral-800 bg-neutral-950 px-3 py-2 text-sm font-mono" />
-          </div>
+          {domain === 'perp' && (
+            <>
+              <div>
+                <label className="text-xs text-neutral-400">Style</label>
+                <select value={style} onChange={(e) => setStyle(e.target.value as 'scalp' | 'day' | 'swing')}
+                  className="mt-1 w-full rounded-md border border-neutral-800 bg-neutral-950 px-3 py-2 text-sm">
+                  <option value="scalp">scalp (5m primary TF)</option>
+                  <option value="day">day (1h primary TF)</option>
+                  <option value="swing">swing (4h primary TF)</option>
+                </select>
+              </div>
+              <div>
+                <label className="text-xs text-neutral-400">Universe (comma-separated perp symbols)</label>
+                <input value={universeInput} onChange={(e) => setUniverseInput(e.target.value)}
+                  placeholder="BTCUSDT, ETHUSDT, SOLUSDT"
+                  className="mt-1 w-full rounded-md border border-neutral-800 bg-neutral-950 px-3 py-2 text-sm font-mono" />
+              </div>
+            </>
+          )}
+          {domain === 'memecoin' && (
+            <div className="md:col-span-2 rounded-md border border-neutral-800 bg-neutral-900/60 px-3 py-2 text-xs text-neutral-300">
+              Memecoin agents don't pre-declare a token list — they REACT to buys from wallets on the M3
+              watchlist. Style defaults to <code>day</code> (drives Signal-TTL only per §8, memecoin
+              10m/30m/2h). No universe field needed here.
+              <p className="mt-1 text-neutral-500">
+                To adjust either later: <code>PATCH /trading-agents/:id</code>.
+              </p>
+            </div>
+          )}
           <div className="md:col-span-2">
             <label className="text-xs text-neutral-400">ScoringConfig (JSON — validated server-side)</label>
             <textarea value={configText} onChange={(e) => setConfigText(e.target.value)} rows={16}

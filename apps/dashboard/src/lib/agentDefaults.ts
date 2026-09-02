@@ -7,7 +7,7 @@
 export const DEFAULT_CONFIG_PERP = {
   riskPercent: 0.01,
   minRR: 1.5,
-  maxConcurrentPositions: 2,
+  maxConcurrentPositions: 1,
   leverageMax: 10,
   agentWeights: {
     'perp.momentum': 0.20,
