@@ -18,6 +18,7 @@ export default defineConfig({
       '@tip/watchlist': pkg('./packages/watchlist/src/index.ts'),
       '@tip/trading-agents': pkg('./packages/trading-agents/src/index.ts'),
       '@tip/agents': pkg('./packages/agents/src/index.ts'),
+      '@tip/brain': pkg('./packages/brain/src/index.ts'),
     },
   },
   test: {

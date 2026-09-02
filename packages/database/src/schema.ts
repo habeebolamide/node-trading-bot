@@ -427,6 +427,61 @@ export const signalRisk = pgTable('signal_risk', {
   agentVersion: integer('agent_version').notNull(),
 });
 
+/**
+ * BrainSetupOccurrence (m5-brain-core, §41). Append-only log — one row per closed prediction
+ * per fingerprint rung. History is NEVER deleted (Part II §8: "older occurrences count less,
+ * not deleted — the full history stays queryable, only its influence on the current live
+ * estimate decays"). Rule 8.
+ *
+ * `unique(prediction_id, setup_id)` is the rule-12 idempotency guard: a replayed outcome event
+ * is a DB-level no-op, not an application-side check-then-write (§29). The pair, not
+ * prediction_id alone, because m5-historical-edge writes the same prediction to each coarser
+ * backoff rung.
+ */
+export const brainSetupOccurrence = pgTable(
+  'brain_setup_occurrence',
+  {
+    id: text('id').primaryKey(), // uuid
+    setupId: text('setup_id').notNull(),
+    predictionId: text('prediction_id').notNull(),
+    domain: text('domain').notNull(), // perp | memecoin
+    closedAt: timestamp('closed_at', { withTimezone: true, mode: 'date' }).notNull(),
+    won: boolean('won').notNull(),
+    returnPct: numeric('return_pct').notNull(),
+  },
+  (t) => [
+    uniqueIndex('brain_setup_occurrence_pred_setup_uq').on(t.predictionId, t.setupId),
+    index('brain_setup_occurrence_setup_idx').on(t.setupId),
+  ],
+);
+
+/**
+ * BrainSetupMemory (m5-brain-core, §13, Part II §8, §41). The DERIVED live aggregate for one
+ * fingerprint — recomputed and upserted on every close. Upserting is not a rule-8 violation:
+ * the occurrence log above is the immutable history, this row is the decayed live estimate
+ * §41 describes.
+ *
+ * `effectiveWins` is stored alongside `winRate` deliberately (§41 implementer note) — it's
+ * what lets Wilson be re-derived at a different confidence level later; winRate is the
+ * convenience field derivable from the two effective* values.
+ *
+ * Wilson bounds are NULL while `evidence = INSUFFICIENT` (effective-n < 10). Parent-bucket
+ * backoff is a READ-side concern and never writes fallback stats here (§41).
+ */
+export const brainSetupMemory = pgTable('brain_setup_memory', {
+  setupId: text('setup_id').primaryKey(),
+  domain: text('domain').notNull(),
+  effectiveN: numeric('effective_n').notNull(),
+  effectiveWins: numeric('effective_wins').notNull(),
+  winRate: numeric('win_rate'),
+  medianReturn: numeric('median_return'),
+  wilsonLower: numeric('wilson_lower'),
+  wilsonUpper: numeric('wilson_upper'),
+  evidence: text('evidence').notNull(), // SUFFICIENT | INSUFFICIENT
+  occurrenceCount: integer('occurrence_count').notNull().default(0),
+  lastUpdatedAt: timestamp('last_updated_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+});
+
 export const schema = {
   domainEvent,
   processedEvent,
@@ -452,4 +507,6 @@ export const schema = {
   signal,
   signalFeature,
   signalRisk,
+  brainSetupOccurrence,
+  brainSetupMemory,
 };

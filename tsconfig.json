@@ -11,6 +11,7 @@
     { "path": "packages/watchlist" },
     { "path": "packages/trading-agents" },
     { "path": "packages/agents" },
+    { "path": "packages/brain" },
     { "path": "apps/api" },
     { "path": "apps/worker" },
     { "path": "scripts" }

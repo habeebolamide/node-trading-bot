@@ -1,6 +1,47 @@
 # Change: m5-brain-core
 
-**Status:** PROPOSED (scoping)
+> **COMPLETED 2026-09-02.** Created `packages/brain` (`@tip/brain`) and landed the Brain's
+> statistical core:
+> - `stats.ts` — `wilsonInterval` on fractional effective counts, `confidenceToZ` (throws
+>   rather than approximating an untabulated level), `recencyWeight` = `0.5^(age/halflife)`,
+>   `weightedMedian` (non-mutating).
+> - `fingerprint.ts` — fixed-cut tertile bucketing at ∓1/3 (boundaries land MED), canonical
+>   dimension orders, `setupFingerprint(domain, features, retain?)` with arity encoded in the
+>   hashed string so a narrowed backoff tuple can never collide with a full one. Throws on a
+>   missing dimension — never fingerprints a partial tuple (rule 24).
+> - `setup-memory.ts` — `updateSetupMemory` per §41 exactly; `readSetupMemory` exact-cell only
+>   (backoff is change 2). Half-lives perp 90d / memecoin 30d, trust bar effective-n 10.
+>
+> Migration 0009: `brain_setup_occurrence` (append-only, `unique(prediction_id, setup_id)`) +
+> `brain_setup_memory` (derived aggregate).
+>
+> **Verified:** typecheck green; **291/294 tests pass** (3 opt-in live), 52 new —
+> stats (22), fingerprint (18, including the mandated 243-cell memecoin and 6,561-cell perp
+> coverage assertions), setup-memory live-DB integration (12).
+>
+> **Deviations from spec — two, both deliberate:**
+> 1. **Occurrences are an append-only child table, not §41's in-row JSONB array.** Rule 8
+>    (occurrences are immutable outcome facts) and rule 12 (`unique(prediction_id, setup_id)`
+>    gives DB-level replay idempotency where an array needs the check-then-write §29 forbids).
+>    §41's math and function signature are followed exactly; §13 notes the schema is a
+>    build-time derivation.
+> 2. **The occurrence read filters `closedAt <= now`**, which §41's reference code does not do.
+>    Under §41's own assumption of chronological arrival the two are identical. They diverge
+>    only when an old outcome arrives late, where unfiltered iteration would give newer
+>    occurrences a negative age and therefore weight > 1, silently inflating effectiveN.
+>    Covered by the "out-of-order arrival" integration test.
+>
+> **Correction made during the build:** the first draft of the Wilson test asserted a
+> textbook-quoted `[0.3133, 0.8325]` for 6/10; the implementation returns `[0.3126695,
+> 0.8318224]`, which is what §41's formula yields at z = 1.96. The test constant was wrong,
+> not the code — the test now carries the hand-derivation inline.
+>
+> **What M6 must call:** `updateSetupMemory(db, outcome)` from the outcome-resolution event
+> handler in the paper engine (§41). Until then the table is legitimately empty and every read
+> returns INSUFFICIENT.
+
+**Status:** COMPLETED — archived
+**Original status:** PROPOSED (scoping)
 **Milestone:** M5 — Brain (change 1 of 4)
 **Implements:** §15 Brain Architecture · §16 Brain Memory Types · Part II §8 Memecoin Brain
 Memory Types (fingerprinting, Wilson-on-effective-n, recency decay, INSUFFICIENT state) ·
