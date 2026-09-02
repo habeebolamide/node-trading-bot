@@ -35,6 +35,12 @@ export async function createTradingAgent(db: Db, input: CreateTradingAgentInput)
   if (!DOMAINS.includes(input.domain)) throw new ValidationError(`invalid domain: ${input.domain}`);
   if (!TRADING_STYLES.includes(input.tradingStyle)) throw new ValidationError(`invalid tradingStyle: ${input.tradingStyle}`);
   if (!Array.isArray(input.universe) || input.universe.length === 0) throw new ValidationError('universe must be a non-empty array');
+  if (input.domain === 'perp' && input.universe.length !== 1) {
+    // Operator preference — one symbol per perp agent. Users wanting multiple symbols create
+    // multiple agents (same separation-of-concerns argument as maxConcurrentPositions = 1;
+    // §32 memecoin: 'keeps each agent's portfolio, risk gates and track record cleanly separable').
+    throw new ValidationError('perp: universe must contain exactly one symbol per agent — create a separate agent per symbol you want to trade');
+  }
 
   const cfg = validateScoringConfig(input.config, input.domain);
   const agentId = randomUUID();

@@ -12,7 +12,7 @@ export function CreateAgentForm({ onClose }: { onClose: () => void }) {
   const [name, setName] = useState('');
   const [domain, setDomain] = useState<'perp' | 'memecoin'>('perp');
   const [style, setStyle] = useState<'scalp' | 'day' | 'swing'>('day');
-  const [universeInput, setUniverseInput] = useState('BTCUSDT, ETHUSDT, SOLUSDT');
+  const [universeInput, setUniverseInput] = useState('BTCUSDT');
   const [configText, setConfigText] = useState(() => JSON.stringify(DEFAULT_CONFIG_PERP, null, 2));
 
   const onDomainChange = (d: 'perp' | 'memecoin') => {
@@ -31,8 +31,8 @@ export function CreateAgentForm({ onClose }: { onClose: () => void }) {
       // we default it to 'day' and hide the field.
       setUniverseInput('SOLANA');
       setStyle('day');
-    } else if (universeInput.trim() === 'SOLANA' || universeInput.trim() === '') {
-      setUniverseInput('BTCUSDT, ETHUSDT, SOLUSDT');
+    } else if (universeInput.trim() === 'SOLANA' || universeInput.trim() === '' || universeInput.includes(',')) {
+      setUniverseInput('BTCUSDT');
     }
   };
 
@@ -87,10 +87,13 @@ export function CreateAgentForm({ onClose }: { onClose: () => void }) {
                 </select>
               </div>
               <div>
-                <label className="text-xs text-neutral-400">Universe (comma-separated perp symbols)</label>
-                <input value={universeInput} onChange={(e) => setUniverseInput(e.target.value)}
-                  placeholder="BTCUSDT, ETHUSDT, SOLUSDT"
-                  className="mt-1 w-full rounded-md border border-neutral-800 bg-neutral-950 px-3 py-2 text-sm font-mono" />
+                <label className="text-xs text-neutral-400">Symbol (one per agent — create additional agents for more)</label>
+                <select value={universeInput} onChange={(e) => setUniverseInput(e.target.value)}
+                  className="mt-1 w-full rounded-md border border-neutral-800 bg-neutral-950 px-3 py-2 text-sm font-mono">
+                  <option value="BTCUSDT">BTCUSDT</option>
+                  <option value="ETHUSDT">ETHUSDT</option>
+                  <option value="SOLUSDT">SOLUSDT</option>
+                </select>
               </div>
             </>
           )}

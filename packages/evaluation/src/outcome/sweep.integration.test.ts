@@ -104,7 +104,7 @@ describe.skipIf(!DATABASE_URL)('outcome sweep — end-to-end Brain wiring (integ
   beforeAll(async () => {
     db = createDb(DATABASE_URL!);
     const a = await createTradingAgent(db, {
-      name: `OE-${randomUUID().slice(0, 6)}`, domain: 'perp', universe: ['BTCUSDT', 'ETHUSDT'], tradingStyle: 'day', config: perpConfig,
+      name: `OE-${randomUUID().slice(0, 6)}`, domain: 'perp', universe: ['BTCUSDT'], tradingStyle: 'day', config: perpConfig,
     });
     agentId = a.id; created.agents.push(agentId);
     const p = await createPortfolio(db, { tradingAgentId: agentId, startingCash: 10_000 });
