@@ -186,10 +186,41 @@ export const walletScoreEvent = pgTable(
   (t) => [index('wallet_score_event_wallet_ts_idx').on(t.walletId, t.timestamp)],
 );
 
-/** Per-wallet Brain memory (§16, §40.17). Holds early-entry aggregate stats + behavioral profile. */
+/**
+ * Per-wallet Brain memory (§16, Part II §8 Wallet Memory, §40.17).
+ *
+ * `earlyEntry` (M2) holds the forward-return aggregates. `behavior` (m5-wallet-token-memory) is
+ * the BEHAVIORAL PROFILE that explains the score and feeds the Judge's evidence package — the
+ * score itself stays in the append-only `wallet_score_event` log (§4, rule 21), never here.
+ */
 export const brainWalletMemory = pgTable('brain_wallet_memory', {
   walletId: text('wallet_id').primaryKey(),
   earlyEntry: jsonb('early_entry'), // { perHorizonMedian{}, peakMedian, coverage }
+  // { medianHoldMinutes, avgPositionSol, tradesPerDay, specialization{}, clusterAffiliations[],
+  //   effectiveN, rated } — 60d half-life (Task 6 wallet metric).
+  behavior: jsonb('behavior'),
+  updatedAt: timestamp('updated_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+});
+
+/**
+ * BrainTokenMemory (m5-wallet-token-memory, §13, Part II §8 Token Memory, Part II §6).
+ *
+ * Task 6 fixes the token score inputs: liquidity / age / holder-concentration / volume,
+ * percentile-normalized. SAFETY IS NOT A SOFT INPUT here — Token Risk (§40.13) is a hard gate
+ * built at M4 and untouched by this table.
+ *
+ * `score` is null when inputs are missing or the observed universe is too thin to percentile
+ * against; a fabricated percentile is worse than no score. `outcomes` reuses the same
+ * `wilsonInterval` + recency weighting as Setup Memory — one statistics implementation,
+ * everywhere (§41).
+ */
+export const brainTokenMemory = pgTable('brain_token_memory', {
+  mint: text('mint').primaryKey(),
+  domain: text('domain').notNull().default('memecoin'),
+  profile: jsonb('profile').notNull(), // { liquidityUsd, ageMinutes, top10HolderPct, volume24hUsd }
+  score: numeric('score'), // percentile-normalized composite; null when un-scoreable
+  outcomes: jsonb('outcomes'), // { effectiveN, winRate, medianReturn, wilsonLower, wilsonUpper }
+  evidence: text('evidence').notNull().default('INSUFFICIENT'),
   updatedAt: timestamp('updated_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
 });
 
@@ -509,4 +540,5 @@ export const schema = {
   signalRisk,
   brainSetupOccurrence,
   brainSetupMemory,
+  brainTokenMemory,
 };

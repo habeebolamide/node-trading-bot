@@ -1,6 +1,43 @@
 # Change: m5-wallet-token-memory
 
-**Status:** PROPOSED (scoping)
+> **COMPLETED 2026-09-02.**
+> - `wallet-memory.ts` — behavioral profile (median hold, avg position, trades/day,
+>   specialization, cluster affiliations) on a 60d half-life (Task 6 wallet metric, distinct from
+>   the 30d/90d setup half-lives). Unrated below effective-n 10, with thin aggregates still
+>   returned for inspection rather than hidden. OPEN positions excluded — a wallet must not look
+>   disciplined by never selling. Recomputed per `asOf`, never served from the cached column.
+> - `token-memory.ts` — Task 6 inputs (liquidity / age / holder-concentration / volume),
+>   percentile-normalized, holder concentration INVERTED. Null score when no sub-metric is
+>   available or the universe is thinner than 10 peers — never a fabricated percentile. Safety is
+>   absent by design; Token Risk (§40.13) stays the hard gate.
+> - `market-memory.ts` — a QUERY over Setup Memory grouped by the regime dimension, not a table
+>   (§8: regime already hashes into the fingerprint, so the split falls out for free).
+> - `brain.ts` — `createBrain(db, domain)` facade, one per domain (§15). Memecoin-only methods
+>   THROW on a perp Brain rather than returning null: that call is a bug, not an empty result.
+>
+> Migration 0010: `brain_wallet_memory.behavior`, `brain_token_memory`.
+>
+> **Verified:** typecheck green; **377/380 tests pass** (3 opt-in live), 41 new — token score
+> (14), regime partitioning (10), wallet memory live-DB (10), Brain facade live-DB (7).
+>
+> **`asOf` is now enforced at COMPILE TIME.** CLAUDE.md asks for the no-look-ahead rule to be
+> "structural, not by convention," so `brain.ts` carries a conditional-type guard that fails
+> `tsc --build` if any Brain read stops requiring `asOf`. Verified by temporarily loosening a
+> signature and confirming the build breaks with `Type 'true' is not assignable to type 'false'`.
+>
+> **Two test-design findings from running the full suite** (both real properties, not flaky
+> tests):
+> 1. `setup()` on an unknown fingerprint no longer scores exactly 0 once the domain's global rung
+>    has history — it correctly falls back to the global base rate at 0.5^5 attenuation. The
+>    earlier assertion only held on a virgin database.
+> 2. Market Memory is domain-global by construction, and vitest runs test files in parallel
+>    against one database, so before/after deltas cannot be asserted as equalities. The invariant
+>    that actually matters — every setup lands in exactly one regime bucket — is now proved as a
+>    pure property of the id sets (disjoint, and together covering all 243 / 6,561 cells), where
+>    concurrency cannot reach it.
+
+**Status:** COMPLETED — archived
+**Original status:** PROPOSED (scoping)
 **Milestone:** M5 — Brain (change 3 of 4)
 **Implements:** §15 shared-domain Brain · §16 Market Memory · Part II §8 Wallet Memory + Token
 Memory · Part II §6 Token Intelligence · Task 6 (§34) token score formula · §13 entity list
