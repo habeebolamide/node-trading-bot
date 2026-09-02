@@ -109,3 +109,38 @@ export function validateScoringConfig(input: unknown, domain: Domain): ScoringCo
 
   return cfg;
 }
+
+/**
+ * Plan-default composite weights (Part II §9 Opportunity Score / Part III §3 Signal Scoring
+ * Engine), including the Feature rows that are not Agents (§40 "Features (not Agents)").
+ *
+ * §7: "Default: all agents contribute unless a user deliberately customizes their TradingAgent."
+ * These are what a TradingAgent created without an explicit `agentWeights` should get. Weights
+ * renormalize in `composeSignal`, so a roster subset stays comparable — but the defaults sum to
+ * exactly 1.00, which `DEFAULT_AGENT_WEIGHTS_SUM_TO_ONE` asserts.
+ *
+ * `historical_edge` is a Feature reading BrainSetupMemory (§40.16 / §40.19). Before M6 resolves
+ * outcomes it contributes exactly 0, so its presence here does not change composites yet.
+ */
+export const DEFAULT_AGENT_WEIGHTS: Record<Domain, Record<string, number>> = {
+  perp: {
+    'perp.momentum': 0.2,
+    'perp.open_interest': 0.2,
+    'perp.market_regime': 0.15,
+    'perp.liquidation': 0.15,
+    'perp.funding': 0.1,
+    'perp.positioning': 0.1,
+    volume: 0.05,
+    historical_edge: 0.05,
+  },
+  memecoin: {
+    'memecoin.smart_money': 0.25,
+    'memecoin.convergence': 0.2,
+    early_entry: 0.15,
+    'memecoin.momentum': 0.15,
+    'memecoin.token_quality': 0.1,
+    'memecoin.market_regime': 0.05,
+    freshness: 0.05,
+    historical_edge: 0.05,
+  },
+};

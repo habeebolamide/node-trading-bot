@@ -6,7 +6,6 @@ import { perpLiquidationAgent } from './liquidation.js';
 import { perpPositioningAgent, scoreFromLSRatio } from './positioning.js';
 import { _fundingScoreFromPercentile } from './funding.js';
 import { volumeSignedDirection } from './features/volume.js';
-import { historicalEdgeStub } from './features/historical-edge-stub.js';
 
 const dummyCtx = {} as unknown as AgentContext;
 function event<T>(type: string, payload: T): DomainEvent<T> {
@@ -88,7 +87,12 @@ describe('perp features', () => {
     const cs = Array.from({ length: 10 }, () => ({ open: 100, close: 99, volume: 1 }));
     expect(volumeSignedDirection(cs)).toBe(-1);
   });
-  it('historicalEdgeStub returns INSUFFICIENT with score 0', () => {
-    expect(historicalEdgeStub()).toEqual({ evidence: 'INSUFFICIENT', score: 0, ciWidth: null });
+  it('the Historical Edge stub is gone — m5-historical-edge replaced it with a real Brain read', async () => {
+    // The M4 stub returned INSUFFICIENT unconditionally. The feature now reads BrainSetupMemory
+    // via `@tip/brain` and is exercised against a live DB in
+    // packages/brain/src/historical-edge.integration.test.ts.
+    const mod = await import('./features/historical-edge.js');
+    expect(typeof mod.perpHistoricalEdge).toBe('function');
+    expect(mod.PERP_HISTORICAL_EDGE_KEY).toBe('historical_edge');
   });
 });

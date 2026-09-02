@@ -22,17 +22,24 @@ informativeness ordering that nothing has validated.
 ### Perp ladder (8 dims → 9 rungs)
 
 Weights: momentum 20 · open_interest 20 · market_regime 15 · liquidation 15 · funding 10 ·
-positioning 10 · volume 5 · volatility (inherits market_regime's 15, ranked just under it).
+positioning 10 · volume 5.
+
+**Changed during implementation** (was: give volatility market_regime's 15): `volatility` is the
+dimension m5-brain-core *added* to reach the stated 6,561-cell count — the plan's weight table
+does not rank it, so assigning it any plan weight was arbitrary. It is ranked **0 and dropped
+first**, which gives the ladder a better property: rung 1 onward degrades through exactly the
+plan-specified 7-feature set, surrendering nothing the plan actually weighted until the added
+dimension is gone.
 
 | Rung | Dropped so far |
 |---|---|
 | 0 | — |
-| 1 | volume (5) |
-| 2 | + funding (10) |
-| 3 | + positioning (10) |
-| 4 | + volatility (15, alphabetically after liquidation/market_regime at equal rank) |
+| 1 | volatility (added dimension, unranked by the plan) |
+| 2 | + volume (5) |
+| 3 | + funding (10) |
+| 4 | + positioning (10, alphabetical tiebreak with funding) |
 | 5 | + liquidation (15) |
-| 6 | + market_regime (15) |
+| 6 | + market_regime (15, alphabetical tiebreak with liquidation) |
 | 7 | + momentum (20; open_interest survives — alphabetical tiebreak at 20) |
 | 8 | — global base rate |
 

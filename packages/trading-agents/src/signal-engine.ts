@@ -34,11 +34,37 @@ export interface TradingAgentSnapshot {
 /** Read a TradingAgent's (id → domain / style / active config) at admit time. Injectable. */
 export type TradingAgentLookup = (id: string) => Promise<TradingAgentSnapshot | null>;
 
+/**
+ * What a Feature contributes at flush time (§40 "Features (not Agents)"). Features have no
+ * trigger, so they cannot be `admit`ted like an agent output — they are computed FROM the
+ * assembled bucket at flush. The provider returns synthetic `AgentOutput`s (appended to the
+ * composite at their configured weight) plus the Brain's `historicalEvidence` sub-metric.
+ */
+export interface FeatureContribution {
+  outputs?: AgentOutput[];
+  /** Task-6 confidence sub-metric from the Historical Edge Brain read. */
+  historicalEvidence?: number;
+}
+
+/**
+ * Injectable so the engine stays DB-free and testable: the worker wiring supplies a provider
+ * that assembles the domain's feature tuple from the bucket's agent outputs and reads the Brain
+ * (`@tip/brain` historicalEdge) as of the bucket's primary-TF close — never wall clock
+ * (rules 11/21/22).
+ */
+export type FeatureProvider = (
+  bucket: Bucket,
+  agent: TradingAgentSnapshot,
+  outputs: readonly AgentOutput[],
+) => Promise<FeatureContribution>;
+
 export interface SignalEngineDeps {
   db: Db;
   bus: EventBus;
   /** Look up a TradingAgent's active ScoringConfig snapshot. */
   lookupAgent: TradingAgentLookup;
+  /** Optional — supplies Feature contributions (Historical Edge, Volume) at flush time. */
+  featureProvider?: FeatureProvider;
   debounceMs?: number;
   log?: (msg: string, meta?: unknown) => void;
   /** Injectable timers for tests. */
@@ -88,11 +114,28 @@ export class SignalEngine {
     const agent = await this.deps.lookupAgent(bucket.tradingAgentId);
     if (!agent) return; // Agent gone / archived mid-flight
 
-    const composite = composeSignal(outputs, agent.config.agentWeights, agent.config.signalThresholds, agent.domain);
+    // Features (§40) are computed FROM the assembled bucket, not admitted like agent outputs.
+    // A provider failure must not lose the signal — the composite is still valid without the
+    // 5% feature, so it degrades to "no Brain evidence" rather than dropping the batch.
+    let features: FeatureContribution = {};
+    if (this.deps.featureProvider) {
+      try {
+        features = await this.deps.featureProvider(bucket, agent, outputs);
+      } catch (e) {
+        this.log('feature provider failed; composing without features', { err: String(e) });
+      }
+    }
+    const withFeatures = features.outputs?.length ? [...outputs, ...features.outputs] : outputs;
+
+    const composite = composeSignal(withFeatures, agent.config.agentWeights, agent.config.signalThresholds, agent.domain);
     if (!composite) return; // no eligible agents contributed
 
     const confidence = computeConfidence(
-      { compositeScore: composite.compositeScore, agentAgreement: composite.agentAgreement },
+      {
+        compositeScore: composite.compositeScore,
+        agentAgreement: composite.agentAgreement,
+        ...(features.historicalEvidence !== undefined ? { historicalEvidence: features.historicalEvidence } : {}),
+      },
       agent.config.confidenceWeights,
     );
 
@@ -122,7 +165,7 @@ export class SignalEngine {
         contributingCount: composite.contributingCount,
         contributions: composite.contributions,
       },
-      contributions: outputs,
+      contributions: withFeatures,
     });
     if (!result.created) {
       this.log('signal dedup (same fingerprint already active this candle)', {

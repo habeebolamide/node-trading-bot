@@ -14,7 +14,8 @@ import { randomUUID } from 'node:crypto';
 import { and, eq, lte } from 'drizzle-orm';
 import { brainSetupMemory, brainSetupOccurrence, type Db } from '@tip/database';
 import { ValidationError } from '@tip/domain';
-import type { Domain } from './fingerprint.js';
+import type { Domain, FeatureTuple } from './fingerprint.js';
+import { ladder } from './backoff.js';
 import { recencyWeight, weightedMedian, wilsonInterval, type WeightedItem } from './stats.js';
 
 /** Half-lives per Task 6's resolution. Perp setups decay slower — it is seeded and higher-volume. */
@@ -199,4 +200,40 @@ export async function readSetupMemory(db: Db, setupId: string): Promise<SetupMem
     occurrenceCount: r.occurrenceCount,
     lastUpdatedAt: r.lastUpdatedAt,
   };
+}
+
+/**
+ * Ladder-aware write (m5-historical-edge). Records ONE closed prediction against every rung of
+ * the backoff ladder — the exact fingerprint, each coarser rung, and the domain's global base
+ * rate — so a read is a keyed lookup per rung instead of an on-demand aggregation.
+ *
+ * This is the call site M6's outcome-resolution handler uses (not `updateSetupMemory` directly,
+ * which stays the single-cell §41 primitive).
+ *
+ * Why materialize rather than aggregate on read: an on-demand `GROUP BY` over the occurrence
+ * history would re-read everything per signal AND would make a read's answer depend on when it
+ * ran, which breaks replay reproducibility (rule 11). Materializing keeps every rung a plain
+ * keyed row computed by the same §41 math.
+ *
+ * Cost is 6 rows per occurrence (memecoin) / 9 (perp) instead of 1 — negligible at one memecoin
+ * position at a time (§32) and perp's paper volume. Idempotency still holds: the occurrence
+ * unique key is `(prediction_id, setup_id)`, and each rung has a distinct setup_id.
+ */
+export async function recordSetupOutcome(
+  db: Db,
+  outcome: Omit<TradeOutcome, 'setupId'> & { features: FeatureTuple },
+): Promise<SetupMemoryRow[]> {
+  const rungs = ladder(outcome.domain, outcome.features);
+  const rows: SetupMemoryRow[] = [];
+  for (const rung of rungs) {
+    rows.push(await updateSetupMemory(db, {
+      predictionId: outcome.predictionId,
+      setupId: rung.setupId,
+      domain: outcome.domain,
+      closedAt: outcome.closedAt,
+      won: outcome.won,
+      returnPct: outcome.returnPct,
+    }));
+  }
+  return rows;
 }

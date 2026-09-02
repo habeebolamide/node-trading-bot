@@ -10,3 +10,5 @@
 export * from './stats.js';
 export * from './fingerprint.js';
 export * from './setup-memory.js';
+export * from './backoff.js';
+export * from './historical-edge.js';

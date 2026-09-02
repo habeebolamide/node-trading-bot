@@ -18,7 +18,7 @@ export { perpFundingAgent } from './funding.js';
 export { perpPositioningAgent, scoreFromLSRatio } from './positioning.js';
 export * from './indicators.js';
 export { volumeSignedDirection, type VolumeCandle } from './features/volume.js';
-export { historicalEdgeStub, type HistoricalEdgeResult } from './features/historical-edge-stub.js';
+export { perpHistoricalEdge, PERP_HISTORICAL_EDGE_KEY, type HistoricalEdge } from './features/historical-edge.js';
 
 export const perpAgents: readonly AnalysisAgent[] = [
   perpMomentumAgent,

@@ -1,6 +1,52 @@
 # Change: m5-historical-edge
 
-**Status:** PROPOSED (scoping)
+> **COMPLETED 2026-09-02.** The read side of Setup Memory, and the wiring that makes it reach
+> the composite:
+> - `backoff.ts` — the §8 staircase. `dropOrder` = ascending composite weight (Part II §9 /
+>   Part III §3), alphabetical tiebreak. `ladder()` returns 6 rungs for memecoin, 9 for perp,
+>   ending at a reserved global-base-rate setupId per domain.
+> - `recordSetupOutcome` — ladder-aware write; materializes every rung on write so a read is a
+>   keyed lookup rather than an on-demand aggregation whose answer would depend on when it ran
+>   (rule 11). No migration needed: the occurrence unique key was already
+>   `(prediction_id, setup_id)`.
+> - `historical-edge.ts` — `historicalEdge(db, domain, features, asOf)` returning §8's explicit
+>   state; `edgeScore` (sign from winRate−0.5, magnitude × (1−ciWidth) × 0.5^depth);
+>   `historicalEvidenceFrom` (Task 6). **Recomputes from the occurrence log filtered to
+>   `closed_at <= asOf`** rather than reading the materialized aggregate row, which reflects
+>   whenever it was last written and would leak future outcomes into a historical read.
+> - Stubs killed: `perp/features/historical-edge-stub.ts` deleted and replaced by a real read;
+>   `memecoin/features/historical-edge.ts` added (§40.19); `confidence.ts`'s hardcoded 0.5
+>   replaced by the passed-in Brain value with a `NO_BRAIN_EVIDENCE = 0.25` floor.
+> - `SignalEngine` gained an injectable `FeatureProvider` seam — Features (§40) have no trigger,
+>   so they are computed FROM the assembled bucket at flush. A provider throwing degrades to
+>   no-Brain-evidence rather than dropping the signal.
+> - `DEFAULT_AGENT_WEIGHTS` transcribes both weight tables verbatim, Historical Edge at 5%.
+>
+> **Verified:** typecheck green; **336/339 tests pass** (3 opt-in live), 45 new — backoff (12),
+> edgeScore + historicalEvidence (13), historical-edge live-DB integration (8, including §8's
+> 7-occurrence/86% worked example and a point-in-time guard proving post-`asOf` occurrences
+> cannot influence the answer), confidence (4 + 1 rewritten), default weights (5), signal-engine
+> feature seam (3).
+>
+> **Deviation from the scoped design — one, corrected in `design.md` in this PR:** the perp drop
+> order now surrenders `volatility` FIRST rather than giving it market_regime's 15%. Volatility
+> is the dimension m5-brain-core added to reach the stated cell count; the plan's weight table
+> does not rank it, so any plan weight was arbitrary. Dropping it first makes rung 1 onward
+> degrade through exactly the plan-specified 7-feature set.
+>
+> **Corrections made during the build** (both were bad tests, not bad code): a point-in-time test
+> fed 11 occurrences 9 days old and expected them to clear the trust bar — with a 30d half-life
+> that is effective-n 8.94, so the test was accidentally asserting the threshold rather than the
+> `asOf` filter; and a signal-engine assertion located "its" signal by `createdAt`, which is
+> wall-clock for every signal and matched an earlier test's row. Both now assert exactly what
+> they claim to.
+>
+> **The Brain is still empty** until M6 resolves outcomes — every read returns INSUFFICIENT,
+> score 0, and an explicit regression test asserts the composite is numerically unchanged from
+> its M4 behaviour in that state.
+
+**Status:** COMPLETED — archived
+**Original status:** PROPOSED (scoping)
 **Milestone:** M5 — Brain (change 2 of 4)
 **Implements:** §40.16 Perp Historical Edge Feature · §40.19 Memecoin Historical Edge Feature ·
 Part II §8 hierarchical backoff + explicit INSUFFICIENT state · Task 6 (§34) "historical setup

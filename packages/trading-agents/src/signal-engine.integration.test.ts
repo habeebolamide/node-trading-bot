@@ -7,6 +7,7 @@ import { SignalEngine, type TradingAgentSnapshot } from './signal-engine.js';
 import type { AgentOutput } from './agent-interface.js';
 import type { ScoringConfig } from './config.js';
 import { createTradingAgent } from './store.js';
+import { signalFingerprint } from './fingerprint.js';
 
 const DATABASE_URL = process.env.DATABASE_URL;
 
@@ -55,11 +56,14 @@ describe.skipIf(!DATABASE_URL)('SignalEngine (integration, Postgres)', () => {
     }
   });
 
-  function makeEngine() {
+  function makeEngine(featureProvider?: import('./signal-engine.js').FeatureProvider) {
     const lookup = vi.fn(async (id: string): Promise<TradingAgentSnapshot | null> =>
       id !== tradingAgentId ? null : { id, domain: 'perp', tradingStyle: 'day', configVersion: 1, config: perpConfig as ScoringConfig },
     );
-    const engine = new SignalEngine({ db, bus, lookupAgent: lookup, debounceMs: 50 });
+    const engine = new SignalEngine({
+      db, bus, lookupAgent: lookup, debounceMs: 50,
+      ...(featureProvider ? { featureProvider } : {}),
+    });
     return { engine };
   }
 
@@ -100,5 +104,93 @@ describe.skipIf(!DATABASE_URL)('SignalEngine (integration, Postgres)', () => {
 
     const rows = await db.select().from(signal).where(eq(signal.tradingAgentId, tradingAgentId));
     expect(rows).toHaveLength(1); // still one row
+  });
+
+  /**
+   * m5-historical-edge: Features (§40) are computed FROM the assembled bucket at flush, not
+   * admitted like agent outputs. These cover the seam the Brain read plugs into.
+   */
+  describe('feature provider seam', () => {
+    const cfgWithFeature = {
+      ...perpConfig,
+      agentWeights: { 'perp.momentum': 0.5, 'perp.funding': 0.45, historical_edge: 0.05 },
+    };
+
+    function engineWithConfig(fp: import('./signal-engine.js').FeatureProvider) {
+      const lookup = vi.fn(async (id: string): Promise<TradingAgentSnapshot | null> =>
+        id !== tradingAgentId ? null : { id, domain: 'perp', tradingStyle: 'day', configVersion: 1, config: cfgWithFeature as ScoringConfig },
+      );
+      return new SignalEngine({ db, bus, lookupAgent: lookup, debounceMs: 50, featureProvider: fp });
+    }
+
+    const outs = (): AgentOutput[] => [
+      { agent: 'perp.momentum', agentVersion: 1, direction: 'LONG', score: 0.8, confidence: 0.9, features: {} },
+      { agent: 'perp.funding', agentVersion: 1, direction: 'LONG', score: 0.6, confidence: 0.8, features: {} },
+    ];
+
+    /**
+     * Fetch THIS bucket's signal by fingerprint. `createdAt` is wall-clock for every signal, so
+     * filtering on it would happily return a different test's row.
+     */
+    async function signalFor(primaryTfCloseAt: Date, direction: string) {
+      const fp = signalFingerprint({ tradingAgentId, symbol: 'BTCUSDT', direction, primaryTfCloseAt });
+      const rows = await db.select().from(signal).where(eq(signal.fingerprint, fp));
+      return rows[0];
+    }
+
+    it("the feature's contribution reaches the composite at its configured weight", async () => {
+      const provider = vi.fn(async () => ({
+        outputs: [{ agent: 'historical_edge', agentVersion: 0, direction: 'NEUTRAL' as const, score: -1, confidence: 1, features: {} }],
+        historicalEvidence: 0.9,
+      }));
+      const engine = engineWithConfig(provider);
+      const bucket = { tradingAgentId, symbol: 'BTCUSDT', primaryTfCloseAt: new Date('2026-06-05T00:00:00Z') };
+      for (const o of outs()) engine.admit(bucket, o);
+      await engine.forceFlushBucket(bucket);
+
+      expect(provider).toHaveBeenCalledOnce();
+
+      // The feature is persisted alongside the agents as a contribution row, proving it reached
+      // composeSignal rather than being dropped on the floor.
+      const featureRows = await db.select().from(signalFeature).where(eq(signalFeature.agentKey, 'historical_edge'));
+      expect(featureRows.length).toBeGreaterThan(0);
+      expect(Number(featureRows[0]!.score)).toBe(-1);
+
+      // The -1 edge at 5% pulls the composite down by exactly 0.05: 0.4 + 0.27 − 0.05 = 0.62.
+      const s = await signalFor(bucket.primaryTfCloseAt, 'LONG');
+      expect(s).toBeDefined();
+      expect(Number(s!.compositeScore)).toBeCloseTo(0.8 * 0.5 + 0.6 * 0.45 - 1 * 0.05, 6);
+    });
+
+    it('a provider throwing does not lose the signal — it degrades to no-Brain-evidence', async () => {
+      const provider = vi.fn(async () => { throw new Error('brain unavailable'); });
+      const engine = engineWithConfig(provider);
+      const bucket = { tradingAgentId, symbol: 'BTCUSDT', primaryTfCloseAt: new Date('2026-06-06T00:00:00Z') };
+      for (const o of outs()) engine.admit(bucket, o);
+      await engine.forceFlushBucket(bucket);
+
+      // Composite without the feature: momentum 0.8·(0.5/0.95) + funding 0.6·(0.45/0.95).
+      const s = await signalFor(bucket.primaryTfCloseAt, 'STRONG_LONG');
+      expect(s).toBeDefined();
+      expect(Number(s!.compositeScore)).toBeCloseTo((0.8 * 0.5 + 0.6 * 0.45) / 0.95, 6);
+    });
+
+    it('an empty Brain (score 0, floor evidence) leaves the composite where M4 left it', async () => {
+      // The regression that matters for shipping M5 before M6: with no occurrences anywhere,
+      // Historical Edge contributes exactly 0 and the composite is unchanged.
+      const withEmptyBrain = vi.fn(async () => ({
+        outputs: [{ agent: 'historical_edge', agentVersion: 0, direction: 'NEUTRAL' as const, score: 0, confidence: 1, features: {} }],
+        historicalEvidence: 0.25,
+      }));
+      const a = engineWithConfig(withEmptyBrain);
+      const bucketA = { tradingAgentId, symbol: 'BTCUSDT', primaryTfCloseAt: new Date('2026-06-07T00:00:00Z') };
+      for (const o of outs()) a.admit(bucketA, o);
+      await a.forceFlushBucket(bucketA);
+
+      // momentum 0.8·0.5 + funding 0.6·0.45 + edge 0·0.05 = 0.67 → LONG
+      const s = await signalFor(bucketA.primaryTfCloseAt, 'LONG');
+      expect(s).toBeDefined();
+      expect(Number(s!.compositeScore)).toBeCloseTo(0.8 * 0.5 + 0.6 * 0.45, 6);
+    });
   });
 });

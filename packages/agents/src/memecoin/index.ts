@@ -20,6 +20,7 @@ export { memecoinMarketRegimeAgent, type Regime as MemecoinRegime } from './mark
 export { memecoinTokenRiskAgent, isVetoed, type TokenRiskPayload, type TokenRiskVerdict } from './token-risk.js';
 export { computeEarlyEntry, type EarlyEntryInput, type EarlyEntryOutput } from './features/early-entry.js';
 export { freshness, DEFAULT_FRESHNESS_TAU_MS } from './features/freshness.js';
+export { memecoinHistoricalEdge, MEMECOIN_HISTORICAL_EDGE_KEY } from './features/historical-edge.js';
 
 /** The 5 memecoin agents that participate in the composite (Token Risk is a hard veto, separate). */
 export const memecoinAgents: readonly AnalysisAgent[] = [

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { validateScoringConfig } from './config.js';
+import { validateScoringConfig, DEFAULT_AGENT_WEIGHTS } from './config.js';
 import { ValidationError } from '@tip/domain';
 
 const basePerp = {
@@ -69,5 +69,44 @@ describe('validateScoringConfig — memecoin (§32)', () => {
       ] },
       'memecoin',
     )).toThrow(/ascending/);
+  });
+});
+
+describe('DEFAULT_AGENT_WEIGHTS (Part II §9 / Part III §3)', () => {
+  it('each domain\'s default weights sum to exactly 1.00', () => {
+    for (const domain of ['perp', 'memecoin'] as const) {
+      const sum = Object.values(DEFAULT_AGENT_WEIGHTS[domain]).reduce((a, b) => a + b, 0);
+      expect(sum).toBeCloseTo(1, 10);
+    }
+  });
+
+  it('both domains weight Historical Edge at the plan\'s 5%', () => {
+    expect(DEFAULT_AGENT_WEIGHTS.perp.historical_edge).toBe(0.05);
+    expect(DEFAULT_AGENT_WEIGHTS.memecoin.historical_edge).toBe(0.05);
+  });
+
+  it('the perp table matches Part III §3 row-for-row', () => {
+    expect(DEFAULT_AGENT_WEIGHTS.perp).toEqual({
+      'perp.momentum': 0.2, 'perp.open_interest': 0.2, 'perp.market_regime': 0.15,
+      'perp.liquidation': 0.15, 'perp.funding': 0.1, 'perp.positioning': 0.1,
+      volume: 0.05, historical_edge: 0.05,
+    });
+  });
+
+  it('the memecoin table matches Part II §9 row-for-row', () => {
+    expect(DEFAULT_AGENT_WEIGHTS.memecoin).toEqual({
+      'memecoin.smart_money': 0.25, 'memecoin.convergence': 0.2, early_entry: 0.15,
+      'memecoin.momentum': 0.15, 'memecoin.token_quality': 0.1, 'memecoin.market_regime': 0.05,
+      freshness: 0.05, historical_edge: 0.05,
+    });
+  });
+
+  it('validateScoringConfig accepts a config built from the defaults', () => {
+    const cfg = validateScoringConfig({
+      riskPercent: 0.01, minRR: 1.5, maxConcurrentPositions: 2, leverageMax: 10,
+      agentWeights: DEFAULT_AGENT_WEIGHTS.perp,
+      signalThresholds: { strongLong: 0.7, long: 0.45, weakLong: 0.2, weakShort: -0.2, short: -0.45, strongShort: -0.7 },
+    }, 'perp');
+    expect(cfg.agentWeights.historical_edge).toBe(0.05);
   });
 });
