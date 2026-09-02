@@ -1,6 +1,23 @@
 # Change: m7-llm-client
 
-**Status:** PROPOSED (scoping)
+**Status:** COMPLETED — archived 2026-09-02
+**Original status:** PROPOSED (scoping)
+
+> **COMPLETED.** New `packages/llm` (`@tip/llm`), the ONLY place that talks to DeepSeek.
+> - `cost.ts` — `MODEL_PRICES` table in CODE (not env); `estimateCost` throws on unknown model.
+> - `client.ts` — `createDeepSeekClient({apiKey, ...})`, `complete()` with Zod validation,
+>   temperature 0, retries on network/5xx/429 with exponential backoff (200/800/3200ms), NEVER
+>   on schema failure (§33 rule 14). Injectable `fetchImpl` + `wait` for testability. Refuses
+>   to construct without an API key.
+> - `log.ts` — `callWithLog(db, client, input, meta)` writes one `llm_call_log` row per call,
+>   success or failure. Signal id / prediction id captured per meta.
+>
+> Migration 0015: `llm_call_log` (id · prediction_id · signal_id · agent · agent_version · model
+> · prompt_tokens · completion_tokens · cost · latency_ms · success · error_kind · called_at).
+>
+> **Verified:** typecheck green; **536/539 tests pass** (3 opt-in live) across 2 consecutive
+> runs, 17 new — pure cost (4), pure client (8 incl. no-retry-on-schema-failure and abort/
+> TIMEOUT), live-DB callWithLog (5 incl. SUCCESS + HTTP_5XX + INVALID_JSON logging paths).
 **Milestone:** M7 — LLM/Judge (change 1 of 6)
 **Implements:** §18 (model choice: DeepSeek V4-Flash for every LLM call) · §23 `LLMCallLog` ·
 §13 (`LLMCallLog` entity) · §33 rules 13 (LLM does not calculate), 14 (LLM does not invent

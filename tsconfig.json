@@ -15,6 +15,7 @@
     { "path": "packages/planner" },
     { "path": "packages/predictions" },
     { "path": "packages/paper-engine" },
+    { "path": "packages/llm" },
     { "path": "packages/seeding" },
     { "path": "apps/api" },
     { "path": "apps/worker" },

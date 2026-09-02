@@ -773,6 +773,44 @@ export const paperPositionOriginatingWallet = pgTable(
   (t) => [primaryKey({ columns: [t.positionId, t.walletId] })],
 );
 
+
+/**
+ * LLMCallLog (§23). One row per LLM call — Judge, autopsy, or any future caller. This is the
+ * ledger every §23 cost-vs-value question reads from; the single call helper `callWithLog`
+ * (@tip/llm) is the ONLY writer, so if a caller reaches DeepSeek without going through it,
+ * §23 collapses.
+ *
+ * `cost` is computed at call time from a code-side pricing table (@tip/llm cost.ts). A future
+ * DeepSeek price change never rewrites historical costs — same discipline `configVersion` uses
+ * on Predictions (rule 16, m6-predictions).
+ *
+ * `signal_id` is populated for Judge calls (the Prediction doesn't exist yet at Judge time);
+ * `prediction_id` for autopsy. `error_kind` is populated when success=false, from a fixed set
+ * so §23 can group failures cleanly.
+ */
+export const llmCallLog = pgTable(
+  'llm_call_log',
+  {
+    id: text('id').primaryKey(),
+    predictionId: text('prediction_id'),
+    signalId: text('signal_id'),
+    agent: text('agent').notNull(),               // 'judge' | 'autopsy' | ...
+    agentVersion: integer('agent_version').notNull(),
+    model: text('model').notNull(),               // 'deepseek-v4-flash' today; a model bump is data, not schema
+    promptTokens: integer('prompt_tokens').notNull(),
+    completionTokens: integer('completion_tokens').notNull(),
+    cost: numeric('cost').notNull(),              // USD, computed at call time
+    latencyMs: integer('latency_ms').notNull(),
+    success: boolean('success').notNull(),
+    errorKind: text('error_kind'),                // 'TIMEOUT' | 'HTTP_5XX' | 'INVALID_JSON' | 'RATE_LIMIT' | 'OTHER'
+    calledAt: timestamp('called_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+  },
+  (t) => [
+    index('llm_call_log_prediction_idx').on(t.predictionId),
+    index('llm_call_log_called_at_agent_idx').on(t.calledAt, t.agent),
+  ],
+);
+
 export const schema = {
   domainEvent,
   processedEvent,
@@ -809,4 +847,5 @@ export const schema = {
   paperPosition,
   paperPositionFill,
   paperPositionOriginatingWallet,
+  llmCallLog,
 };
