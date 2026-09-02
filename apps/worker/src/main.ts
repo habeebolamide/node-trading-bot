@@ -1,5 +1,6 @@
 import { getConfig, loadEnv } from '@tip/domain';
-import { getDb, closeDb } from '@tip/database';
+import { getDb, closeDb, tradingAgent } from '@tip/database';
+import { eq } from 'drizzle-orm';
 import { createRedis, EventBus } from '@tip/events';
 import {
   BybitAdapter,
@@ -23,6 +24,9 @@ import { createJudgeTierHandlers } from './analysis/judge-tier.js';
 import { createTickHandler } from './analysis/tick-monitor.js';
 import { createWalletExitHandler } from './analysis/wallet-exit-monitor.js';
 import { createEntryOrchestrator, expireStaleSignals } from './analysis/entry-orchestrator.js';
+import { loadPerpRiskInputs } from './analysis/risk-inputs.js';
+import { createRiskAgent } from '@tip/agents';
+import { blockAgentsForStaleFeed, unblockAgentsForRecoveredFeed } from '@tip/trading-agents';
 import { withEventDedup } from './dedup.js';
 import { createTelegramAlertHandler } from './alerts/telegram.js';
 import { EVENT_NAMES, QUEUE_NAMES, PRIORITY } from '@tip/events';
@@ -56,8 +60,18 @@ async function main(): Promise<void> {
       } else {
         console.warn(`[staleness] ${id} STALE (${Math.round(age / 1000)}s since last msg)`);
       }
+      // §37 BLOCK the affected agents — "the specific bug that killed the previous bot"
+      // (audit-2 #7: the bridge existed, main.ts wired onStale to console.warn only).
+      void blockAgentsForStaleFeed(db, id).then((ids) => {
+        if (ids.length > 0) console.warn(`[staleness] BLOCKED ${ids.length} agent(s) for stale feed ${id}`);
+      }).catch((e) => console.warn('[staleness] block failed:', e instanceof Error ? e.message : e));
     },
-    onRecover: (id, down) => console.log(`[staleness] ${id} recovered (was down ~${Math.round(down / 1000)}s)`),
+    onRecover: (id, down) => {
+      console.log(`[staleness] ${id} recovered (was down ~${Math.round(down / 1000)}s)`);
+      void unblockAgentsForRecoveredFeed(db, id).then((ids) => {
+        if (ids.length > 0) console.log(`[staleness] cleared BLOCKED on ${ids.length} agent(s) for recovered feed ${id}`);
+      }).catch((e) => console.warn('[staleness] unblock failed:', e instanceof Error ? e.message : e));
+    },
   });
   const adapter = new BybitAdapter({
     bus,
@@ -90,13 +104,39 @@ async function main(): Promise<void> {
   const tickHandler = createTickHandler({ db, bus, log: (m, meta) => console.log(`[tick] ${m}`, meta ?? '') });
   bus.createWorker<{ symbol: string; timeframe: string; closeTime: string }>(QUEUE_NAMES.MARKET_INGESTION, async (event: DomainEvent<{ symbol: string; timeframe: string; closeTime: string }>) => {
     await tickHandler(event as never);
+    // Feed liquidation / positioning raw events into the analysis-tier roll-up buffer BEFORE
+    // the kline synthesis fires (audit-2 A1: EVENT-triggered agents never saw their events).
+    perpAnalysis.onMarketEvent(event as never);
     if (event.type === EVENT_NAMES.PERP_KLINE_CLOSED) await perpAnalysis.onKline(event as never);
   });
   console.log('[worker] analysis tier + tick monitor live (shared market-queue dispatcher)');
 
-  // ── Signal-processing dispatcher — Judge tier + convergence + Telegram share ONE worker
-  //    (same competing-workers rule as the market queue above; registry.ts prescribes this).
+  // ── Signal-processing dispatcher — Risk + Judge + gate + entry orchestrator + convergence
+  //    + Telegram share ONE worker (same competing-workers rule as the market queue above).
   const signalProcessingHandlers: Array<(e: DomainEvent) => Promise<void>> = [];
+
+  // Risk Agent (§40.12, audit-2 A3): FIRST on the queue — an INVALIDATED verdict transitions
+  // the signal, and downstream handlers all short-circuit on non-ACTIVE state.
+  const riskAgent = createRiskAgent({
+    bus,
+    loadPerpInputs: async (p) => {
+      const a = (await db.select({ style: tradingAgent.tradingStyle }).from(tradingAgent).where(eq(tradingAgent.id, p.tradingAgentId)).limit(1))[0];
+      if (!a) return null;
+      return loadPerpRiskInputs(db, a.style as never, p);
+    },
+    log: (m, meta) => console.log(`[risk] ${m}`, meta ?? ''),
+  });
+  signalProcessingHandlers.push(async (event: DomainEvent) => {
+    if (event.type !== EVENT_NAMES.SIGNAL_CREATED) return;
+    const p = event.payload as { tradingAgentId: string; configVersion: number };
+    const ctx = {
+      db, now: new Date(), tradingAgentId: p.tradingAgentId, configVersion: p.configVersion,
+      domain: 'perp' as const, primaryTf: '1h' as const,
+      walletScoreAsOf: async () => null, activeClusterMap: async () => new Map(),
+    };
+    await riskAgent.analyze(event, ctx);
+  });
+  console.log('[worker] risk agent live');
 
   // Judge tier (M7) — only when a DeepSeek key is configured (§18 graceful degradation).
   if (config.DEEPSEEK_API_KEY) {

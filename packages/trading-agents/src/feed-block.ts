@@ -12,11 +12,17 @@ import { and, eq, ne, sql } from 'drizzle-orm';
 import { tradingAgent, type Db } from '@tip/database';
 import { blockAgent, refreshAgentState } from './agent-lifecycle.js';
 
-/** Parse a symbol out of a feed id like `klines.BTCUSDT.1h` or `tickers`. Null = global feed. */
+/**
+ * Parse a symbol out of a feed id. Null = global feed. Registered feed ids today are all
+ * symbol-less (bybit.kline.<tf>, bybit.tickers, bybit.liquidation, bybit.positioning_poll,
+ * helius.wallet_webhook, helius.rest) — so a stale kline stream blocks EVERY perp agent, which
+ * is the conservative choice (audit-2 #7: the old parser looked for a `SYMBOL` token that never
+ * appears in the actual feed ids, so every match was null anyway; now that's the explicit
+ * default rather than a bug). A per-symbol variant lands together with per-symbol feed ids.
+ */
 export function symbolForFeed(feedId: string): string | null {
   const parts = feedId.split('.');
-  // Common shapes: `klines.<SYMBOL>.<tf>`, `<SYMBOL>.liquidation`, `tickers` (global).
-  const candidate = parts.find((p) => /^[A-Z0-9]{4,}USDT?$/.test(p) || /USDT$/.test(p));
+  const candidate = parts.find((p) => /^[A-Z0-9]{2,}USDT?$/.test(p));
   return candidate ?? null;
 }
 

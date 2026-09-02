@@ -15,14 +15,18 @@ import { scoringConfig, tradingAgent } from '@tip/database';
 import type { DomainEvent } from '@tip/domain';
 import { marketSymbol } from '@tip/domain';
 import type { EventBus } from '@tip/events';
+import { EVENT_NAMES, QUEUE_NAMES } from '@tip/events';
 import { AsOfMarketData } from '@tip/evaluation';
-import { perpAgents, perpHistoricalEdge, PERP_HISTORICAL_EDGE_KEY } from '@tip/agents';
+import { timeframeMs } from '@tip/ingestion';
+import { perpAgents, perpHistoricalEdge, PERP_HISTORICAL_EDGE_KEY, recentCandlesAsOf, volumeSignedDirection } from '@tip/agents';
 import type { FeatureTuple } from '@tip/brain';
 import {
   SignalEngine, PRIMARY_TF,
   type AgentContext, type AgentOutput, type FeatureContribution,
   type ScoringConfig, type TradingAgentSnapshot, type TradingStyle,
 } from '@tip/trading-agents';
+
+const marketQueueName = (): typeof QUEUE_NAMES.MARKET_INGESTION => QUEUE_NAMES.MARKET_INGESTION;
 
 interface KlinePayload {
   symbol: string; timeframe: string;
@@ -35,10 +39,24 @@ export interface PerpAnalysisDeps {
   log?: (msg: string, meta?: unknown) => void;
 }
 
+interface RawLiq { side: 'BUY' | 'SELL'; size: number; price: string; timeMs: number }
+interface PositioningSnapshot { symbol: string; buyRatio: string; sellRatio: string; longShortRatio: string; time: string }
+
+const LIQ_RETENTION_MS = 6 * 24 * 3600_000; // covers 30 bars of the largest primary TF (4h)
+
 /** One SignalEngine per (agentId) — kept alive so its FeatureAggregator buckets across a bar. */
 export class PerpAnalysisTier {
   private readonly engines = new Map<string, SignalEngine>();
   private readonly log: (msg: string, meta?: unknown) => void;
+  /**
+   * §40.4 CADENCE roll-up state (audit-2 A1: EVENT-triggered agents never fired live — the
+   * tier only ever handed agents kline events). Raw liquidation events accumulate here per
+   * symbol; each primary-TF close synthesizes the 3-bar-window roll-up the Liquidation agent
+   * scores, with intensity vs the trailing 30-bar average. Positioning keeps the latest §40.6
+   * poll snapshot per symbol, re-emitted at each close so the agent joins the same bucket.
+   */
+  private readonly liqEvents = new Map<string, RawLiq[]>();
+  private readonly positioningLatest = new Map<string, PositioningSnapshot>();
 
   constructor(private readonly deps: PerpAnalysisDeps) {
     this.log = deps.log ?? (() => {});
@@ -86,13 +104,12 @@ export class PerpAnalysisTier {
    */
   private async features(
     bucket: { symbol: string; primaryTfCloseAt: Date },
-    _agent: TradingAgentSnapshot,
+    agent: TradingAgentSnapshot,
     outputs: readonly AgentOutput[],
   ): Promise<FeatureContribution> {
     const byKey = new Map(outputs.map((o) => [o.agent, o]));
     const score = (k: string): number | undefined => byKey.get(k)?.score;
 
-    const momentum = byKey.get('perp.momentum');
     const regime = byKey.get('perp.market_regime');
 
     // Derived volatility from regime's ATR ratio: (ratio − 1)/0.5 clamped to [-1,1].
@@ -100,10 +117,13 @@ export class PerpAnalysisTier {
       ? (regime.features as { atrRatio: number }).atrRatio : undefined;
     const volatility = atrRatio === undefined ? undefined : Math.max(-1, Math.min(1, (atrRatio - 1) / 0.5));
 
-    // Derived volume: expansion magnitude signed by momentum direction.
-    const mf = momentum?.features as { currentVol?: number; avgVol?: number } | undefined;
-    const volume = mf?.currentVol !== undefined && mf.avgVol !== undefined && mf.avgVol > 0
-      ? Math.max(-1, Math.min(1, (mf.currentVol / mf.avgVol - 1))) * Math.sign(momentum?.score ?? 0)
+    // §40.15 Volume feature — THE REAL FORMULA (audit-2 C1: `volumeSignedDirection` existed
+    // unused while the composite got nothing and the fingerprint used a momentum-derived
+    // proxy): 10-candle volume-signed direction at this bar close.
+    const primaryTf = PRIMARY_TF[agent.tradingStyle];
+    const volCandles = await recentCandlesAsOf(this.deps.db, bucket.symbol, primaryTf, bucket.primaryTfCloseAt, 10);
+    const volume = volCandles.length >= 10
+      ? volumeSignedDirection(volCandles.map((c) => ({ open: Number(c.open), close: Number(c.close), volume: Number(c.volume) })))
       : undefined;
 
     const tuple: Record<string, number | undefined> = {
@@ -116,26 +136,39 @@ export class PerpAnalysisTier {
       volume,
       volatility,
     };
+    // Volume contributes independently of the Brain read — it must not vanish when the
+    // fingerprint tuple is incomplete.
+    const volumeOutput: AgentOutput | null = volume !== undefined ? {
+      agent: 'volume', agentVersion: 0,
+      direction: volume > 0 ? 'LONG' : volume < 0 ? 'SHORT' : 'NEUTRAL',
+      score: volume, confidence: 0.5 + Math.abs(volume) / 2,
+      features: { volumeSignedDirection: volume, window: 10 },
+    } : null;
+
     // Rule 24 — a partial tuple must not be fingerprinted. Bail cleanly if any dimension is absent.
-    if (Object.values(tuple).some((v) => v === undefined || !Number.isFinite(v))) return {};
+    if (Object.values(tuple).some((v) => v === undefined || !Number.isFinite(v))) {
+      return volumeOutput ? { outputs: [volumeOutput] } : {};
+    }
 
     let edge;
     try {
       edge = await perpHistoricalEdge(this.deps.db, tuple as FeatureTuple, bucket.primaryTfCloseAt);
     } catch (e) {
       this.log('historical edge read failed; composing without it', { err: String(e) });
-      return {};
+      return volumeOutput ? { outputs: [volumeOutput] } : {};
     }
 
-    // Contribute as a synthetic agent output (weighted 5% iff the config lists 'historical_edge')
-    // plus the Task-6 historicalEvidence confidence sub-metric.
-    const syntheticOutput: AgentOutput = {
+    // Contribute both Features as synthetic outputs — each weighted iff the config lists its
+    // key ('historical_edge' 5%, 'volume' 5% per Part III §3) — plus the Task-6
+    // historicalEvidence confidence sub-metric.
+    const featureOutputs: AgentOutput[] = [{
       agent: PERP_HISTORICAL_EDGE_KEY, agentVersion: 0,
       direction: edge.score > 0 ? 'LONG' : edge.score < 0 ? 'SHORT' : 'NEUTRAL',
       score: edge.score, confidence: edge.historicalEvidence,
       features: { evidence: edge.evidence, effectiveN: edge.effectiveN, backoffDepth: edge.backoffDepth },
-    };
-    return { outputs: [syntheticOutput], historicalEvidence: edge.historicalEvidence };
+    }];
+    if (volumeOutput) featureOutputs.push(volumeOutput);
+    return { outputs: featureOutputs, historicalEvidence: edge.historicalEvidence };
   }
 
   /** Build a perp AgentContext bound to the bar close. Wallet readers inert (perp has no wallets). */
@@ -145,6 +178,58 @@ export class PerpAnalysisTier {
       primaryTf: primaryTf as AgentContext['primaryTf'],
       walletScoreAsOf: async () => null, activeClusterMap: async () => new Map(),
     };
+  }
+
+  /** Feed the roll-up state from raw market events (liquidations, positioning polls). */
+  onMarketEvent(event: DomainEvent): void {
+    if (event.type === EVENT_NAMES.PERP_LIQUIDATION_DETECTED) {
+      const p = event.payload as { symbol?: string; side?: 'BUY' | 'SELL'; size?: string; price?: string; time?: string };
+      if (!p?.symbol || !p.side) return;
+      const list = this.liqEvents.get(p.symbol) ?? [];
+      list.push({ side: p.side, size: Number(p.size ?? 0), price: p.price ?? '0', timeMs: p.time ? new Date(p.time).getTime() : Date.now() });
+      const cutoff = Date.now() - LIQ_RETENTION_MS;
+      this.liqEvents.set(p.symbol, list.filter((e) => e.timeMs >= cutoff));
+      return;
+    }
+    if (event.type === EVENT_NAMES.PERP_POSITIONING_POLLED) {
+      const p = event.payload as PositioningSnapshot;
+      if (p?.symbol) this.positioningLatest.set(p.symbol, p);
+    }
+  }
+
+  /**
+   * Synthesize the §40.4 roll-up + §40.6 snapshot events for one (symbol, primary-TF) bar close.
+   * Pure time-window computation over the raw list — no mutation, so agents with DIFFERENT
+   * primary TFs each get a window sized to their own bar (3 bars signal, 30 bars baseline).
+   */
+  private barEvents(symbol: string, tfMs: number, closeTime: Date): DomainEvent[] {
+    const out: DomainEvent[] = [];
+    const envelope = (type: string, payload: unknown): DomainEvent => ({
+      id: `bar-${type}-${closeTime.getTime()}`, type, version: 1,
+      eventTime: closeTime.toISOString(), processingTime: new Date().toISOString(),
+      source: 'perp-analysis-rollup', payload,
+    } as DomainEvent);
+
+    const list = this.liqEvents.get(symbol);
+    if (list && list.length > 0) {
+      const closeMs = closeTime.getTime();
+      const inWindow = list.filter((e) => e.timeMs > closeMs - 3 * tfMs && e.timeMs <= closeMs);
+      const in30 = list.filter((e) => e.timeMs > closeMs - 30 * tfMs && e.timeMs <= closeMs);
+      const wl = inWindow.filter((e) => e.side === 'SELL').reduce((s, e) => s + e.size, 0); // liquidated longs
+      const ws = inWindow.filter((e) => e.side === 'BUY').reduce((s, e) => s + e.size, 0);  // liquidated shorts
+      const total = wl + ws;
+      const avgPerBar = in30.reduce((s, e) => s + e.size, 0) / 30;
+      out.push(envelope(EVENT_NAMES.PERP_LIQUIDATION_DETECTED, {
+        symbol, side: wl >= ws ? 'SELL' : 'BUY', size: String(total),
+        price: inWindow[inWindow.length - 1]?.price ?? list[list.length - 1]!.price,
+        time: closeTime.toISOString(),
+        imbalance: total > 0 ? (wl - ws) / total : 0,
+        intensityRatio: avgPerBar > 0 ? total / 3 / avgPerBar : 0,
+      }));
+    }
+    const pos = this.positioningLatest.get(symbol);
+    if (pos) out.push(envelope(EVENT_NAMES.PERP_POSITIONING_POLLED, pos));
+    return out;
   }
 
   /** Handle one `perp.kline.closed`. */
@@ -163,22 +248,39 @@ export class PerpAnalysisTier {
         sql`${p.symbol} = ANY(${tradingAgent.universe})`,
       ));
 
+    // §40.4/§40.6 roll-up: EVENT-triggered agents join the SAME bucket as the kline agents
+    // (audit-2 A1: liquidation + positioning never fired live, silently renormalizing 25% of
+    // the composite away and starving the 8-dim fingerprint on every single bar).
+    const rollups = this.barEvents(p.symbol, timeframeMs(p.timeframe as never), closeTime);
+
     for (const a of agents) {
       if (PRIMARY_TF[a.style as TradingStyle] !== p.timeframe) continue; // only fire on the primary TF close
       const snap = await this.snapshot(a.id);
       if (!snap) continue;
-      const view = new AsOfMarketData(this.deps.db, closeTime);
       const ctx = this.ctx(a.id, snap.configVersion, p.timeframe, closeTime);
       const bucket = { tradingAgentId: a.id, symbol: p.symbol, primaryTfCloseAt: closeTime };
       const engine = this.engineFor(a.id);
-      void view;
 
+      const eventsForBar: DomainEvent[] = [event as DomainEvent, ...rollups];
       let admitted = 0;
       for (const agent of perpAgents) {
-        if (!agent.canHandle(event)) continue;
+        const trigger = eventsForBar.find((e) => agent.canHandle(e));
+        if (!trigger) continue;
         try {
-          const out = await agent.analyze(event, ctx);
-          if (out) { engine.admit(bucket, out); admitted++; }
+          const out = await agent.analyze(trigger, ctx);
+          if (out) {
+            engine.admit(bucket, out);
+            admitted++;
+            // §40.3 "Events produced": broadcast the regime so regime-conditioned consumers
+            // can subscribe (audit-2: PERP_REGIME_CLASSIFIED had no publisher).
+            if (agent.key === 'perp.market_regime' && !out.skipped) {
+              await this.deps.bus.publish(marketQueueName(), {
+                type: EVENT_NAMES.PERP_REGIME_CLASSIFIED,
+                eventTime: closeTime.toISOString(), source: 'perp-analysis',
+                payload: { symbol: p.symbol, ...out.features },
+              });
+            }
+          }
         } catch (e) {
           this.log('agent analyze failed', { agent: agent.key, err: String(e) });
         }

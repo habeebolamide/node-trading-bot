@@ -16,6 +16,7 @@ import { marketCandle, type Db } from '@tip/database';
 
 export interface CandleWindowRow {
   openTime: Date;
+  open: string;
   high: string;
   low: string;
   close: string;
@@ -28,8 +29,8 @@ export async function recentCandlesAsOf(
 ): Promise<CandleWindowRow[]> {
   const rows = await db
     .select({
-      openTime: marketCandle.openTime, high: marketCandle.high, low: marketCandle.low,
-      close: marketCandle.close, volume: marketCandle.volume,
+      openTime: marketCandle.openTime, open: marketCandle.open, high: marketCandle.high,
+      low: marketCandle.low, close: marketCandle.close, volume: marketCandle.volume,
     })
     .from(marketCandle)
     .where(and(eq(marketCandle.symbol, symbol), eq(marketCandle.timeframe, timeframe), lte(marketCandle.closeTime, at)))

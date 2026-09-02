@@ -14,6 +14,13 @@ const cfg = {
   signalThresholds: { strongLong: 0.7, long: 0.45, weakLong: 0.2, weakShort: -0.2, short: -0.45, strongShort: -0.7 },
 };
 
+/**
+ * Integration coverage for the audit-2 corrected behaviour. Real production feed ids in
+ * @tip/ingestion are symbol-less today (`bybit.kline.<tf>`, `bybit.tickers`, etc.), so
+ * blockAgentsForStaleFeed(id) blocks EVERY perp agent — conservative and correct until
+ * per-symbol feed ids land. A future per-symbol id like `klines.BTCUSDT.1h` will scope to
+ * BTCUSDT-universe agents only, which the forward-compatibility case at the bottom pins.
+ */
 describe.skipIf(!DATABASE_URL)('feed-block bridge (integration)', () => {
   let db: Db;
   const created: string[] = [];
@@ -25,6 +32,11 @@ describe.skipIf(!DATABASE_URL)('feed-block bridge (integration)', () => {
   beforeAll(() => { db = createDb(DATABASE_URL!); });
   afterAll(async () => {
     if (db) {
+      // Reset lifecycle to unblock any BLOCKED rows so the delete cleanly cascades in a shared DB.
+      if (created.length > 0) {
+        await db.update(tradingAgent).set({ lifecycleState: 'IDLE', lifecycleUntil: null })
+          .where(inArray(tradingAgent.id, created));
+      }
       for (const id of created) {
         await db.delete(scoringConfig).where(eq(scoringConfig.tradingAgentId, id));
         await db.delete(tradingAgent).where(eq(tradingAgent.id, id));
@@ -33,30 +45,32 @@ describe.skipIf(!DATABASE_URL)('feed-block bridge (integration)', () => {
     }
   });
 
-  it('blocks only agents whose universe includes the stale symbol', async () => {
+  it('a symbol-less bybit feed id blocks every perp agent (current production shape)', async () => {
     const btc = await agent('BTCUSDT');
     const eth = await agent('ETHUSDT');
-    const blocked = await blockAgentsForStaleFeed(db, 'klines.BTCUSDT.1h');
+    const blocked = await blockAgentsForStaleFeed(db, 'bybit.kline.1h');
     expect(blocked).toContain(btc);
-    expect(blocked).not.toContain(eth);
+    expect(blocked).toContain(eth);
     expect((await getAgentState(db, btc))!.state).toBe('BLOCKED');
-    expect((await getAgentState(db, eth))!.state).toBe('IDLE');
+    expect((await getAgentState(db, eth))!.state).toBe('BLOCKED');
   });
 
   it('recovery clears feed-staleness blocks (null timer) but not daily-loss blocks (timed)', async () => {
     const btc = await agent('BTCUSDT');
     const btc2 = await agent('BTCUSDT');
-    await blockAgentsForStaleFeed(db, 'klines.BTCUSDT.1h'); // both → BLOCKED, until=null
+    await blockAgentsForStaleFeed(db, 'bybit.kline.1h'); // both → BLOCKED, until=null
     await blockAgent(db, btc2, new Date(Date.now() + 3600_000)); // btc2 → daily-loss-style BLOCKED w/ timer
-    const cleared = await unblockAgentsForRecoveredFeed(db, 'klines.BTCUSDT.1h');
+    const cleared = await unblockAgentsForRecoveredFeed(db, 'bybit.kline.1h');
     expect(cleared).toContain(btc);       // feed-staleness block cleared
     expect(cleared).not.toContain(btc2);  // timed block left alone
     expect((await getAgentState(db, btc2))!.state).toBe('BLOCKED');
   });
 
-  it('a global feed blocks every perp agent', async () => {
-    const a = await agent('SOLUSDT');
-    const blocked = await blockAgentsForStaleFeed(db, 'tickers');
-    expect(blocked).toContain(a);
+  it('forward-compat: a per-symbol feed id scopes to universe-matching agents only', async () => {
+    const sol = await agent('SOLUSDT');
+    const btcOnly = await agent('BTCUSDT');
+    const blocked = await blockAgentsForStaleFeed(db, 'klines.SOLUSDT.1h');
+    expect(blocked).toContain(sol);
+    expect(blocked).not.toContain(btcOnly);
   });
 });

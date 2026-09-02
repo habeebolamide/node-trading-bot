@@ -85,3 +85,47 @@ export function percentile(value: number, population: readonly number[]): number
   const le = population.filter((v) => v <= value).length;
   return le / population.length;
 }
+
+/**
+ * Wilder's ADX(14) (§40.3 — audit-2 B4: was proxied by EMA slope). Returns null until
+ * 2×period+1 candles exist. Standard construction: directional movement smoothed by Wilder's
+ * method → +DI/−DI → DX → ADX as the Wilder average of DX.
+ */
+export function adx(candles: readonly { high: number; low: number; close: number }[], period = 14): number | null {
+  if (candles.length < 2 * period + 1) return null;
+  const plusDM: number[] = [];
+  const minusDM: number[] = [];
+  const tr: number[] = [];
+  for (let i = 1; i < candles.length; i++) {
+    const up = candles[i]!.high - candles[i - 1]!.high;
+    const down = candles[i - 1]!.low - candles[i]!.low;
+    plusDM.push(up > down && up > 0 ? up : 0);
+    minusDM.push(down > up && down > 0 ? down : 0);
+    tr.push(trueRange(candles, i));
+  }
+  const wilder = (xs: readonly number[]): number[] => {
+    const out: number[] = [];
+    let s = xs.slice(0, period).reduce((a, b) => a + b, 0);
+    out.push(s);
+    for (let i = period; i < xs.length; i++) {
+      s = s - s / period + xs[i]!;
+      out.push(s);
+    }
+    return out;
+  };
+  const sTR = wilder(tr);
+  const sPlus = wilder(plusDM);
+  const sMinus = wilder(minusDM);
+  const dx: number[] = [];
+  for (let i = 0; i < sTR.length; i++) {
+    if (sTR[i] === 0) { dx.push(0); continue; }
+    const pdi = 100 * (sPlus[i]! / sTR[i]!);
+    const mdi = 100 * (sMinus[i]! / sTR[i]!);
+    dx.push(pdi + mdi === 0 ? 0 : (100 * Math.abs(pdi - mdi)) / (pdi + mdi));
+  }
+  if (dx.length < period) return null;
+  // ADX = Wilder average of DX: seed with the mean of the first `period` DX values.
+  let a = dx.slice(0, period).reduce((x, y) => x + y, 0) / period;
+  for (let i = period; i < dx.length; i++) a = (a * (period - 1) + dx[i]!) / period;
+  return a;
+}
