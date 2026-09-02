@@ -1,6 +1,18 @@
 # Change: m8-llm-review
 
-**Status:** PROPOSED (scoping)
+**Status:** COMPLETED — archived 2026-09-02
+**Original status:** PROPOSED (scoping)
+
+> **COMPLETED.** M7-payoff pages, all read-only.
+> - Prediction detail — setup card + Judge decision (action badge + thesis + keyRisks) +
+>   attribution table + Risk verdict + autopsy panel (renders when present).
+> - Autopsies browser — filters (status, outcome); highlights FAILED_LLM rows.
+> - Hypotheses queue — filters by status; displays candidate + evidence + proposed weight
+>   change + version links. NO promote button (rule 16 discipline).
+> - Shadow evaluation — FLIP (real vs shadow) and STAND_ASIDE (shadow vs baseline) panels per
+>   agent × horizon.
+>
+> **Verified:** typecheck + vite build green. Full suite: 623/626.
 **Milestone:** M8 (change 5 of 6)
 
 The M7-payoff pages. Read-only surfaces over the tables m7 built:
