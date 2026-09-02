@@ -90,6 +90,9 @@ export const ScoringConfigInputSchema = z.object({
   // existing agent's behaviour. `limitPullbackAtr` is how far the LIMIT sits from the signal-time
   // close, in ATR units — 0.3 is a modest pullback, tuned to fill often on typical intraday
   // retrace without straying so far the trade rarely triggers.
+  // §8 "paper trading balance" (audit-2: the field never existed; balance was hardcoded).
+  // Used once, at portfolio creation; changing it later never rewrites an existing portfolio.
+  startingBalance: z.number().positive().optional(),
   entryType: z.enum(['MARKET', 'LIMIT']).default('MARKET'),
   limitPullbackAtr: z.number().gt(0).default(0.3),
   // Memecoin-only:

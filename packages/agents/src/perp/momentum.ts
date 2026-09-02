@@ -6,9 +6,8 @@
  *
  * CONDITIONAL skip: candle range < 0.25 × ATR(14) AND volume < 0.5 × avg(20).
  */
-import { and, asc, eq, lte } from 'drizzle-orm';
 import type { DomainEvent } from '@tip/domain';
-import { marketCandle } from '@tip/database';
+import { recentCandlesAsOf } from '../common/candles.js';
 import type { AgentContext, AgentOutput, AnalysisAgent } from '@tip/trading-agents';
 import { ANALYSIS_TFS_FOR_PRIMARY } from '@tip/trading-agents';
 import { EVENT_NAMES } from '@tip/events';
@@ -77,10 +76,7 @@ async function multiTfConfirmation(
   const perTf: Record<string, number> = {};
   let agree = 0;
   for (const tf of stack) {
-    const rows = await db.select({ close: marketCandle.close })
-      .from(marketCandle)
-      .where(and(eq(marketCandle.symbol, symbol), eq(marketCandle.timeframe, tf), lte(marketCandle.closeTime, at)))
-      .orderBy(asc(marketCandle.openTime)).limit(60);
+    const rows = await recentCandlesAsOf(db, symbol, tf, at, 60);
     if (rows.length < 30) { perTf[tf] = 0; continue; }
     const closes = rows.map((r) => Number(r.close));
     const sign = Math.sign(emaAlignment(closes));
@@ -102,12 +98,9 @@ export const perpMomentumAgent: AnalysisAgent = {
     const p = event.payload as KlinePayload;
     if (p.timeframe !== ctx.primaryTf) return null;
 
-    const rows = await ctx.db
-      .select({ high: marketCandle.high, low: marketCandle.low, close: marketCandle.close, volume: marketCandle.volume })
-      .from(marketCandle)
-      .where(and(eq(marketCandle.symbol, p.symbol), eq(marketCandle.timeframe, ctx.primaryTf), lte(marketCandle.closeTime, new Date(p.closeTime))))
-      .orderBy(asc(marketCandle.openTime))
-      .limit(60);
+    // Last 60 candles at this close — via the shared window helper (audit-2 B1: the old
+    // ASC+LIMIT read returned the OLDEST 60 rows once history outgrew the window).
+    const rows = await recentCandlesAsOf(ctx.db, p.symbol, ctx.primaryTf, new Date(p.closeTime), 60);
     if (rows.length < 30) {
       return {
         agent: KEY, agentVersion: VERSION, direction: 'NEUTRAL', score: 0, confidence: 0.3,

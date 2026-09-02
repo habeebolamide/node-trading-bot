@@ -24,3 +24,16 @@ export async function apiGet<T>(path: string, params?: Record<string, string | n
   const res = await fetch(url.toString(), { headers: { accept: 'application/json' } });
   return jsonOrThrow<T>(res);
 }
+
+/** POST helper — same base/escape rules as apiGet. */
+export async function apiPost<T>(path: string, body?: unknown): Promise<T> {
+  const url = path.startsWith('/../')
+    ? new URL(path.slice(3), window.location.origin)
+    : new URL(BASE + path, window.location.origin);
+  const res = await fetch(url.toString(), {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', accept: 'application/json' },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  return jsonOrThrow<T>(res);
+}

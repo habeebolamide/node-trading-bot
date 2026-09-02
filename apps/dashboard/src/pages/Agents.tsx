@@ -7,6 +7,7 @@ import { Tabs } from '@/components/ui/Tabs';
 import { useAgent, useAgents } from '@/hooks/useAgents';
 import { AgentTabs } from '@/components/AgentTabs';
 import { CreateAgentForm } from '@/components/CreateAgentForm';
+import { SeedBrainButton, useSeedingStatuses } from '@/components/SeedBrainButton';
 import { useState } from 'react';
 
 export function Agents() {
@@ -17,6 +18,7 @@ export function Agents() {
 
 function AgentsList() {
   const q = useAgents();
+  const seeding = useSeedingStatuses();
   const [showCreate, setShowCreate] = useState(false);
   return (
     <div>
@@ -37,7 +39,7 @@ function AgentsList() {
           <Table>
             <Thead>
               <Tr>
-                <Th>Name</Th><Th>Domain</Th><Th>Style</Th><Th>Config v.</Th><Th>Universe</Th><Th>Status</Th>
+                <Th>Name</Th><Th>Domain</Th><Th>Style</Th><Th>Config v.</Th><Th>Universe</Th><Th>Status</Th><Th>Brain</Th>
               </Tr>
             </Thead>
             <Tbody>
@@ -49,10 +51,11 @@ function AgentsList() {
                   <Td className="tabular-nums">v{a.activeConfigVersion}</Td>
                   <Td className="text-neutral-400">{a.universe.join(', ')}</Td>
                   <Td><Badge tone={a.status === 'active' ? 'success' : 'neutral'}>{a.status}</Badge></Td>
+                  <Td><SeedBrainButton agentId={a.id} domain={a.domain} status={seeding.data?.statuses[a.id]} /></Td>
                 </Tr>
               ))}
               {(q.data ?? []).length === 0 && (
-                <Tr><Td className="text-neutral-500" colSpan={6}>No agents yet — create one via <code>POST /trading-agents</code>.</Td></Tr>
+                <Tr><Td className="text-neutral-500" colSpan={7}>No agents yet — create one via <code>POST /trading-agents</code>.</Td></Tr>
               )}
             </Tbody>
           </Table>

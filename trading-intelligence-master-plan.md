@@ -510,6 +510,8 @@ setup.performance.updated
 signal.retrigger.requested
 paper_trade.tp_hit
 paper_trade.sl_hit
+paper_trade.opened     (build-time addition, audit-2 entry orchestrator — the §11 fast lane's
+                        entry receipt, emitted after the paper fill commits)
 ```
 
 Use a standard event envelope:

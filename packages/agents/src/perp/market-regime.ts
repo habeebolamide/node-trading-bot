@@ -5,9 +5,8 @@
  * Uses the same simplified ATR + EMA-slope proxy as the memecoin variant (§40.11) for MVP —
  * proper ADX is a follow-up refinement.
  */
-import { and, asc, eq, lte } from 'drizzle-orm';
 import type { DomainEvent } from '@tip/domain';
-import { marketCandle } from '@tip/database';
+import { recentCandlesAsOf } from '../common/candles.js';
 import { EVENT_NAMES } from '@tip/events';
 import type { AgentContext, AgentOutput, AnalysisAgent } from '@tip/trading-agents';
 import { atr, ema } from './indicators.js';
@@ -28,12 +27,8 @@ export const perpMarketRegimeAgent: AnalysisAgent = {
     if (p.timeframe !== ctx.primaryTf) return null;
     const closeTime = new Date(p.closeTime);
 
-    const rows = await ctx.db
-      .select({ high: marketCandle.high, low: marketCandle.low, close: marketCandle.close })
-      .from(marketCandle)
-      .where(and(eq(marketCandle.symbol, p.symbol), eq(marketCandle.timeframe, ctx.primaryTf), lte(marketCandle.closeTime, closeTime)))
-      .orderBy(asc(marketCandle.openTime))
-      .limit(60);
+    // Audit-2 B1 window fix: newest 60 at the close, chronological.
+    const rows = await recentCandlesAsOf(ctx.db, p.symbol, ctx.primaryTf, closeTime, 60);
     if (rows.length < 30) {
       return {
         agent: KEY, agentVersion: VERSION, direction: 'NEUTRAL', score: 0, confidence: 0.4,

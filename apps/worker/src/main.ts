@@ -22,10 +22,14 @@ import { PerpAnalysisTier } from './analysis/perp-analysis.js';
 import { createJudgeTierHandlers } from './analysis/judge-tier.js';
 import { createTickHandler } from './analysis/tick-monitor.js';
 import { createWalletExitHandler } from './analysis/wallet-exit-monitor.js';
+import { createEntryOrchestrator, expireStaleSignals } from './analysis/entry-orchestrator.js';
+import { withEventDedup } from './dedup.js';
 import { createTelegramAlertHandler } from './alerts/telegram.js';
-import { EVENT_NAMES, QUEUE_NAMES } from '@tip/events';
+import { EVENT_NAMES, QUEUE_NAMES, PRIORITY } from '@tip/events';
 import { createDeepSeekClient } from '@tip/llm';
 import { tickLifecycle } from '@tip/trading-agents';
+import { outcomeSweep } from '@tip/evaluation';
+import { refreshAgentMemories } from './analysis/agent-memory-refresh.js';
 import type { DomainEvent } from '@tip/domain';
 // Side-effect imports that register queue processors go here as milestones add them.
 
@@ -103,6 +107,15 @@ async function main(): Promise<void> {
   } else {
     console.log('[worker] judge tier OFF — no DEEPSEEK_API_KEY (predictions stay deterministic)');
   }
+
+  // Entry orchestrator (audit-2 #1) — turns consumable signals into Predictions + paper
+  // positions under the §35/§37 gates. Registered AFTER the gate so judge_decision exists when
+  // judge.evaluation.completed reaches it.
+  signalProcessingHandlers.push(createEntryOrchestrator({
+    db, bus, judgeEnabled: Boolean(config.DEEPSEEK_API_KEY),
+    log: (m, meta) => console.log(`[entry] ${m}`, meta ?? ''),
+  }));
+  console.log('[worker] entry orchestrator live (signal → prediction → paper open)');
 
   // Telegram fast-lane alerts (§11, audit #12) — receipts of committed fills/closes only.
   if (config.TELEGRAM_BOT_TOKEN && config.TELEGRAM_CHAT_ID) {
@@ -189,19 +202,51 @@ async function main(): Promise<void> {
 
   // Single wallet-analysis worker fanning out to wallet-exit (always) + BuyDetector (when the
   // Helius trio is configured). Registered after the conditional so the handler list is final.
-  bus.createWorker(QUEUE_NAMES.WALLET_ANALYSIS, async (event: DomainEvent) => {
+  // Both dispatchers ride the §29 event-dedup claim (audit-2: raw workers re-ran effects on
+  // BullMQ redelivery).
+  bus.createWorker(QUEUE_NAMES.WALLET_ANALYSIS, withEventDedup(db, async (event: DomainEvent) => {
     for (const h of walletAnalysisHandlers) await h(event);
-  });
+  }));
 
-  // Single signal-processing worker — Judge, override gate, convergence batcher, Telegram.
-  bus.createWorker(QUEUE_NAMES.SIGNAL_PROCESSING, async (event: DomainEvent) => {
+  // Single signal-processing worker — Judge, gate, entry orchestrator, convergence, Telegram.
+  bus.createWorker(QUEUE_NAMES.SIGNAL_PROCESSING, withEventDedup(db, async (event: DomainEvent) => {
     for (const h of signalProcessingHandlers) await h(event);
-  });
+  }));
+
+  // ── Outcome sweep (§21, audit-2 #2: never scheduled) — resolves elapsed horizons on 1m
+  //    candles, feeds the Brain (§41), publishes prediction.resolved (§10's missing producer),
+  //    and refreshes the cached brain_agent_memory aggregates (audit-2: never persisted). ──
+  const outcomeTimer = setInterval(() => {
+    void (async () => {
+      const stats = await outcomeSweep(db, {
+        mode: 'CANDLE_1M_CONSERVATIVE',
+        onResolved: async (predictionId, outcomesWritten) => {
+          await bus.publish(QUEUE_NAMES.PREDICTION_EVALUATION, {
+            type: EVENT_NAMES.PREDICTION_RESOLVED,
+            eventTime: new Date().toISOString(), source: 'outcome-sweep',
+            payload: { predictionId, outcomesWritten },
+          });
+        },
+      });
+      if (stats.brainWrites > 0) {
+        await refreshAgentMemories(db);
+        console.log(`[outcome] sweep: ${stats.outcomesWritten} outcomes, ${stats.brainWrites} brain writes`);
+      }
+      if (stats.errors > 0) console.warn(`[outcome] sweep errors: ${stats.errors}`);
+    })().catch((e) => console.warn('[outcome] sweep failed:', e instanceof Error ? e.message : e));
+  }, 60_000);
+
+  // ── Signal TTL sweep (§36, audit-2: ACTIVE→EXPIRED never happened) ──
+  const signalTtlTimer = setInterval(() => {
+    void expireStaleSignals(db).then((n) => { if (n > 0) console.log(`[signals] expired ${n} stale signal(s)`); }).catch(() => undefined);
+  }, 60_000);
 
   const shutdown = async (signal: string): Promise<void> => {
     console.log(`[worker] ${signal} — draining`);
     clearInterval(monitorTimer);
     clearInterval(lifecycleTimer);
+    clearInterval(outcomeTimer);
+    clearInterval(signalTtlTimer);
     poller.stop();
     adapter.stop();
     heliusProbe?.stop();

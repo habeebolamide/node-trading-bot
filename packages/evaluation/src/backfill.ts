@@ -1,12 +1,20 @@
 /**
  * One-time (and resumable) historical backfill of the Bybit REST history into the local store
- * (§25). Forward-paginates a time range and upserts with `onConflictDoNothing`, so overlap and
- * re-runs are no-ops — the backfill can resume after an interruption by simply running again.
- * Reuses `BybitRestClient` (change 2); this module never talks to Bybit itself beyond that seam.
+ * (§25). Upserts with `onConflictDoNothing`, so overlap and re-runs are no-ops — the backfill
+ * can resume after an interruption by simply running again. Reuses `BybitRestClient` (change 2);
+ * this module never talks to Bybit itself beyond that seam.
+ *
+ * PAGINATION (bug fixed 2026-09-02): Bybit v5 history endpoints return the NEWEST `limit` rows
+ * within [start, end] when the range holds more — so naive forward-cursor pagination fetches the
+ * range's TAIL once, jumps the cursor to "now", and stops after one page (the exact symptom:
+ * "fetched 1001, inserted 1000" for a 9-month request). Klines therefore paginate forward in
+ * WINDOWS never wider than `limit` bars (the window can't be tail-truncated), and funding/OI —
+ * whose cadence per symbol isn't statically known — paginate BACKWARD from `toMs` by moving the
+ * `end` cursor below each page's earliest row.
  */
 import type { MarketSymbol, Timeframe } from '@tip/domain';
 import { marketCandle, fundingRate, openInterest, type Db } from '@tip/database';
-import { type BybitRestClient } from '@tip/ingestion';
+import { timeframeMs, type BybitRestClient } from '@tip/ingestion';
 
 const KLINE_PAGE = 1000;
 const HISTORY_PAGE = 200;
@@ -33,34 +41,39 @@ export async function backfillKlines(
   toMs: number,
   opts: BackfillOptions = {},
 ): Promise<BackfillResult> {
+  const tfMs = timeframeMs(timeframe);
+  const windowMs = KLINE_PAGE * tfMs; // a window can never hold more than one page → no tail-truncation
   let cursor = fromMs;
   let fetched = 0;
   let inserted = 0;
-  for (;;) {
-    const batch = await rest.getKlines(symbol, timeframe, { start: cursor, end: toMs, limit: KLINE_PAGE });
-    if (batch.length === 0) break;
-    fetched += batch.length;
-    const rows = await db
-      .insert(marketCandle)
-      .values(
-        batch.map((k) => ({
-          symbol: k.symbol,
-          timeframe: k.timeframe,
-          openTime: k.openTime,
-          closeTime: k.closeTime,
-          open: k.open,
-          high: k.high,
-          low: k.low,
-          close: k.close,
-          volume: k.volume,
-          turnover: k.turnover,
-        })),
-      )
-      .onConflictDoNothing()
-      .returning({ openTime: marketCandle.openTime });
-    inserted += rows.length;
-    if (batch.length < KLINE_PAGE) break;
-    cursor = batch[batch.length - 1]!.openTime.getTime() + 1;
+  while (cursor <= toMs) {
+    const windowEnd = Math.min(cursor + windowMs - 1, toMs);
+    const batch = await rest.getKlines(symbol, timeframe, { start: cursor, end: windowEnd, limit: KLINE_PAGE });
+    if (batch.length > 0) {
+      fetched += batch.length;
+      const rows = await db
+        .insert(marketCandle)
+        .values(
+          batch.map((k) => ({
+            symbol: k.symbol,
+            timeframe: k.timeframe,
+            openTime: k.openTime,
+            closeTime: k.closeTime,
+            open: k.open,
+            high: k.high,
+            low: k.low,
+            close: k.close,
+            volume: k.volume,
+            turnover: k.turnover,
+          })),
+        )
+        .onConflictDoNothing()
+        .returning({ openTime: marketCandle.openTime });
+      inserted += rows.length;
+    }
+    // Advance by the window, not by the last row — an empty window (pre-listing gap, exchange
+    // outage) must not stall the loop.
+    cursor = windowEnd + 1;
     await sleep(opts.delayMs ?? 0);
   }
   return { fetched, inserted };
@@ -75,11 +88,13 @@ export async function backfillFunding(
   toMs: number,
   opts: BackfillOptions = {},
 ): Promise<BackfillResult> {
-  let cursor = fromMs;
+  // Backward pagination: each page is the newest HISTORY_PAGE rows ≤ endCursor; move endCursor
+  // below the page's earliest row until the range is exhausted.
+  let endCursor = toMs;
   let fetched = 0;
   let inserted = 0;
   for (;;) {
-    const batch = await rest.getFundingHistory(symbol, { start: cursor, end: toMs, limit: HISTORY_PAGE });
+    const batch = await rest.getFundingHistory(symbol, { start: fromMs, end: endCursor, limit: HISTORY_PAGE });
     if (batch.length === 0) break;
     fetched += batch.length;
     const rows = await db
@@ -88,8 +103,9 @@ export async function backfillFunding(
       .onConflictDoNothing()
       .returning({ fundingTime: fundingRate.fundingTime });
     inserted += rows.length;
-    if (batch.length < HISTORY_PAGE) break;
-    cursor = batch[batch.length - 1]!.fundingTime.getTime() + 1;
+    if (batch.length < HISTORY_PAGE) break; // fewer than a page left → range exhausted
+    endCursor = batch[0]!.fundingTime.getTime() - 1; // batch is sorted ascending; [0] is earliest
+    if (endCursor < fromMs) break;
     await sleep(opts.delayMs ?? 0);
   }
   return { fetched, inserted };
@@ -105,11 +121,12 @@ export async function backfillOpenInterest(
   toMs: number,
   opts: BackfillOptions = {},
 ): Promise<BackfillResult> {
-  let cursor = fromMs;
+  // Same backward pagination as funding (see the header note on Bybit's newest-first tail bias).
+  let endCursor = toMs;
   let fetched = 0;
   let inserted = 0;
   for (;;) {
-    const batch = await rest.getOpenInterest(symbol, intervalTime, { start: cursor, end: toMs, limit: HISTORY_PAGE });
+    const batch = await rest.getOpenInterest(symbol, intervalTime, { start: fromMs, end: endCursor, limit: HISTORY_PAGE });
     if (batch.length === 0) break;
     fetched += batch.length;
     const rows = await db
@@ -119,7 +136,8 @@ export async function backfillOpenInterest(
       .returning({ snapshotTime: openInterest.snapshotTime });
     inserted += rows.length;
     if (batch.length < HISTORY_PAGE) break;
-    cursor = batch[batch.length - 1]!.snapshotTime.getTime() + 1;
+    endCursor = batch[0]!.snapshotTime.getTime() - 1;
+    if (endCursor < fromMs) break;
     await sleep(opts.delayMs ?? 0);
   }
   return { fetched, inserted };

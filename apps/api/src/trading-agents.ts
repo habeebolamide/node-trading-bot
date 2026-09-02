@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { ValidationError } from '@tip/domain';
 import type { Db } from '@tip/database';
+import { createPortfolio } from '@tip/paper-engine';
 import {
   createTradingAgent, getTradingAgent, listTradingAgents, updateTradingAgentConfig,
   type CreateTradingAgentInput,
@@ -39,6 +40,11 @@ export function tradingAgentsRouter(db: Db): Router {
         tradingStyle: body.tradingStyle,
         config: body.config,
       });
+      // §14 — every TradingAgent owns a paper portfolio from birth (audit-2: createPortfolio
+      // had no live caller, so agents never had one). Composed here at the app layer so
+      // @tip/trading-agents keeps its no-paper-engine dependency direction.
+      const startingCash = (body.config as { startingBalance?: number })?.startingBalance ?? 10_000;
+      await createPortfolio(db, { tradingAgentId: row.id, startingCash });
       res.status(201).json(row);
     } catch (err) {
       if (err instanceof ValidationError) {

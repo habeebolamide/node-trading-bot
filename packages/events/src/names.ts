@@ -41,6 +41,9 @@ export const EVENT_NAMES = {
   SIGNAL_RETRIGGER_REQUESTED: 'signal.retrigger.requested',
   PAPER_TRADE_TP_HIT: 'paper_trade.tp_hit',
   PAPER_TRADE_SL_HIT: 'paper_trade.sl_hit',
+  // Build-time addition (audit-2 #1 — entry orchestrator): the §11 fast lane's entry receipt.
+  // Added to the plan's §10 list in the same change, per CLAUDE.md "done" rules.
+  PAPER_TRADE_OPENED: 'paper_trade.opened',
 
   // ── Referenced by Part IV (§40) and the lifecycle sections (§36) ──
   PERP_KLINE_CLOSED: 'perp.kline.closed',

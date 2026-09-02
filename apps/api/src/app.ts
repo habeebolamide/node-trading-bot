@@ -7,6 +7,7 @@ import type { Watchlist } from '@tip/watchlist';
 import { safeEqual, withTimeout } from './util.js';
 import { walletsRouter } from './wallets.js';
 import { tradingAgentsRouter } from './trading-agents.js';
+import { seedingRouter } from './seeding.js';
 import { dashboardRouter } from './dashboard.js';
 
 export interface ApiDeps {
@@ -39,6 +40,8 @@ export function createApp(deps: ApiDeps): Express {
   if (deps.watchlist) app.use('/wallets', walletsRouter(deps.watchlist));
 
   // TradingAgent routes (m4-tradingagent). Always mounted — needs only DB access.
+  // Seeding routes mount FIRST: '/seeding/status' must not be swallowed by the CRUD '/:id'.
+  app.use('/trading-agents', seedingRouter(deps.db));
   app.use('/trading-agents', tradingAgentsRouter(deps.db));
   app.use('/api', dashboardRouter(deps.db));
 

@@ -25,10 +25,18 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 export interface SweepOptions {
   /** Wall-clock now used to decide which horizons have elapsed. Injectable for tests + replay. */
   now?: Date;
-  /** Default resolution mode. Live outcomes are TICK (§21); the seeder (change 6) overrides. */
+  /**
+   * Resolution mode. Defaults to CANDLE_1M_CONSERVATIVE (audit-2 fix): the old TICK default
+   * was a footgun — TICK with no tick store falls through to `finalize(entry, …)` and records
+   * EVERY outcome as `won=false, returnPct=0`. The live store has 1m candles, not ticks, so the
+   * candle mode is the correct live default; pass TICK only when actual ticks are supplied.
+   */
   mode?: ResolutionMode;
   /** Cap per sweep to keep long-lived processes bounded. */
   maxPredictions?: number;
+  /** Called once per prediction that wrote ≥1 outcome this sweep — the scheduler publishes
+   *  `prediction.resolved` from it (the §10 event that had no producer). */
+  onResolved?: (predictionId: string, outcomesWritten: number) => Promise<void>;
 }
 
 export interface SweepStats {
@@ -189,7 +197,7 @@ async function feedBrainOnce(db: Db, predictionId: string, style: TradingStyle):
 /** Batch sweep — every unresolved elapsed horizon across every prediction, then feed the Brain. */
 export async function outcomeSweep(db: Db, opts: SweepOptions = {}): Promise<SweepStats> {
   const now = opts.now ?? new Date();
-  const mode = opts.mode ?? 'TICK';
+  const mode = opts.mode ?? 'CANDLE_1M_CONSERVATIVE';
   const cap = opts.maxPredictions ?? 500;
   const stats: SweepStats = { predictionsChecked: 0, outcomesWritten: 0, brainWrites: 0, errors: 0 };
 
@@ -219,7 +227,9 @@ export async function outcomeSweep(db: Db, opts: SweepOptions = {}): Promise<Swe
     const style = styleCache.get(r.tradingAgentId);
     if (!style) continue; // agent gone / mismatch — skip rather than crash the whole sweep
     try {
-      stats.outcomesWritten += await resolvePrediction(db, { predictionId: r.id, now, mode, style });
+      const written = await resolvePrediction(db, { predictionId: r.id, now, mode, style });
+      stats.outcomesWritten += written;
+      if (written > 0 && opts.onResolved) await opts.onResolved(r.id, written);
       if (!r.brainWrittenAt && (await feedBrainOnce(db, r.id, style))) stats.brainWrites++;
     } catch {
       stats.errors++;

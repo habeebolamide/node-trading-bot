@@ -13,6 +13,7 @@
  */
 import { and, asc, desc, eq, lte } from 'drizzle-orm';
 import type { DomainEvent } from '@tip/domain';
+import { recentCandlesAsOf } from '../common/candles.js';
 import { marketCandle, openInterest as oiTable } from '@tip/database';
 import { EVENT_NAMES } from '@tip/events';
 import type { AgentContext, AgentOutput, AnalysisAgent } from '@tip/trading-agents';
@@ -55,12 +56,8 @@ export const perpOpenInterestAgent: AnalysisAgent = {
     if (p.timeframe !== ctx.primaryTf) return null;
     const closeTime = new Date(p.closeTime);
 
-    const candles = await ctx.db
-      .select({ close: marketCandle.close })
-      .from(marketCandle)
-      .where(and(eq(marketCandle.symbol, p.symbol), eq(marketCandle.timeframe, ctx.primaryTf), lte(marketCandle.closeTime, closeTime)))
-      .orderBy(asc(marketCandle.openTime))
-      .limit(5);
+    // Audit-2 B1 window fix: the newest 5 closes at this bar, chronological.
+    const candles = await recentCandlesAsOf(ctx.db, p.symbol, ctx.primaryTf, closeTime, 5);
     if (candles.length < 5) return { agent: KEY, agentVersion: VERSION, direction: 'NEUTRAL', score: 0, confidence: 0, features: { symbol: p.symbol, insufficientHistory: true } };
 
     const oiRows = await ctx.db
