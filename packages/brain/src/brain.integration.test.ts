@@ -137,12 +137,13 @@ describe.skipIf(!DATABASE_URL)('Brain facade (integration, Postgres)', () => {
     // file's own 12 fixtures dominate by six orders of magnitude.
     const before = await brain.market(new Date(T.getTime() - DAY_MS));
     const at = await brain.market(T);
-    // This file's 12 bullish fixtures close exactly AT T, so they are invisible a day earlier.
-    // Asserted as a lower bound: vitest runs files in parallel against one database, so another
-    // file may add to this global bucket between the two reads — that can only increase the gain.
+    // This file's 12 bullish fixtures close AT T and are invisible a day earlier. The delta is
+    // "12 minus a day of decay on everything already in the HIGH bucket" — and that decay term
+    // grows with the shared DB. Assert the invariant (adding 12 raises the count by MOST of 12)
+    // rather than pinning a number that drifts as other test files add fixtures.
     const highBefore = before.byRegime.find((r) => r.regime === 'HIGH')!;
     const highAt = at.byRegime.find((r) => r.regime === 'HIGH')!;
-    expect(highAt.effectiveN - highBefore.effectiveN).toBeGreaterThan(11.9);
+    expect(highAt.effectiveN - highBefore.effectiveN).toBeGreaterThan(10);
   });
 
   it('the asOf compile-time guard is present (rule 21 enforced structurally, not by convention)', () => {

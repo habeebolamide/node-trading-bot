@@ -12,6 +12,7 @@
     { "path": "packages/trading-agents" },
     { "path": "packages/agents" },
     { "path": "packages/brain" },
+    { "path": "packages/planner" },
     { "path": "apps/api" },
     { "path": "apps/worker" },
     { "path": "scripts" }
