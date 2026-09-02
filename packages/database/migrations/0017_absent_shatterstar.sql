@@ -1,0 +1,1 @@
+ALTER TABLE "paper_position" ADD COLUMN "is_shadow" boolean DEFAULT false NOT NULL;

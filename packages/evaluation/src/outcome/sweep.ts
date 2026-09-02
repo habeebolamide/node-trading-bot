@@ -132,6 +132,12 @@ export async function resolvePrediction(
 async function feedBrainOnce(db: Db, predictionId: string, style: TradingStyle): Promise<boolean> {
   const p = (await db.select().from(prediction).where(eq(prediction.id, predictionId)).limit(1))[0];
   if (!p || p.brainWrittenAt !== null) return false;
+  // m7-shadow-predictions: shadows do NOT feed the Brain. A Judge that consistently flips right
+  // would otherwise bake its own preference back into Historical Edge — the back channel §18's
+  // narrow gate is designed to prevent. §33 rule 13 is about calculation; this is the same
+  // idea for memory. Shadows are read directly from prediction_outcome in shadow reporting
+  // (m7-shadow-predictions compareShadowVsReal/compareShadowVsBaseline).
+  if (p.isShadow) return false;
 
   const planningH = planningHorizonFor(style);
   const outcome = (await db.select().from(predictionOutcome)

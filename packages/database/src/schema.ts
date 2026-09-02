@@ -13,6 +13,7 @@
  * constraints, never application check-then-write (§29, rule 12).
  */
 import { pgTable, text, integer, bigint, boolean, jsonb, numeric, timestamp, primaryKey, uniqueIndex, index } from 'drizzle-orm/pg-core';
+import { sql as sqlRef } from 'drizzle-orm';
 
 /**
  * Durable log of every event that crossed the bus (§13). Append-only.
@@ -587,7 +588,9 @@ export const prediction = pgTable(
     brainWrittenAt: timestamp('brain_written_at', { withTimezone: true, mode: 'date' }),
   },
   (t) => [
-    uniqueIndex('prediction_signal_uq').on(t.signalId),
+    // Partial unique — REAL predictions still cap at one per signal (the m6 rule); shadows
+    // share the same signal_id and are distinguished by is_shadow (m7-shadow-predictions).
+    uniqueIndex('prediction_signal_real_uq').on(t.signalId).where(sqlRef`is_shadow = false`),
     index('prediction_agent_created_idx').on(t.tradingAgentId, t.createdAt),
   ],
 );
@@ -722,6 +725,9 @@ export const paperPosition = pgTable(
     openedAtProcessing: timestamp('opened_at_processing', { withTimezone: true, mode: 'date' }).notNull(),
     closedAt: timestamp('closed_at', { withTimezone: true, mode: 'date' }),
     closeReason: text('close_reason'),
+    /** m7-shadow-predictions: shadow positions are counterfactuals — excluded from
+     *  openPositionCount so maxConcurrentPositions caps live-money-equivalent exposure. */
+    isShadow: boolean('is_shadow').notNull().default(false),
     realizedPnl: numeric('realized_pnl').notNull().default('0'),
     mfe: numeric('mfe').notNull().default('0'),
     mae: numeric('mae').notNull().default('0'),

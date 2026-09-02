@@ -30,6 +30,8 @@ export interface OpenPositionInput {
   /** §20 "record both clocks". */
   openedAtEvent: Date;
   openedAtProcessing: Date;
+  /** m7-shadow-predictions: true for §18 shadow paper positions (counterfactuals). */
+  isShadow?: boolean;
 }
 
 export interface PositionRow {
@@ -53,6 +55,7 @@ export interface PositionRow {
   realizedPnl: number;
   mfe: number;
   mae: number;
+  isShadow: boolean;
 }
 
 function toRow(r: typeof paperPosition.$inferSelect): PositionRow {
@@ -68,6 +71,7 @@ function toRow(r: typeof paperPosition.$inferSelect): PositionRow {
     openedAtEvent: r.openedAtEvent, openedAtProcessing: r.openedAtProcessing,
     closedAt: r.closedAt, closeReason: r.closeReason,
     realizedPnl: Number(r.realizedPnl), mfe: Number(r.mfe), mae: Number(r.mae),
+    isShadow: r.isShadow,
   };
 }
 
@@ -88,6 +92,7 @@ export async function openPosition(db: Db, i: OpenPositionInput): Promise<Positi
       takeProfit: i.takeProfit === null ? null : String(i.takeProfit),
       ladderState: { firedRungs: [] },
       openedAtEvent: i.openedAtEvent, openedAtProcessing: i.openedAtProcessing,
+      isShadow: i.isShadow ?? false,
     });
     await tx.insert(paperPositionFill).values({
       id: randomUUID(), positionId: id,
@@ -224,10 +229,19 @@ export async function updateExcursion(db: Db, positionId: string, price: number)
     .where(and(eq(paperPosition.id, positionId), eq(paperPosition.state, 'OPEN')));
 }
 
-/** Count open positions for a portfolio — enforces `maxConcurrentPositions`. */
+/**
+ * Count open REAL positions for a portfolio — enforces `maxConcurrentPositions`. Shadows are
+ * excluded by construction (m7-shadow-predictions): they are measurement rows, not live-money-
+ * equivalent exposure, so the cap they enforce is about the latter. A FLIP that opens
+ * real+shadow does not blow through a 1-position cap.
+ */
 export async function openPositionCount(db: Db, portfolioId: string): Promise<number> {
   const r = await db.select({ n: sql<number>`count(*)::int` })
     .from(paperPosition)
-    .where(and(eq(paperPosition.portfolioId, portfolioId), eq(paperPosition.state, 'OPEN')));
+    .where(and(
+      eq(paperPosition.portfolioId, portfolioId),
+      eq(paperPosition.state, 'OPEN'),
+      eq(paperPosition.isShadow, false),
+    ));
   return Number(r[0]!.n);
 }

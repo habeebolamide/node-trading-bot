@@ -10,3 +10,4 @@ export * from './create.js';
 export * from './read.js';
 export * from './no-trade.js';
 export * from './types.js';
+export * from './shadow.js';

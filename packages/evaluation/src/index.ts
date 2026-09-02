@@ -12,3 +12,4 @@ export * from './metrics/attribution.js';
 export * from './metrics/calibration.js';
 export * from './metrics/metrics.js';
 export * from './metrics/walk-forward.js';
+export * from './metrics/shadow.js';

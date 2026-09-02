@@ -1,6 +1,32 @@
 # Change: m7-shadow-predictions
 
-**Status:** PROPOSED (scoping)
+**Status:** COMPLETED — archived 2026-09-02
+**Original status:** PROPOSED (scoping)
+
+> **COMPLETED.** Populates the `isShadow` / `shadowOf` columns m6 schema'd.
+> - Migration 0017: `paper_position.is_shadow`. `openPositionCount` excludes shadows so a
+>   FLIP's real+shadow pair does not blow through `maxConcurrentPositions=1`.
+> - Migration 0018: dropped `prediction_signal_uq`, added a **partial unique**
+>   `prediction_signal_real_uq ON prediction(signal_id) WHERE is_shadow = false`. Real
+>   predictions still cap at one per signal; shadows share the same signal_id and are
+>   distinguished by `is_shadow`.
+> - `packages/predictions/src/shadow.ts` — `insertFlipShadow(...)` and
+>   `insertStandAsideShadow(...)` do direct INSERTs (the rule-10 trigger blocks UPDATE/DELETE
+>   but INSERT is fine). NO_TRADE plan → no shadow (parity with the real path).
+> - `feedBrainOnce` (m6c4 sweep) now SKIPS `isShadow=true` predictions — the Brain-isolation
+>   rule from `design.md`: a Judge that consistently flips right would otherwise bake its
+>   preference back into `Historical Edge` via a back channel §18's narrow gate is designed to
+>   prevent. Same idea for MEMORY as §33 rule 13 is for CALCULATION.
+> - `packages/evaluation/src/metrics/shadow.ts` — `compareShadowVsReal(...)` (FLIP group vs
+>   shadow group) and `compareShadowVsBaseline(...)` (STAND_ASIDE shadow vs deterministic
+>   AGREE/DEFER baseline). Reads from `prediction_outcome` joined to `judge_decision` — NOT
+>   from the Brain.
+>
+> **Verified:** typecheck green; **572/575 tests pass** (3 opt-in live). 7 new — shadow
+> handlers (4 incl. FLIP writes with shadow_of pointing at real, NO_TRADE writes nothing,
+> STAND_ASIDE writes shadow_of=null, openPositionCount excludes shadow so the 1-max portfolio
+> stays honest), shadow reporting (3 incl. empty=null groups, FLIP real+shadow win-rate
+> comparison, STAND_ASIDE vs baseline).
 **Milestone:** M7 (change 4 of 6)
 **Implements:** §18 (shadow evaluation for FLIP + STAND_ASIDE) · §23 (shadow-vs-real comparison
 that answers "does the Judge add value") · §13 (Prediction `isShadow`/`shadowOf`) · §33 rule 20
