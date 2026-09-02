@@ -1,6 +1,15 @@
 # Change: m8-signals-tokens
 
-**Status:** PROPOSED (scoping)
+**Status:** COMPLETED — archived 2026-09-02 — M8 COMPLETE
+**Original status:** PROPOSED (scoping)
+
+> **COMPLETED.** Last M8 change. Signals (list + detail with composite/confidence/Risk/
+> NO_TRADE/Judge/contributing agents), Portfolios (list + detail with OPEN/CLOSED toggle),
+> Tokens (mint lookup), Smart Money (placeholder), Settings (read-only ScoringConfig JSON per
+> agent). Read-only; editing config is CLI-only (rule 16 + rule 20).
+>
+> **Verified:** typecheck + vite build green (324kB / 97kB gzip). Full suite: 623/626 across
+> 3 clean runs.
 **Milestone:** M8 (change 6 of 6) — completes M8
 
 The remaining §26 pages, read-only:
