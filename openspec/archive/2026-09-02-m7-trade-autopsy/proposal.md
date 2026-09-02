@@ -1,6 +1,24 @@
 # Change: m7-trade-autopsy
 
-**Status:** PROPOSED (scoping)
+**Status:** COMPLETED — archived 2026-09-02
+**Original status:** PROPOSED (scoping)
+
+> **COMPLETED.** New `packages/agents/perp/autopsy/`:
+> - `schema.ts` — Zod `AutopsyOutput` with capped strings/arrays; `validateOutcomeFields`
+>   enforces §24's "WIN → successFactor / LOSS → failureCategory" rule at the Zod boundary.
+> - `prompts.ts` — `AUTOPSY_PROMPTS[AUTOPSY_VERSION_CURRENT]`; prompt change bumps version.
+> - `evidence.ts` — three-part evidence package bounded to `[T0, T2]` via `AsOfMarketData(T2)`.
+>   Candles + OI downsampled to ~40 points to guard the prompt against runaway token usage.
+> - `runner.ts` — `autopsyOne({db,llm}, event)`: perp-only (memecoin throws §24 citation);
+>   idempotent by `unique(prediction_id)`; UPSERT so a FAILED_LLM row can be retried in place.
+>
+> Migration 0019: `trade_autopsy` with CHECK
+> `(WIN → successFactor NOT NULL) OR (LOSS → failureCategory NOT NULL) OR (FAILED_LLM → both null)`.
+>
+> **Verified:** typecheck green; **584/587 tests pass** (3 opt-in live). 12 new — schema (6 incl.
+> caps + WIN/LOSS invariant), integration (6 incl. memecoin refused, SUCCESS WIN/LOSS with the
+> right field populated, invariant violation → FAILED_LLM instead of a bad row, retry of
+> FAILED_LLM upserts the same row, idempotent replay).
 **Milestone:** M7 (change 5 of 6)
 **Implements:** §24 Trade Autopsy · §24 evidence-package structure · §23 (autopsy in the LLM
 value question) · §33 rules 13, 14 · §13 (`TradeAutopsy` entity)

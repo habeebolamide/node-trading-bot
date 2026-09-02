@@ -29,3 +29,4 @@ export const perpAgents: readonly AnalysisAgent[] = [
   perpPositioningAgent,
 ];
 export * from './judge/index.js';
+export * from './autopsy/index.js';

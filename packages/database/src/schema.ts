@@ -849,6 +849,43 @@ export const judgeDecision = pgTable(
   ],
 );
 
+
+/**
+ * TradeAutopsy (§24, m7-trade-autopsy). One row per resolved PERP prediction — symmetric
+ * WIN + LOSS (§24 verbatim). Memecoin autopsy is deferred (§24: no memecoin backtest → no
+ * promotion path → autopsy hypotheses have nowhere to go).
+ *
+ * `prediction_id` UNIQUE makes a re-run of the subscriber a DB-level no-op — same rule-12
+ * pattern used for setup occurrences. XOR CHECK enforces §24's "always exactly one of
+ * failureCategory / successFactor populated" verbatim; the third clause allows a null-null
+ * row for the LLM-failure case, so a retry can UPDATE it later.
+ */
+export const tradeAutopsy = pgTable(
+  'trade_autopsy',
+  {
+    id: text('id').primaryKey(),
+    predictionId: text('prediction_id').notNull(),
+    setupId: text('setup_id').notNull(),
+    outcome: text('outcome').notNull(),                    // WIN | LOSS
+    rootCause: text('root_cause'),
+    failureCategory: text('failure_category'),             // LOSS-only
+    successFactor: text('success_factor'),                 // WIN-only
+    explanation: text('explanation'),
+    contributingFactors: jsonb('contributing_factors'),    // string[]
+    agentFailures: jsonb('agent_failures'),                // {agent,assessment,impact}[]
+    lesson: text('lesson'),
+    recommendation: text('recommendation'),
+    autopsyVersion: integer('autopsy_version').notNull(),
+    llmCallLogId: text('llm_call_log_id'),
+    status: text('status').notNull().default('SUCCESS'),   // SUCCESS | FAILED_LLM
+    createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex('trade_autopsy_prediction_uq').on(t.predictionId),
+    index('trade_autopsy_setup_idx').on(t.setupId),
+  ],
+);
+
 export const schema = {
   domainEvent,
   processedEvent,
@@ -887,4 +924,5 @@ export const schema = {
   paperPositionOriginatingWallet,
   llmCallLog,
   judgeDecision,
+  tradeAutopsy,
 };

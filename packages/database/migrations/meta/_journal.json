@@ -134,6 +134,13 @@
       "when": 1788349768152,
       "tag": "0018_brave_power_pack",
       "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1788350134121,
+      "tag": "0019_lucky_cable",
+      "breakpoints": true
     }
   ]
 }
