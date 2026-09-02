@@ -5,6 +5,7 @@ import { createRedis, EventBus } from '@tip/events';
 import { HeliusRestClient, HeliusWebhookAdmin } from '@tip/ingestion';
 import { HeliusSubscriptionManager, Watchlist } from '@tip/watchlist';
 import { createApp, type ApiDeps } from './app.js';
+import { attachAgentRoom } from './agent-room.js';
 
 /** Boot the API: validate env, wire real connections, listen, wire shutdown. */
 async function main(): Promise<void> {
@@ -53,6 +54,11 @@ async function main(): Promise<void> {
 
   const server = createServer(app);
 
+  // §27 Agent Room — WS fan-out for the dashboard. Read-only; drops on client backpressure.
+  const agentRoom = attachAgentRoom({ server, redis });
+  // eslint-disable-next-line no-console
+  console.log('[api] agent-room WS mounted at /ws/agent-room');
+
   await new Promise<void>((resolve) => server.listen(config.API_PORT, resolve));
   // eslint-disable-next-line no-console
   console.log(`[api] listening on :${config.API_PORT}`);
@@ -60,6 +66,7 @@ async function main(): Promise<void> {
   const shutdown = async (signal: string): Promise<void> => {
     // eslint-disable-next-line no-console
     console.log(`[api] ${signal} — shutting down`);
+    await agentRoom.close();
     await new Promise<void>((resolve) => server.close(() => resolve()));
     await bus.close();
     await redis.quit();

@@ -1,6 +1,7 @@
 import { Card, CardBody, CardHeader } from '@/components/ui/Card';
 import { Skeleton } from '@/components/ui/Skeleton';
 import { useOverview } from '@/hooks/useOverview';
+import { AgentRoom } from '@/components/AgentRoom';
 
 function Kpi({ label, value }: { label: string; value: string | number }) {
   return (
@@ -32,6 +33,7 @@ export function Overview() {
           </>
         ) : null}
       </div>
+      <div className="mt-6"><AgentRoom limit={80} /></div>
       <p className="mt-8 text-sm text-neutral-500">
         The dashboard reads what M1–M7 built. Nothing here writes — every button that looks
         like an action is a filter, a link, or a copy for an operator command.

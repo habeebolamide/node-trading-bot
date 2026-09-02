@@ -21,11 +21,13 @@
     "ioredis": "^5.4.1",
     "@tip/brain": "*",
     "@tip/evaluation": "*",
-    "@tip/predictions": "*"
+    "@tip/predictions": "*",
+    "ws": "^8.18.0"
   },
   "devDependencies": {
     "@types/express": "^4.17.21",
     "@types/supertest": "^6.0.2",
-    "supertest": "^7.0.0"
+    "supertest": "^7.0.0",
+    "@types/ws": "^8.5.13"
   }
 }

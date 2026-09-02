@@ -12,6 +12,7 @@ export default defineConfig({
     port: 5173,
     proxy: {
       '/api': { target: process.env.DASHBOARD_API_URL ?? 'http://localhost:3000', changeOrigin: true },
+      '/ws': { target: (process.env.DASHBOARD_API_URL ?? 'http://localhost:3000').replace('http', 'ws'), ws: true, changeOrigin: true },
     },
   },
 });

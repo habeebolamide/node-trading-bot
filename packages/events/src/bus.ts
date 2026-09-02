@@ -71,6 +71,10 @@ export class EventBus {
       priority: opts.priority ?? PRIORITY.NORMAL,
       ...opts.jobOptions,
     });
+    // Best-effort lossy fan-out for dashboard/live-feed consumers (m8-agent-room-live).
+    // Errors are swallowed — dashboard subscribers are read-only and must never affect the
+    // primary BullMQ delivery.
+    void this.connection.publish('tip:events', JSON.stringify(full)).catch(() => undefined);
     return full;
   }
 
