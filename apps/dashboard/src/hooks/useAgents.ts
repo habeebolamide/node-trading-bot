@@ -12,8 +12,13 @@ export interface AgentRow {
   config: { agentWeights: Record<string, number>; [k: string]: unknown };
 }
 
+interface AgentListResp { tradingAgents: AgentRow[]; count: number }
+
 export function useAgents() {
-  return useQuery({ queryKey: ['agents'], queryFn: () => apiGet<AgentRow[]>('/../trading-agents') });
+  return useQuery({
+    queryKey: ['agents'],
+    queryFn: async () => (await apiGet<AgentListResp>('/../trading-agents')).tradingAgents,
+  });
 }
 
 export function useAgent(id: string | undefined) {
