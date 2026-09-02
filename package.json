@@ -2,7 +2,7 @@
   "name": "trading-intelligence",
   "version": "0.0.0",
   "private": true,
-  "description": "Trading Intelligence Platform — configurable, event-driven, paper-trading research system for memecoin (Solana) and perp (Bybit) intelligence. Modular monolith, npm workspaces.",
+  "description": "Trading Intelligence Platform \u2014 configurable, event-driven, paper-trading research system for memecoin (Solana) and perp (Bybit) intelligence. Modular monolith, npm workspaces.",
   "type": "module",
   "engines": {
     "node": ">=20"
@@ -24,7 +24,9 @@
     "dev:worker": "npm run dev --workspace apps/worker",
     "dev:dashboard": "npm run dev --workspace apps/dashboard",
     "db:generate": "drizzle-kit generate",
-    "db:migrate": "drizzle-kit migrate"
+    "db:migrate": "drizzle-kit migrate",
+    "dashboard:check": "cd apps/dashboard && tsc --noEmit",
+    "dashboard:build": "cd apps/dashboard && vite build"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
