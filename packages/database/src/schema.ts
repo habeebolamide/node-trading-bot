@@ -580,6 +580,11 @@ export const prediction = pgTable(
     isShadow: boolean('is_shadow').notNull().default(false),
     shadowOf: text('shadow_of'),            // FK-shaped to prediction(id); M7 populates
     createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+    /** m6-outcome-engine: at-most-once brain-write marker. Set inside the same txn as the Brain
+     *  write on the PLANNING horizon; a concurrent sweep sees it non-null and skips. Never used
+     *  for anything else — do not attribute meaning to it beyond "this row has already fed the
+     *  Brain." */
+    brainWrittenAt: timestamp('brain_written_at', { withTimezone: true, mode: 'date' }),
   },
   (t) => [
     uniqueIndex('prediction_signal_uq').on(t.signalId),
