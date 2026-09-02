@@ -1,6 +1,62 @@
 # Change: m6-paper-engine
 
-**Status:** PROPOSED (scoping)
+> **COMPLETED 2026-09-02** (with a scoped-out follow-up — see below). New
+> `packages/paper-engine` (`@tip/paper-engine`) + migration 0013.
+>
+> - `fills/perp.ts` — flat bps (default 5.5 per Task 7) + one tick; LONG pays up, SHORT pays down.
+> - `fills/memecoin.ts` — constant-product AMM against actual reserves. Return type
+>   `FillResult = FILL | NO_FILL` so a caller CANNOT ignore rule 25; a NO_FILL result has no
+>   `price` field at all, structurally. **Depth-aware pricing works when reserves are supplied.**
+> - `exit.ts` — 5-condition precedence per Part II §10 (`STOP_LOSS > WALLET_EXIT > LADDER >
+>   TAKE_PROFIT > HORIZON`), `crossedLadderRungs` for gap-up semantics (only rungs actually
+>   crossed, in order, at their crossing prices), `walletExitAccumulator` for cluster-weighted
+>   exit signal, `applyPostTakeAction` (breakeven / trail-up-only).
+> - `position.ts` — `openPosition` (`unique(prediction_id)` at DB level), `applyLadderRung`
+>   (partial close, ladder-state, stop adjust, PnL, portfolio cash), **`closeRemaining` — THE
+>   single full-close primitive** so "close 100% of what is CURRENTLY held" (Part II §10) is a
+>   structural property, not a discipline; `updateExcursion` for MFE/MAE; `openPositionCount`.
+> - `portfolio.ts` — cash, equity, peak equity, max drawdown (deepest fractional trough below
+>   peak; never resets), realized P&L.
+> - Migration 0013: `paper_portfolio`, `paper_position` (unique prediction_id, both clocks per
+>   §20), `paper_position_fill` (both clocks), `paper_position_originating_wallet`.
+>
+> **Verified:** typecheck green; **469/472 tests pass** (3 opt-in live) across 3 consecutive
+> full-suite runs, 32 new — pure fills (10, incl. rule-25 NO_FILL preserving no `price` field),
+> pure exit engine (13, incl. precedence + gap-up ladder + trail-up-only), live-DB position
+> integration (9, incl. concurrent double-open rejected by `unique(prediction_id)`, ladder-then-
+> close preserving no-negative-size, drawdown arithmetic, MFE/MAE, idempotent re-close).
+>
+> **TWO THINGS DEFERRED TO A FOLLOW-UP CHANGE (m6-tick-monitor):**
+>
+> 1. **The tick monitor itself** — the §10 lightweight consumer that never runs the full
+>    pipeline. This change ships the DETERMINISTIC `evalTick(...)` primitive it calls, fully
+>    unit-tested, so the follow-up is event plumbing (Bybit tick feed for perp; memecoin's
+>    "each observed swap on the mint IS the tick" binding) rather than logic. Splitting keeps
+>    this change's diff reviewable.
+> 2. **Detection-lag falling-market close test** — the two-clock recording is verified against a
+>    real DB row (both `openedAtEvent`/`openedAtProcessing` and every fill's clocks are
+>    persisted). The falling-market assertion needs the tick monitor to drive it; the engine
+>    change itself is complete.
+>
+> **RULE 25 AT THE PROVIDER BOUNDARY — task 2.0 finding.** §20 makes depth-aware memecoin fills
+> a HARD provider requirement and forbids last-price fallbacks. The current M1 Helius parser
+> (`packages/ingestion/src/helius/parse.ts`) projects only the wallet's `tokenTransfers`;
+> enhanced-tx returns richer data — `accountData[].tokenBalanceChanges`, which for an AMM swap
+> covers the pool's own token accounts — but we do not parse it yet. **Consequence stated
+> plainly:** until a follow-up change extends the Helius parser to derive reserves at detection
+> time, the memecoin paper engine will `NO_FILL` on every entry. That is rule 25 working
+> (§20's own answer when reserves are absent), not a bug — but it is a SCOPE QUESTION for the
+> operator, because the only alternative §20 explicitly forbids by name is the last-price
+> fallback. Recorded in-code alongside the fill module so the constraint is visible where it
+> matters.
+>
+> **Cross-portfolio risk gates** (`dailyLossLimit`, `maxCorrelatedExposure`) are the M7+
+> orchestrator's job — the position primitives cannot enforce cross-portfolio limits alone, and
+> pretending they can would create a false-safety guard. `maxConcurrentPositions` is checkable
+> by `openPositionCount`; the caller enforces it.
+
+**Status:** COMPLETED — archived (with tick monitor scoped to a follow-up)
+**Original status:** PROPOSED (scoping)
 **Milestone:** M6 (change 3 of 6) — **the largest change in the milestone**
 **Implements:** §20 Paper Engine (fill model, detection-lag pricing, TP/SL detection) ·
 §21 (holding period, both clocks) · Part II §10 memecoin exit precedence + profit ladder +

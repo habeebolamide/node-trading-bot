@@ -670,6 +670,104 @@ export const brainSetupMemory = pgTable('brain_setup_memory', {
   lastUpdatedAt: timestamp('last_updated_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
 });
 
+
+
+/**
+ * Paper Engine tables (m6-paper-engine, §13 / §20 / Part II §10). Virtual cash and positions —
+ * the answer to "what would have happened if we took it?" No real-money execution anywhere in
+ * this codebase (rule 20).
+ *
+ * `paper_position.opened_at_event` / `opened_at_processing` are §20's "record both clocks"
+ * mandate — reaction lag becomes a measured number, not a guess, and every fill row carries
+ * both too. Prevents the memecoin sell-side P&L from flattering itself in exactly the scenario
+ * that hurts most in real trading (§20).
+ */
+export const paperPortfolio = pgTable('paper_portfolio', {
+  id: text('id').primaryKey(),
+  tradingAgentId: text('trading_agent_id').notNull(),
+  startingCash: numeric('starting_cash').notNull(),
+  cash: numeric('cash').notNull(),
+  equity: numeric('equity').notNull(),
+  peakEquity: numeric('peak_equity').notNull(),
+  maxDrawdown: numeric('max_drawdown').notNull().default('0'),
+  realizedPnl: numeric('realized_pnl').notNull().default('0'),
+  createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+});
+
+export const paperPosition = pgTable(
+  'paper_position',
+  {
+    id: text('id').primaryKey(),
+    portfolioId: text('portfolio_id').notNull(),
+    predictionId: text('prediction_id').notNull(),
+    symbol: text('symbol').notNull(),
+    domain: text('domain').notNull(),
+    direction: text('direction').notNull(), // LONG | SHORT
+    state: text('state').notNull().default('OPEN'), // OPEN | CLOSED
+    entryPrice: numeric('entry_price').notNull(),
+    size: numeric('size').notNull(),
+    remainingSize: numeric('remaining_size').notNull(),
+    currentStop: numeric('current_stop').notNull(),
+    takeProfit: numeric('take_profit'),
+    /** Ladder state (Part II §10): { firedRungs: number[], trailStopPct?: number }. */
+    ladderState: jsonb('ladder_state'),
+    /** Both clocks at open (§20). */
+    openedAtEvent: timestamp('opened_at_event', { withTimezone: true, mode: 'date' }).notNull(),
+    openedAtProcessing: timestamp('opened_at_processing', { withTimezone: true, mode: 'date' }).notNull(),
+    closedAt: timestamp('closed_at', { withTimezone: true, mode: 'date' }),
+    closeReason: text('close_reason'),
+    realizedPnl: numeric('realized_pnl').notNull().default('0'),
+    mfe: numeric('mfe').notNull().default('0'),
+    mae: numeric('mae').notNull().default('0'),
+  },
+  (t) => [
+    uniqueIndex('paper_position_prediction_uq').on(t.predictionId),
+    index('paper_position_portfolio_state_idx').on(t.portfolioId, t.state),
+  ],
+);
+
+export const paperPositionFill = pgTable(
+  'paper_position_fill',
+  {
+    id: text('id').primaryKey(),
+    positionId: text('position_id').notNull(),
+    /** Both clocks per §20 — reaction lag is a measured number, not a guess. */
+    fillAtEvent: timestamp('fill_at_event', { withTimezone: true, mode: 'date' }).notNull(),
+    fillAtProcessing: timestamp('fill_at_processing', { withTimezone: true, mode: 'date' }).notNull(),
+    /** Fraction of the ORIGINAL entry notional filled by this row (Part II §10). */
+    sizeFraction: numeric('size_fraction').notNull(),
+    price: numeric('price').notNull(),
+    /** ENTRY | LADDER_RUNG_N | STOP_LOSS | WALLET_EXIT | TAKE_PROFIT | HORIZON */
+    reason: text('reason').notNull(),
+    isFinal: boolean('is_final').notNull().default(false),
+  },
+  (t) => [index('paper_position_fill_position_idx').on(t.positionId)],
+);
+
+/**
+ * Originating-wallet join (Part II §10). One row per wallet that contributed to a memecoin
+ * entry signal. `entry_score` is the point-in-time wallet score (rule 21) — read via
+ * `walletScoreAsOf`, never live. `current_held_fraction` decrements as the wallet sells; the
+ * `walletExitThreshold` accumulator sums `(1 − current_held_fraction) × entry_weight` across
+ * rows. Retained after position close for autopsy and attribution.
+ */
+export const paperPositionOriginatingWallet = pgTable(
+  'paper_position_originating_wallet',
+  {
+    positionId: text('position_id').notNull(),
+    walletId: text('wallet_id').notNull(),
+    clusterId: text('cluster_id'),
+    entryUsd: numeric('entry_usd').notNull().default('0'),
+    /** Contribution weight into the exit accumulator (cluster-weighted, §5 funder dedup). */
+    entryWeight: numeric('entry_weight').notNull(),
+    /** Point-in-time wallet score at entry — rule 21. */
+    entryScore: numeric('entry_score'),
+    currentHeldFraction: numeric('current_held_fraction').notNull().default('1'),
+  },
+  (t) => [primaryKey({ columns: [t.positionId, t.walletId] })],
+);
+
 export const schema = {
   domainEvent,
   processedEvent,
@@ -702,4 +800,8 @@ export const schema = {
   signalNoTrade,
   prediction,
   predictionOutcome,
+  paperPortfolio,
+  paperPosition,
+  paperPositionFill,
+  paperPositionOriginatingWallet,
 };

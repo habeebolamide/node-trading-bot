@@ -21,6 +21,7 @@ export default defineConfig({
       '@tip/brain': pkg('./packages/brain/src/index.ts'),
       '@tip/planner': pkg('./packages/planner/src/index.ts'),
       '@tip/predictions': pkg('./packages/predictions/src/index.ts'),
+      '@tip/paper-engine': pkg('./packages/paper-engine/src/index.ts'),
     },
   },
   test: {
