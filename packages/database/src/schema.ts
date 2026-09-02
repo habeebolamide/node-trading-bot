@@ -367,6 +367,18 @@ export const scoringConfig = pgTable(
  * per-Agent track record keyed by (agent_key, agent_version). Empty at M4 — the framework
  * writes the initial row-shapes for M6 to update.
  */
+/**
+ * AgentPerformance (m4-tradingagent, §13). PER-TRADINGAGENT win/loss counters for an Analysis
+ * Agent, keyed `(tradingAgentId, agentKey, agentVersion)`.
+ *
+ * NOT the same thing as `brain_agent_memory` below — §16 warns that "how useful has this agent
+ * been" collapses into Attribution and hypothesis promotion unless the mechanism is pinned down.
+ * The split:
+ *   agent_performance   → "inside THIS TradingAgent's composite, how did this agent fare?"
+ *   brain_agent_memory  → "DOMAIN-WIDE, if a hypothetical agent had followed ONLY this agent's
+ *                          lean and ignored every other, what would its win rate have been?"
+ * Different key, different question. Never blend them.
+ */
 export const agentPerformance = pgTable(
   'agent_performance',
   {
@@ -382,8 +394,24 @@ export const agentPerformance = pgTable(
 );
 
 /**
- * BrainAgentMemory skeleton (§16 — standalone counterfactual accuracy per Agent, DOMAIN-wide).
- * Populated in M5; empty at M4.
+ * BrainAgentMemory (m5-agent-memory, §16). DOMAIN-WIDE standalone counterfactual accuracy:
+ * "if a hypothetical TradingAgent had followed ONLY this one agent's lean, direction-for-
+ * direction, ignoring every other agent, what would its win rate have been?"
+ *
+ * §16 is emphatic that this is DESCRIPTIVE, NOT PRESCRIPTIVE — it changes no weight by itself.
+ * It is the diagnostic that would motivate someone to PROPOSE a hypothesis (§24), and the number
+ * that would justify deprecating an agent whose standalone accuracy sat at chance for long
+ * enough. There is deliberately no code path from this table to a ScoringConfig write.
+ *
+ * Keyed `(domain, agentKey, agentVersion)` — versions NEVER blend (CLAUDE.md "do not blend
+ * versions"). A v1→v2 bump starts a fresh track record; there is no roll-up-across-versions
+ * accessor, because that convenience is exactly how a regression hides behind an old version's
+ * good numbers.
+ *
+ * The `vetoed*` columns are the Risk Agent's separate veto-accuracy metric ("when we invalidated
+ * a signal, would it actually have lost?"). Answerable only against M7 shadow predictions, so
+ * the shape is recorded here and stays null until then — that keeps M4's `signal_risk` rows from
+ * being write-only.
  */
 export const brainAgentMemory = pgTable(
   'brain_agent_memory',
@@ -393,9 +421,47 @@ export const brainAgentMemory = pgTable(
     agentKey: text('agent_key').notNull(),
     agentVersion: integer('agent_version').notNull(),
     standaloneAccuracy: numeric('standalone_accuracy'),
+    effectiveN: numeric('effective_n').notNull().default('0'),
+    effectiveWins: numeric('effective_wins').notNull().default('0'),
+    wilsonLower: numeric('wilson_lower'),
+    wilsonUpper: numeric('wilson_upper'),
+    evidence: text('evidence').notNull().default('INSUFFICIENT'),
+    occurrenceCount: integer('occurrence_count').notNull().default(0),
+    sampleSince: timestamp('sample_since', { withTimezone: true, mode: 'date' }),
+    // Risk Agent veto accuracy — populated at M7 against shadow predictions.
+    vetoedCount: integer('vetoed_count'),
+    vetoedWouldHaveLost: integer('vetoed_would_have_lost'),
     updatedAt: timestamp('updated_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
   },
   (t) => [uniqueIndex('brain_agent_memory_key_uq').on(t.domain, t.agentKey, t.agentVersion)],
+);
+
+/**
+ * BrainAgentOccurrence (m5-agent-memory). Append-only counterfactual log — one row per
+ * (resolved prediction × contributing agent). Same shape and rationale as
+ * `brain_setup_occurrence`: rule 8 makes these immutable outcome facts, and
+ * `unique(prediction_id, agent_key, agent_version)` is the rule-12 idempotency guard so a
+ * redelivered outcome event cannot double-count.
+ *
+ * `lean` is the agent's OWN signed direction (+1 / −1), not the composite's — the whole point of
+ * §16's mechanism is that an agent which dissented from a losing composite gets credited.
+ */
+export const brainAgentOccurrence = pgTable(
+  'brain_agent_occurrence',
+  {
+    id: text('id').primaryKey(),
+    domain: text('domain').notNull(),
+    agentKey: text('agent_key').notNull(),
+    agentVersion: integer('agent_version').notNull(),
+    predictionId: text('prediction_id').notNull(),
+    closedAt: timestamp('closed_at', { withTimezone: true, mode: 'date' }).notNull(),
+    lean: integer('lean').notNull(), // +1 | -1 (0-lean agents are not recorded at all)
+    won: boolean('won').notNull(),
+  },
+  (t) => [
+    uniqueIndex('brain_agent_occurrence_pred_agent_uq').on(t.predictionId, t.agentKey, t.agentVersion),
+    index('brain_agent_occurrence_agent_idx').on(t.domain, t.agentKey, t.agentVersion),
+  ],
 );
 
 /**
@@ -541,4 +607,5 @@ export const schema = {
   brainSetupOccurrence,
   brainSetupMemory,
   brainTokenMemory,
+  brainAgentOccurrence,
 };

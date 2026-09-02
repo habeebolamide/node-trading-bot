@@ -16,6 +16,7 @@
  */
 import type { Db } from '@tip/database';
 import { ValidationError } from '@tip/domain';
+import { agentMemoryAsOf, type AgentMemory } from './agent-memory.js';
 import type { Domain, FeatureTuple } from './fingerprint.js';
 import { historicalEdge, type HistoricalEdge } from './historical-edge.js';
 import { marketMemory, type MarketMemory } from './market-memory.js';
@@ -30,6 +31,15 @@ export interface Brain {
   token(mint: string, asOf: Date): Promise<TokenMemory | null>;
   setup(features: FeatureTuple, asOf: Date): Promise<HistoricalEdge>;
   market(asOf: Date): Promise<MarketMemory>;
+  /**
+   * §16 standalone counterfactual accuracy. Null when the agent has no occurrences at all —
+   * distinct from an INSUFFICIENT verdict, which means "some data, not enough."
+   *
+   * There is deliberately NO roll-up-across-versions accessor: CLAUDE.md forbids blending
+   * track records across `agentVersion`, and offering the convenience is how a regression ends
+   * up hidden behind an old version's good numbers.
+   */
+  agent(agentKey: string, agentVersion: number, asOf: Date): Promise<AgentMemory | null>;
 }
 
 export function createBrain(db: Db, domain: Domain): Brain {
@@ -62,6 +72,9 @@ export function createBrain(db: Db, domain: Domain): Brain {
     async market(asOf) {
       return marketMemory(db, domain, asOf);
     },
+    async agent(agentKey, agentVersion, asOf) {
+      return agentMemoryAsOf(db, domain, agentKey, agentVersion, asOf);
+    },
   };
 }
 
@@ -85,10 +98,11 @@ interface AsOfGuard {
   token: EndsWithRequiredDate<Brain['token']>;
   setup: EndsWithRequiredDate<Brain['setup']>;
   market: EndsWithRequiredDate<Brain['market']>;
+  agent: EndsWithRequiredDate<Brain['agent']>;
 }
 
-const ASOF_GUARD: AsOfGuard = { wallet: true, token: true, setup: true, market: true };
+const ASOF_GUARD: AsOfGuard = { wallet: true, token: true, setup: true, market: true, agent: true };
 
 /** Always true — reading it is what keeps the guard above from being tree-shaken as unused. */
 export const BRAIN_ASOF_ENFORCED =
-  ASOF_GUARD.wallet && ASOF_GUARD.token && ASOF_GUARD.setup && ASOF_GUARD.market;
+  ASOF_GUARD.wallet && ASOF_GUARD.token && ASOF_GUARD.setup && ASOF_GUARD.market && ASOF_GUARD.agent;

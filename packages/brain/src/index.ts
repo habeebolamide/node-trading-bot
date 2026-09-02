@@ -15,4 +15,5 @@ export * from './historical-edge.js';
 export * from './wallet-memory.js';
 export * from './token-memory.js';
 export * from './market-memory.js';
+export * from './agent-memory.js';
 export * from './brain.js';

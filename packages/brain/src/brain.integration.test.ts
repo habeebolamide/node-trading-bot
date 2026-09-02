@@ -11,6 +11,7 @@ import { upsertTokenMemory, tokenOutcomes } from './token-memory.js';
 
 const DATABASE_URL = process.env.DATABASE_URL;
 const T = new Date('2026-07-01T00:00:00Z');
+const DAY_MS = 24 * 60 * 60 * 1000;
 
 describe.skipIf(!DATABASE_URL)('Brain facade (integration, Postgres)', () => {
   let db: Db;
@@ -127,19 +128,21 @@ describe.skipIf(!DATABASE_URL)('Brain facade (integration, Postgres)', () => {
     expect(high.wilsonLower!).toBeLessThan(high.winRate!);
   });
 
-  it('market() is point-in-time — an earlier asOf can never see more than a later one', async () => {
+  it('market() is point-in-time — an earlier asOf cannot see occurrences that close later', async () => {
     const brain = createBrain(db, 'memecoin');
-    const before = await brain.market(new Date(T.getTime() - 1000));
+    // A ONE-DAY gap, not one second. Two effects fight each other across two asOf values:
+    // the later read GAINS occurrences that closed in between, and it LOSES a little weight on
+    // everything older (one more day of decay). With a one-second gap the decay drift on a large
+    // pre-existing bucket (~1e-5) can exceed the gain and invert the comparison; with a day, this
+    // file's own 12 fixtures dominate by six orders of magnitude.
+    const before = await brain.market(new Date(T.getTime() - DAY_MS));
     const at = await brain.market(T);
-    for (const regime of ['LOW', 'MED', 'HIGH'] as const) {
-      const b = before.byRegime.find((r) => r.regime === regime)!;
-      const a = at.byRegime.find((r) => r.regime === regime)!;
-      expect(b.effectiveN).toBeLessThanOrEqual(a.effectiveN + 1e-9);
-    }
-    // This file's own fixtures all close exactly AT T, so none are visible a second earlier.
+    // This file's 12 bullish fixtures close exactly AT T, so they are invisible a day earlier.
+    // Asserted as a lower bound: vitest runs files in parallel against one database, so another
+    // file may add to this global bucket between the two reads — that can only increase the gain.
     const highBefore = before.byRegime.find((r) => r.regime === 'HIGH')!;
     const highAt = at.byRegime.find((r) => r.regime === 'HIGH')!;
-    expect(highAt.effectiveN - highBefore.effectiveN).toBeGreaterThanOrEqual(12 - 1e-6);
+    expect(highAt.effectiveN - highBefore.effectiveN).toBeGreaterThan(11.9);
   });
 
   it('the asOf compile-time guard is present (rule 21 enforced structurally, not by convention)', () => {

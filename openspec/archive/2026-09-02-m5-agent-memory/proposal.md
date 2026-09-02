@@ -1,6 +1,49 @@
 # Change: m5-agent-memory
 
-**Status:** PROPOSED (scoping)
+> **COMPLETED 2026-09-02 — M5 (all 4 changes) is done.**
+> - `agent-memory.ts` — `agentLean` (signed lean; null for no-opinion; Token Risk and the Risk
+>   Agent excluded outright; long-only memecoin agents at 0 read as silence, not a SHORT lean;
+>   Market Regime scored on its bias per §7), `recordAgentOutcome` (one occurrence per
+>   contributing agent, idempotent), `agentMemoryAsOf` / `persistAgentMemory`.
+> - Facade gained `brain.agent(agentKey, agentVersion, asOf)`; the compile-time `asOf` guard now
+>   covers all five reads.
+>
+> Migration 0011: `brain_agent_memory` populated shape (+ Risk-Agent veto columns, null until
+> M7 supplies shadow predictions) and append-only `brain_agent_occurrence` with
+> `unique(prediction_id, agent_key, agent_version)`.
+>
+> **Verified:** typecheck green; **395/398 tests pass** (3 opt-in live) across **6 consecutive
+> full-suite runs**, 18 new — `agentLean` (6) and live-DB integration (12), including the core
+> mechanism (a dissenter is credited when the composite loses and the dissent was right; an
+> agreeing agent on a loser is debited), version isolation (v2 reads INSUFFICIENT while v1 has 30
+> wins), idempotent replay, exact equality with the shared Wilson helper, and a structural test
+> that the module has no path to `ScoringConfig`.
+>
+> **A flaky test was fixed at its cause, not papered over.** `market()` compared two `asOf` values
+> one second apart. Two effects fight across such a comparison: the later read gains occurrences
+> that closed in between, and it loses a little weight on everything older (one more second of
+> decay). On a large pre-existing bucket the drift (~1e-5) can exceed the gain and invert the
+> comparison — which is why the run failed roughly one time in four. The gap is now one day, so
+> the fixtures dominate by six orders of magnitude, and the delta is a lower bound because vitest
+> runs files in parallel against one database.
+>
+> **M5 wrap-up — what M6 must call, and from where.** Both write paths are built, tested, and
+> unwired by design (§30 build order); their call site is the outcome-resolution event handler in
+> the paper engine (§41):
+> - `recordSetupOutcome(db, { predictionId, domain, features, closedAt, won, returnPct })` —
+>   ladder-aware, writes every backoff rung.
+> - `recordAgentOutcome(db, prediction, contributions)` — contributions come straight off the
+>   `signal_feature` rows M4 already persists, so nothing new needs capturing.
+>
+> **Stubs that died in M5:** `perp/features/historical-edge-stub.ts` (deleted) and
+> `confidence.ts`'s hardcoded `historicalEvidence = 0.5`. Both now read the Brain.
+>
+> **Still deferred, deliberately:** the Risk Agent's veto accuracy needs M7 shadow predictions;
+> `categoryOf(mint)` in the wallet profile returns the mint until token classification exists, so
+> "specialization" is per-token rather than per-category (the field shape is final).
+
+**Status:** COMPLETED — archived
+**Original status:** PROPOSED (scoping)
 **Milestone:** M5 — Brain (change 4 of 4) — completes M5
 **Implements:** §16 Agent Memory (concrete mechanism, resolved) · §22 Attribution boundary ·
 §24 hypothesis-pipeline boundary · Task 6 (§34) recency decay · §33 rules 8, 23, and the
