@@ -9,6 +9,7 @@ import type { AsOfMarketData } from '@tip/evaluation';
 import type { Domain, ScoringConfig, TradingStyle } from '@tip/trading-agents';
 import { planMemecoin } from './memecoin.js';
 import { planPerp } from './perp.js';
+import type { HeldPosition } from './correlation.js';
 import { tradeDirection, type PlanResult, type SignalDirection } from './types.js';
 
 export interface SignalInput {
@@ -27,6 +28,8 @@ export interface PlanContext {
   plannedAt?: Date;           // memecoin only; perp uses view.asOf
   maintenanceMarginRate?: number;
   exchangeMaxLeverage?: number;
+  /** §37 maxCorrelatedExposure gate (audit #14) — the caller's current holdings. */
+  heldPositions?: readonly HeldPosition[];
 }
 
 export async function planTrade(signal: SignalInput, ctx: PlanContext): Promise<PlanResult> {
@@ -40,6 +43,7 @@ export async function planTrade(signal: SignalInput, ctx: PlanContext): Promise<
       configVersion: ctx.configVersion, balance: ctx.balance, view: ctx.view,
       ...(ctx.maintenanceMarginRate !== undefined ? { maintenanceMarginRate: ctx.maintenanceMarginRate } : {}),
       ...(ctx.exchangeMaxLeverage !== undefined ? { exchangeMaxLeverage: ctx.exchangeMaxLeverage } : {}),
+      ...(ctx.heldPositions !== undefined ? { heldPositions: ctx.heldPositions } : {}),
     });
   }
 

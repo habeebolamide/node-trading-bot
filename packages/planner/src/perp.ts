@@ -12,6 +12,7 @@ import { ValidationError } from '@tip/domain';
 import type { AsOfMarketData } from '@tip/evaluation';
 import type { ScoringConfig, TradingStyle } from '@tip/trading-agents';
 import { atr } from './atr.js';
+import { evaluateCorrelatedExposure, type HeldPosition } from './correlation.js';
 import { positionSize, deriveLeverage } from './sizing.js';
 import { collapsePivots, nearestLevels, swingPivots, type StructureBar } from './structure.js';
 import { HORIZON_MS, planningHorizon } from './horizons.js';
@@ -35,6 +36,12 @@ export interface PerpPlanInputs {
   maintenanceMarginRate?: number;
   exchangeMaxLeverage?: number;
   view: AsOfMarketData;
+  /**
+   * Currently-held (OPEN + PENDING_ENTRY, non-shadow) positions for the §37
+   * maxCorrelatedExposure gate (audit #14). Optional: absent/empty ⇒ the gate passes trivially,
+   * which is exact under one-symbol-per-agent + maxConcurrentPositions=1.
+   */
+  heldPositions?: readonly HeldPosition[];
 }
 
 export async function planPerp(i: PerpPlanInputs): Promise<PlanResult> {
@@ -109,6 +116,25 @@ export async function planPerp(i: PerpPlanInputs): Promise<PlanResult> {
   if (leverage.requiredMargin > i.balance) {
     return { kind: 'NO_TRADE', reason: 'CANNOT_SIZE_SAFELY',
       detail: `margin ${leverage.requiredMargin.toFixed(2)} > balance ${i.balance}; leverage not raised to fit` };
+  }
+
+  // §37 maxCorrelatedExposure (audit #14) — same enforcement point as the leverage and min-R:R
+  // checks per §2114. Only evaluated when there are actual holdings to correlate against.
+  if (i.heldPositions && i.heldPositions.length > 0) {
+    const capMultiple = i.config.maxCorrelatedExposure ?? 1;
+    const corr = await evaluateCorrelatedExposure({
+      candidateSymbol: i.symbol,
+      candidateNotional: sizing.notional,
+      heldPositions: i.heldPositions,
+      maxCorrelatedExposure: capMultiple,
+      closesAsOf: async (sym, timeframe, limit) =>
+        (await i.view.candlesAsOf(sym, timeframe, limit)).map((r) => Number(r.close)),
+      timeframe: tf,
+    });
+    if (!corr.ok) {
+      return { kind: 'NO_TRADE', reason: 'CORRELATED_EXPOSURE_CAP',
+        detail: `correlated bucket ${corr.bucketNotional.toFixed(2)} > cap ${corr.cap.toFixed(2)} (${corr.correlated.map((c) => `${c.symbol}:${c.correlation === null ? 'no-data' : c.correlation.toFixed(2)}`).join(', ')})` };
+    }
   }
 
   const horizon = planningHorizon(i.style, 'perp');

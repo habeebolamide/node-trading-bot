@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import { Card, CardBody, CardHeader } from '@/components/ui/Card';
 import { Badge } from '@/components/ui/Badge';
 import { Skeleton } from '@/components/ui/Skeleton';
@@ -8,6 +9,7 @@ import { useAgents } from '@/hooks/useAgents';
 import { useAutopsies } from '@/hooks/useAutopsies';
 import { useHypotheses } from '@/hooks/useHypotheses';
 import { useShadowVsBaseline, useShadowVsReal, type ShadowGroupStats } from '@/hooks/useShadow';
+import { apiGet } from '@/lib/api';
 
 /** M7 payoff pages. Read-only — every row is what an operator would use to DECIDE to promote
  *  or tighten a gate; the decision itself stays a CLI action (rule 16 + rule 20). */
@@ -20,6 +22,7 @@ export function LlmReview() {
           { key: 'autopsies',  label: 'Autopsies',         content: <Autopsies /> },
           { key: 'hypotheses', label: 'Hypotheses',        content: <Hypotheses /> },
           { key: 'shadow',     label: 'Shadow Evaluation', content: <ShadowPanel /> },
+          { key: 'costs',      label: 'Costs',             content: <CostsPanel /> },
         ]}
       />
     </div>
@@ -195,6 +198,81 @@ function StandAsidePanel({ domain, configVersion, horizon }: { domain: string; c
       <div className="text-xs font-medium uppercase tracking-wider text-neutral-400">STAND_ASIDE — shadow (deterministic dir) vs baseline (AGREE/DEFER)</div>
       <GroupCard title="Shadow (what the trade would have been)" s={q.data.standAsideShadowGroup} />
       <GroupCard title="Baseline (agree/defer real predictions)" s={q.data.baseline} />
+    </div>
+  );
+}
+
+// ── Costs (§23 — audit #17): "is the LLM worth it" needs the llm_call_log ledger visible ──
+interface LlmCosts {
+  days: number;
+  totals: { calls: number; cost: string };
+  byAgent: { agent: string; calls: number; cost: string; promptTokens: string; completionTokens: string; failures: string; avgLatencyMs: string }[];
+  byDay: { day: string; calls: number; cost: string }[];
+}
+
+function CostsPanel() {
+  const [days, setDays] = useState(30);
+  const q = useQuery({
+    queryKey: ['llm.costs', days],
+    queryFn: () => apiGet<LlmCosts>(`/llm/costs?days=${days}`),
+  });
+  if (q.isLoading) return <Skeleton className="h-48" />;
+  const d = q.data;
+  if (!d) return null;
+  const usd = (v: string | number) => `$${Number(v).toFixed(4)}`;
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center gap-3">
+        <select value={days} onChange={(e) => setDays(Number(e.target.value))}
+          className="rounded-md border border-neutral-800 bg-neutral-950 px-3 py-2 text-sm">
+          <option value={7}>last 7 days</option>
+          <option value={30}>last 30 days</option>
+          <option value={90}>last 90 days</option>
+        </select>
+        <span className="text-sm text-neutral-300">
+          {d.totals.calls} calls · <span className="font-semibold text-neutral-100">{usd(d.totals.cost)}</span> total
+        </span>
+      </div>
+      <Card>
+        <CardHeader>By caller</CardHeader>
+        {d.byAgent.length === 0 ? (
+          <CardBody className="text-sm text-neutral-500">No LLM calls in this window — the ledger fills once the Judge tier runs with a DeepSeek key.</CardBody>
+        ) : (
+          <Table>
+            <Thead><Tr><Th>Caller</Th><Th>Calls</Th><Th>Cost</Th><Th>Prompt tok</Th><Th>Completion tok</Th><Th>Failures</Th><Th>Avg latency</Th></Tr></Thead>
+            <Tbody>
+              {d.byAgent.map((a) => (
+                <Tr key={a.agent}>
+                  <Td className="font-mono text-xs">{a.agent}</Td>
+                  <Td className="tabular-nums">{a.calls}</Td>
+                  <Td className="tabular-nums">{usd(a.cost)}</Td>
+                  <Td className="tabular-nums">{Number(a.promptTokens).toLocaleString()}</Td>
+                  <Td className="tabular-nums">{Number(a.completionTokens).toLocaleString()}</Td>
+                  <Td className="tabular-nums">{a.failures}</Td>
+                  <Td className="tabular-nums">{Number(a.avgLatencyMs).toFixed(0)}ms</Td>
+                </Tr>
+              ))}
+            </Tbody>
+          </Table>
+        )}
+      </Card>
+      <Card>
+        <CardHeader>By day</CardHeader>
+        {d.byDay.length === 0 ? <CardBody className="text-sm text-neutral-500">—</CardBody> : (
+          <Table>
+            <Thead><Tr><Th>Day</Th><Th>Calls</Th><Th>Cost</Th></Tr></Thead>
+            <Tbody>
+              {d.byDay.map((r) => (
+                <Tr key={r.day}>
+                  <Td className="text-xs">{new Date(r.day).toISOString().slice(0, 10)}</Td>
+                  <Td className="tabular-nums">{r.calls}</Td>
+                  <Td className="tabular-nums">{usd(r.cost)}</Td>
+                </Tr>
+              ))}
+            </Tbody>
+          </Table>
+        )}
+      </Card>
     </div>
   );
 }

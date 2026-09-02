@@ -149,4 +149,46 @@ describe.skipIf(!DATABASE_URL)('dashboard routes (integration)', () => {
     expect(r.body.flipRealGroup).toBeDefined();
     expect(r.body.flipShadowGroup).toBeDefined();
   });
+
+  // ── audit #15–#20 additions ──────────────────────────────────────────
+
+  it('GET /api/backtest/walk-forward returns folds with test-window metrics (perp)', async () => {
+    const r = await request(app).get('/api/backtest/walk-forward')
+      .query({ configVersion: 1, horizon: '4h', from: new Date(Date.now() - 200 * 864e5).toISOString() });
+    expect(r.status).toBe(200);
+    expect(Array.isArray(r.body.folds)).toBe(true);
+    if (r.body.folds.length > 0) {
+      const f = r.body.folds[0];
+      expect(new Date(f.fold.trainEnd).getTime()).toBeLessThanOrEqual(new Date(f.fold.testStart).getTime());
+    }
+  });
+
+  it('GET /api/llm/costs aggregates the llm_call_log ledger', async () => {
+    const r = await request(app).get('/api/llm/costs').query({ days: 30 });
+    expect(r.status).toBe(200);
+    expect(typeof Number(r.body.totals.cost)).toBe('number');
+    expect(Array.isArray(r.body.byAgent)).toBe(true);
+    expect(Array.isArray(r.body.byDay)).toBe(true);
+  });
+
+  it('GET /api/smart-money returns wallets/clusters/recent activity', async () => {
+    const r = await request(app).get('/api/smart-money');
+    expect(r.status).toBe(200);
+    expect(Array.isArray(r.body.wallets)).toBe(true);
+    expect(Array.isArray(r.body.clusters)).toBe(true);
+    expect(Array.isArray(r.body.recentBuys)).toBe(true);
+    expect(Array.isArray(r.body.recentConvergences)).toBe(true);
+  });
+
+  it('GET /api/tokens/top lists BrainTokenMemory rows (may be empty)', async () => {
+    const r = await request(app).get('/api/tokens/top');
+    expect(r.status).toBe(200);
+    expect(Array.isArray(r.body.tokens)).toBe(true);
+  });
+
+  it('GET /api/brain/token/:mint returns null for an unknown mint (not the wallet route)', async () => {
+    const r = await request(app).get(`/api/brain/token/UnknownMint${randomUUID().slice(0, 6)}`);
+    expect(r.status).toBe(200);
+    expect(r.body).toBeNull();
+  });
 });

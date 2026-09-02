@@ -119,8 +119,13 @@ export async function processTick(deps: TickMonitorDeps, input: {
   }
 }
 
-/** Register the tick monitor on the market-ingestion queue — each perp kline close is a tick. */
-export function registerTickMonitor(deps: TickMonitorDeps): void {
+/**
+ * Build the tick-monitor's event handler WITHOUT registering a queue worker. Two BullMQ workers
+ * on the same queue COMPETE for jobs (each job is delivered to exactly one), so every consumer
+ * of the market queue must share ONE worker — main.ts owns that dispatcher and calls this
+ * handler alongside the analysis tier's (audit #11 dispatcher fix).
+ */
+export function createTickHandler(deps: TickMonitorDeps): (event: DomainEvent<KlinePayload>) => Promise<void> {
   const styleCache = new Map<string, TradingStyle>();
   const styleFor = async (agentId: string): Promise<TradingStyle> => {
     const cached = styleCache.get(agentId);
@@ -130,7 +135,7 @@ export function registerTickMonitor(deps: TickMonitorDeps): void {
     styleCache.set(agentId, style);
     return style;
   };
-  deps.bus.createWorker<KlinePayload>(QUEUE_NAMES.MARKET_INGESTION, async (event: DomainEvent<KlinePayload>) => {
+  return async (event: DomainEvent<KlinePayload>): Promise<void> => {
     if (event.type !== EVENT_NAMES.PERP_KLINE_CLOSED) return;
     const p = event.payload;
     if (!p?.symbol) return;
@@ -138,5 +143,14 @@ export function registerTickMonitor(deps: TickMonitorDeps): void {
       symbol: p.symbol, high: Number(p.high), low: Number(p.low), close: Number(p.close),
       now: new Date(p.closeTime), style: styleFor,
     });
-  });
+  };
+}
+
+/**
+ * Register the tick monitor with its OWN queue worker. Only for processes where nothing else
+ * consumes the market queue (tests) — in the main worker use `createTickHandler` through the
+ * shared dispatcher instead, or klines get split between competing workers.
+ */
+export function registerTickMonitor(deps: TickMonitorDeps): void {
+  deps.bus.createWorker<KlinePayload>(QUEUE_NAMES.MARKET_INGESTION, createTickHandler(deps));
 }

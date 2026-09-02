@@ -10,6 +10,8 @@ const NAV = [
   { to: '/portfolios', label: 'Portfolios' },
   { to: '/brain', label: 'Brain' },
   { to: '/performance', label: 'Performance' },
+  { to: '/backtests', label: 'Backtests' },
+  { to: '/attribution', label: 'Attribution' },
   { to: '/llm-review', label: 'LLM Review' },
   { to: '/tokens', label: 'Tokens' },
   { to: '/smart-money', label: 'Smart Money' },

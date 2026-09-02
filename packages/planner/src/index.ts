@@ -13,3 +13,4 @@ export * from './plan.js';
 export * from './sizing.js';
 export * from './structure.js';
 export * from './types.js';
+export * from './correlation.js';

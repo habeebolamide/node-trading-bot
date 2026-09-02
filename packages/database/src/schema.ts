@@ -544,7 +544,7 @@ export const signalRisk = pgTable('signal_risk', {
  */
 export const signalNoTrade = pgTable('signal_no_trade', {
   signalId: text('signal_id').primaryKey(),
-  reason: text('reason').notNull(), // INSUFFICIENT_RR | CANNOT_SIZE_SAFELY | NO_STOP_DERIVABLE | STALE_OR_MISSING_DATA
+  reason: text('reason').notNull(), // INSUFFICIENT_RR | CANNOT_SIZE_SAFELY | NO_STOP_DERIVABLE | STALE_OR_MISSING_DATA | CORRELATED_EXPOSURE_CAP
   detail: text('detail'),
   vetoedAt: timestamp('vetoed_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
 });
@@ -783,8 +783,52 @@ export const paperPositionOriginatingWallet = pgTable(
     /** Point-in-time wallet score at entry — rule 21. */
     entryScore: numeric('entry_score'),
     currentHeldFraction: numeric('current_held_fraction').notNull().default('1'),
+    /**
+     * The wallet's entry quantity in TOKEN units (audit #11, Part II §10 "per-wallet in-trade
+     * position tracking"): each subsequent sell is compared against this to turn "a wallet sold
+     * (boolean)" into "a wallet sold 40%". The buy webhook carries `tokenAmount`, so the value
+     * is known at open. Nullable for rows written before this column existed — the fallback is
+     * `entryUsd / position.entryPrice`, and when neither is usable the sell is treated as the
+     * wallet's FULL remaining exit (pessimistic, rule 25's spirit: when in doubt, exit earlier).
+     */
+    entryTokenAmount: numeric('entry_token_amount'),
   },
   (t) => [primaryKey({ columns: [t.positionId, t.walletId] })],
+);
+
+/**
+ * Wallet partial-sell observation log (Part II §10, audit #11). One row per originating-wallet
+ * sell seen while a position is open — including the one that crosses `walletExitThreshold`.
+ * Partials that do NOT cross are "recorded as observations on the trade — they are not exits,
+ * but logging every one gives the learning loop the raw material to answer 'does a partial
+ * cluster-sell precede a full dump or is it a false alarm?'" (§10 verbatim) and the Design 2/3
+ * re-open questions. The unique constraint is the §29 idempotency guard — a webhook redelivery
+ * of the same sell must not decrement `current_held_fraction` twice (rule 12: DB-level, never
+ * check-then-write).
+ */
+export const walletSellObservation = pgTable(
+  'wallet_sell_observation',
+  {
+    id: text('id').primaryKey(),
+    positionId: text('position_id').notNull(),
+    walletId: text('wallet_id').notNull(),
+    txSignature: text('tx_signature').notNull(),
+    /** Token quantity this sell moved (UI-adjusted, from the parsed swap). */
+    tokenAmount: numeric('token_amount').notNull(),
+    /** This sell as a fraction of the wallet's ENTRY quantity (capped at its remaining held). */
+    fractionOfEntry: numeric('fraction_of_entry').notNull(),
+    heldFractionAfter: numeric('held_fraction_after').notNull(),
+    /** Normalized accumulator after this sell: cluster_weight_exited / Σ entryWeight. */
+    accumulatorAfter: numeric('accumulator_after').notNull(),
+    crossedThreshold: boolean('crossed_threshold').notNull().default(false),
+    /** Both clocks (§20) — on-chain sell time vs when we could first have acted. */
+    observedAtEvent: timestamp('observed_at_event', { withTimezone: true, mode: 'date' }).notNull(),
+    observedAtProcessing: timestamp('observed_at_processing', { withTimezone: true, mode: 'date' }).notNull(),
+  },
+  (t) => [
+    uniqueIndex('wallet_sell_observation_uq').on(t.positionId, t.walletId, t.txSignature),
+    index('wallet_sell_observation_position_idx').on(t.positionId),
+  ],
 );
 
 
@@ -984,4 +1028,5 @@ export const schema = {
   tradeAutopsy,
   learningHypothesis,
   activeTokenClaim,
+  walletSellObservation,
 };

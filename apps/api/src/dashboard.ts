@@ -7,18 +7,18 @@
  * versioning) means config edits stay CLI-only in MVP — reviewable like code.
  */
 import { Router, type Request, type Response } from 'express';
-import { and, count, desc, eq, gte, inArray, lte } from 'drizzle-orm';
+import { and, count, desc, eq, gte, inArray, lte, sql } from 'drizzle-orm';
 import type { Db } from '@tip/database';
 import {
-  brainAgentMemory,
-  judgeDecision, learningHypothesis,
+  brainAgentMemory, brainTokenMemory, clusterRun, domainEvent,
+  judgeDecision, learningHypothesis, llmCallLog,
   paperPortfolio, paperPosition, prediction, predictionOutcome, signal, signalFeature,
-  signalNoTrade, signalRisk, tradeAutopsy,
+  signalNoTrade, signalRisk, token, tradeAutopsy, wallet, walletCluster,
 } from '@tip/database';
-import { createBrain, type Domain } from '@tip/brain';
+import { createBrain, tokenMemoryAsOf, type Domain } from '@tip/brain';
 import {
   byHorizon, calibrationSummary, compareShadowVsBaseline, compareShadowVsReal,
-  factorPredictiveValue, headlineMetrics, isBootstrapping,
+  evaluateFold, factorPredictiveValue, headlineMetrics, isBootstrapping, walkForwardFolds,
 } from '@tip/evaluation';
 
 type H = (req: Request, res: Response) => Promise<void> | void;
@@ -317,6 +317,113 @@ export function dashboardRouter(db: Db): Router {
   });
 
   // ── OVERVIEW ───────────────────────────────────────────────────────
+  // ── BACKTEST (audit #15, §26) — walk-forward folds + per-fold TEST-window metrics ──────
+  r.get('/backtest/walk-forward', async (req, res) => {
+    const to = asDate(req.query.to, new Date());
+    const from = asDate(req.query.from, new Date(to.getTime() - 180 * 24 * 3600_000));
+    const configVersion = asNumber(req.query.configVersion, 1)!;
+    const horizon = asString(req.query.horizon, '4h')!;
+    const trainDays = asNumber(req.query.trainDays, 60)!;
+    const testDays = asNumber(req.query.testDays, 20)!;
+    try {
+      const folds = walkForwardFolds('perp', { from, to, trainDays, testDays });
+      const rows = await Promise.all(folds.map(async (fold) => ({
+        fold,
+        metrics: await evaluateFold(db, { fold, configVersion, horizon }),
+      })));
+      res.json({ folds: rows, configVersion, horizon, from, to });
+    } catch (e) {
+      res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
+    }
+  });
+
+  // ── LLM COSTS (audit #17, §23) — "is the LLM worth it" needs the ledger visible ────────
+  r.get('/llm/costs', async (req, res) => {
+    const days = asNumber(req.query.days, 30)!;
+    const since = new Date(Date.now() - days * 24 * 3600_000);
+    const [byAgent, byDay, totals] = await Promise.all([
+      db.select({
+        agent: llmCallLog.agent,
+        calls: count(),
+        cost: sql<string>`coalesce(sum(${llmCallLog.cost}), 0)`,
+        promptTokens: sql<string>`coalesce(sum(${llmCallLog.promptTokens}), 0)`,
+        completionTokens: sql<string>`coalesce(sum(${llmCallLog.completionTokens}), 0)`,
+        failures: sql<string>`count(*) filter (where not ${llmCallLog.success})`,
+        avgLatencyMs: sql<string>`coalesce(avg(${llmCallLog.latencyMs}), 0)`,
+      }).from(llmCallLog).where(gte(llmCallLog.calledAt, since)).groupBy(llmCallLog.agent),
+      db.select({
+        day: sql<string>`date_trunc('day', ${llmCallLog.calledAt})`,
+        calls: count(),
+        cost: sql<string>`coalesce(sum(${llmCallLog.cost}), 0)`,
+      }).from(llmCallLog).where(gte(llmCallLog.calledAt, since))
+        .groupBy(sql`date_trunc('day', ${llmCallLog.calledAt})`)
+        .orderBy(sql`date_trunc('day', ${llmCallLog.calledAt})`),
+      db.select({
+        calls: count(),
+        cost: sql<string>`coalesce(sum(${llmCallLog.cost}), 0)`,
+      }).from(llmCallLog).where(gte(llmCallLog.calledAt, since)),
+    ]);
+    res.json({ days, totals: totals[0] ?? { calls: 0, cost: '0' }, byAgent, byDay });
+  });
+
+  // ── SMART MONEY (audit #19, §26/§27) — rated wallets, active clusters, recent activity ──
+  r.get('/smart-money', async (_req, res) => {
+    const [topWallets, activeRun, recentBuys, recentConvergences] = await Promise.all([
+      // Latest score per rated wallet (append-only log → DISTINCT ON latest row, §4).
+      db.execute(sql`
+        SELECT DISTINCT ON (e.wallet_id) e.wallet_id AS "walletId", e.score, e.timestamp,
+               w.trade_count AS "tradeCount", w.status
+          FROM wallet_score_event e
+          JOIN wallet w ON w.address = e.wallet_id
+         ORDER BY e.wallet_id, e.timestamp DESC
+      `),
+      db.select().from(clusterRun).where(eq(clusterRun.status, 'active')).orderBy(desc(clusterRun.runAt)).limit(1),
+      db.select().from(domainEvent)
+        .where(eq(domainEvent.type, 'memecoin.wallet.buy.detected'))
+        .orderBy(desc(domainEvent.eventTime)).limit(20),
+      db.select().from(domainEvent)
+        .where(eq(domainEvent.type, 'memecoin.wallet.convergence.detected'))
+        .orderBy(desc(domainEvent.eventTime)).limit(20),
+    ]);
+    const run = activeRun[0] ?? null;
+    const clusters = run
+      ? await db.select({
+          clusterId: walletCluster.clusterId,
+          members: count(),
+        }).from(walletCluster).where(eq(walletCluster.clusterRunId, run.runId))
+          .groupBy(walletCluster.clusterId).orderBy(desc(count())).limit(50)
+      : [];
+    const wallets = ([...(topWallets as unknown as Iterable<Record<string, unknown>>)] as {
+      walletId: string; score: string; timestamp: Date; tradeCount: number; status: string;
+    }[]).sort((a, b) => Number(b.score) - Number(a.score)).slice(0, 50);
+    res.json({ wallets, clusterRun: run, clusters, recentBuys, recentConvergences });
+  });
+
+  // ── TOKENS (audit #20, §26) — browse top-scored tokens, not just point lookup ──────────
+  r.get('/tokens/top', async (req, res) => {
+    const limit = asNumber(req.query.limit, 50)!;
+    const rows = await db.select({
+      mint: brainTokenMemory.mint,
+      score: brainTokenMemory.score,
+      evidence: brainTokenMemory.evidence,
+      outcomes: brainTokenMemory.outcomes,
+      profile: brainTokenMemory.profile,
+      updatedAt: brainTokenMemory.updatedAt,
+      symbol: token.symbol,
+      name: token.name,
+    }).from(brainTokenMemory)
+      .leftJoin(token, eq(token.mint, brainTokenMemory.mint))
+      .orderBy(sql`${brainTokenMemory.score} DESC NULLS LAST`, desc(brainTokenMemory.updatedAt))
+      .limit(limit);
+    res.json({ tokens: rows, count: rows.length });
+  });
+
+  // BrainTokenMemory point lookup — the Tokens page previously (wrongly) hit /brain/wallet/:id.
+  r.get('/brain/token/:mint', async (req, res) => {
+    const memory = await tokenMemoryAsOf(db, req.params.mint, new Date());
+    res.json(memory);
+  });
+
   r.get('/overview', async (_req, res) => {
     // KPIs the dashboard's Overview page reads. Cheap counts + one recent aggregate.
     const now = new Date();

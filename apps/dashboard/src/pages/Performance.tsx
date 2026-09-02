@@ -4,6 +4,7 @@ import { Skeleton } from '@/components/ui/Skeleton';
 import { Table, Thead, Th, Tbody, Tr, Td } from '@/components/ui/Table';
 import { useAgents } from '@/hooks/useAgents';
 import { useByHorizon, useCalibration } from '@/hooks/useMetrics';
+import { BootstrapBanner } from '@/components/BootstrapBanner';
 
 /** Performance page — pick an agent → per-horizon metrics + a Brier + reliability diagram. */
 export function Performance() {
@@ -34,6 +35,8 @@ export function Performance() {
       </Card>
       {agent && (
         <div className="space-y-4">
+          <BootstrapBanner domain={agent.domain} configVersion={agent.activeConfigVersion}
+            horizon={agent.tradingStyle === 'day' ? '4h' : agent.tradingStyle === 'scalp' ? '15m' : '3d'} />
           <HorizonPanel domain={agent.domain} configVersion={agent.activeConfigVersion} horizons={horizons} />
           <CalibrationPanel domain={agent.domain} configVersion={agent.activeConfigVersion} horizon={agent.tradingStyle === 'day' ? '4h' : agent.tradingStyle === 'scalp' ? '15m' : '3d'} />
         </div>

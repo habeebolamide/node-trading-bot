@@ -8,6 +8,8 @@ import { Predictions } from '@/pages/Predictions';
 import { Portfolios } from '@/pages/Portfolios';
 import { Brain } from '@/pages/Brain';
 import { Performance } from '@/pages/Performance';
+import { Backtests } from '@/pages/Backtests';
+import { Attribution } from '@/pages/Attribution';
 import { LlmReview } from '@/pages/LlmReview';
 import { Tokens } from '@/pages/Tokens';
 import { SmartMoney } from '@/pages/SmartMoney';
@@ -33,6 +35,8 @@ const router = createBrowserRouter([
       { path: 'portfolios/:id', element: <Portfolios /> },
       { path: 'brain', element: <Brain /> },
       { path: 'performance', element: <Performance /> },
+      { path: 'backtests', element: <Backtests /> },
+      { path: 'attribution', element: <Attribution /> },
       { path: 'llm-review', element: <LlmReview /> },
       { path: 'tokens', element: <Tokens /> },
       { path: 'smart-money', element: <SmartMoney /> },

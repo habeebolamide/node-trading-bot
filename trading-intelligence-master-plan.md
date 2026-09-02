@@ -939,7 +939,7 @@ The Judge sits inline in Signal → Prediction. If the call times out or fails, 
 
 ### Memecoin scoping note
 
-Memecoin is effectively long-only — a wallet buys a token or it doesn't; there's no clean short. This means the FLIP/STAND-ASIDE machinery above, built around a LONG↔SHORT flip, rarely or never actually fires in memecoin — the Judge's only real functional lever there is the invalidator (don't enter / exit early). The mechanism and thresholds are the same across both domains, it just structurally has near-zero surface area to trigger on in memecoin, and that's expected, not a bug — worth stating plainly so nobody builds out shadow-trade infrastructure for a case that doesn't occur in this domain.
+Memecoin is effectively long-only — a wallet buys a token or it doesn't; there's no clean short. This means the FLIP/STAND-ASIDE machinery above, built around a LONG↔SHORT flip, rarely or never actually fires in memecoin — the Judge's only real functional lever there is the invalidator (don't enter / exit early). The mechanism and thresholds are the same across both domains, it just structurally has near-zero surface area to trigger on in memecoin, and that's expected, not a bug — worth stating plainly so nobody builds out shadow-trade infrastructure for a case that doesn't occur in this domain. *(MVP status, audit #21: even the invalidator lever is NOT wired for memecoin — the Judge agent's `canHandle` refuses memecoin outright, per CLAUDE.md's do-not list: near-zero surface, wasted LLM cost. The lever unlocks together with memecoin autopsy when memecoin gets a backtest (§24's own trigger), not before.)*
 
 This rule applies identically to the Perp Judge Agent (Part III) — see the correction there.
 
@@ -3649,7 +3649,7 @@ LIMIT   → enter only if price reaches a specified level; unfilled orders expir
           after a timeout.
 ```
 
-**Decision rule (initial version):** the Trade Planner computes an entry zone from market structure (ATR, recent support/resistance — same inputs already used for SL/TP). If current price is already inside that zone, use `MARKET` — waiting risks missing the move. If current price sits outside the zone (extended from it by more than some ATR-based buffer), use `LIMIT`, placed at the edge of the zone, with an expiry (e.g. N candles of the TradingAgent's timeframe, §8) after which the order is cancelled and the signal reverts to `WATCHING` (Signal Lifecycle, §36) rather than staying `PENDING_ENTRY` indefinitely.
+**Decision rule (initial version):** the Trade Planner computes an entry zone from market structure (ATR, recent support/resistance — same inputs already used for SL/TP). If current price is already inside that zone, use `MARKET` — waiting risks missing the move. If current price sits outside the zone (extended from it by more than some ATR-based buffer), use `LIMIT`, placed at the edge of the zone, with an expiry (e.g. N candles of the TradingAgent's timeframe, §8) after which the order is cancelled and the **agent** reverts to `WATCHING`/`IDLE` (Trading Agent Lifecycle, §37) rather than staying `PENDING_ENTRY` indefinitely. *(Cross-reference corrected during audit #13: `WATCHING` and `PENDING_ENTRY` are §37 agent-lifecycle states, not §36 signal states — §36's authoritative list is ACTIVE/EXPIRED/INVALIDATED/CONSUMED, and a signal whose LIMIT expires unfilled stays CONSUMED; the unfilled entry is recorded on the position as EXPIRED/LIMIT_EXPIRY.)*
 
 Example:
 

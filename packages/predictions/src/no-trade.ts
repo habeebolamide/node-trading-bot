@@ -13,7 +13,8 @@ import { eq } from 'drizzle-orm';
 import { signal, signalNoTrade, type Db } from '@tip/database';
 
 export type NoTradeReason =
-  | 'INSUFFICIENT_RR' | 'CANNOT_SIZE_SAFELY' | 'NO_STOP_DERIVABLE' | 'STALE_OR_MISSING_DATA';
+  | 'INSUFFICIENT_RR' | 'CANNOT_SIZE_SAFELY' | 'NO_STOP_DERIVABLE' | 'STALE_OR_MISSING_DATA'
+  | 'CORRELATED_EXPOSURE_CAP';
 
 /**
  * Record why the planner refused to trade this signal and mark the signal INVALIDATED (§36).

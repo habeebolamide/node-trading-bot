@@ -39,12 +39,21 @@ export interface JudgeTierDeps {
   log?: (msg: string, meta?: unknown) => void;
 }
 
-export function registerJudgeTier(deps: JudgeTierDeps): void {
+/**
+ * Build the tier's two handlers WITHOUT registering queue workers. Multiple BullMQ workers on
+ * one queue COMPETE for jobs, and the signal-processing queue has several concerns (Judge, gate,
+ * convergence, alerts) — main.ts owns the single dispatcher that fans out to all of them
+ * (audit #11/#12 dispatcher fix; the registry.ts doc prescribes exactly this composition).
+ */
+export function createJudgeTierHandlers(deps: JudgeTierDeps): {
+  judgeHandler: (event: DomainEvent<SignalCreatedPayload>) => Promise<void>;
+  gateHandler: (event: DomainEvent) => Promise<void>;
+} {
   const log = deps.log ?? (() => {});
   const judge = createJudgeAgent({ llm: deps.llm, bus: deps.bus });
 
   // 1. signal.created → Judge
-  deps.bus.createWorker<SignalCreatedPayload>(QUEUE_NAMES.SIGNAL_PROCESSING, async (event) => {
+  const judgeHandler = async (event: DomainEvent<SignalCreatedPayload>): Promise<void> => {
     if (event.type !== EVENT_NAMES.SIGNAL_CREATED) return;
     if (event.payload.domain !== 'perp') return; // Judge is perp-only (§40.14)
     const p = event.payload;
@@ -65,10 +74,10 @@ export function registerJudgeTier(deps: JudgeTierDeps): void {
     } catch (e) {
       log('judge failed; deterministic path unaffected', { signalId: p.signalId, err: String(e) });
     }
-  });
+  };
 
   // 2. judge.evaluation.completed → gate
-  deps.bus.createWorker(QUEUE_NAMES.SIGNAL_PROCESSING, async (event) => {
+  const gateHandler = async (event: DomainEvent): Promise<void> => {
     if (event.type !== EVENT_NAMES.JUDGE_EVALUATION_COMPLETED) return;
     await handleJudgeEvaluation(
       {
@@ -91,5 +100,18 @@ export function registerJudgeTier(deps: JudgeTierDeps): void {
         return new AsOfMarketData(deps.db, new Date());
       },
     );
-  });
+  };
+
+  return { judgeHandler, gateHandler };
+}
+
+/**
+ * Register the tier with its OWN workers. Only for processes where nothing else consumes the
+ * signal-processing queue (tests) — the main worker composes `createJudgeTierHandlers` into its
+ * shared dispatcher instead.
+ */
+export function registerJudgeTier(deps: JudgeTierDeps): void {
+  const { judgeHandler, gateHandler } = createJudgeTierHandlers(deps);
+  deps.bus.createWorker<SignalCreatedPayload>(QUEUE_NAMES.SIGNAL_PROCESSING, judgeHandler);
+  deps.bus.createWorker(QUEUE_NAMES.SIGNAL_PROCESSING, gateHandler);
 }

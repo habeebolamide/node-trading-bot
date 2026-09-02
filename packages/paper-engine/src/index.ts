@@ -15,3 +15,4 @@ export * from './fills/perp.js';
 export * from './portfolio.js';
 export * from './position.js';
 export * from './types.js';
+export * from './wallet-exit.js';

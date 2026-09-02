@@ -36,7 +36,8 @@ export type NoTradeReason =
   | 'INSUFFICIENT_RR'
   | 'CANNOT_SIZE_SAFELY'
   | 'NO_STOP_DERIVABLE'
-  | 'STALE_OR_MISSING_DATA';
+  | 'STALE_OR_MISSING_DATA'
+  | 'CORRELATED_EXPOSURE_CAP';
 
 export type PlanResult =
   | { kind: 'TRADE'; setup: TradeSetup }
