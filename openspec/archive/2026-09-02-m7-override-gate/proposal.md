@@ -1,6 +1,26 @@
 # Change: m7-override-gate
 
-**Status:** PROPOSED (scoping)
+**Status:** COMPLETED — archived 2026-09-02
+**Original status:** PROPOSED (scoping)
+
+> **COMPLETED.** Migration 0016: `judge_decision` (PK `(signal_id, judge_version)`).
+> `ScoringConfig` gained `overrideGate` with §18 defaults (0.7 / 0.2 / 0.7 / 0.7); versioned
+> like every other scoring input via rule 16.
+> - `judge/gate.ts` — pure `decide()` per §18's short-circuit order; NEUTRAL judge → DEFER;
+>   `judgeConf > detConf` guard on FLIP (weaker dissent never flips). Includes a **1e-9 gap
+>   epsilon** — a documented `gap == threshold` case would otherwise be silently misclassified
+>   because `0.6 − 0.4` in IEEE-754 is `0.19999999999999996`.
+> - `judge/consumer.ts` — `handleJudgeEvaluation()` idempotent by PK; FLIP reruns the planner
+>   via an INJECTED `runFlipPlanner` seam (avoids the agents→planner cycle); a refused planner
+>   downgrades to DEFER with `flipRefusedByPlanner=true`; STAND_ASIDE transitions the signal to
+>   INVALIDATED and emits `signal.invalidated`; every decision writes a `judge_decision` row and
+>   stamps `judgeAction` on the Judge's `signal_feature.features`.
+>
+> **Verified:** typecheck green; **565/568 tests pass** (3 opt-in live). 14 new: pure gate (9
+> incl. §18's 4 worked examples verbatim, the `judgeConf > detConf` guard, config-tightening
+> effect), live-DB integration (5 incl. FLIP happy path with `signal.flipped` emitted,
+> flip-refused-by-planner downgrade, STAND_ASIDE → INVALIDATED with event, DEFER-with-
+> disagreement still writes a row, PK idempotency).
 **Milestone:** M7 (change 3 of 6)
 **Implements:** §18 (FLIP / STAND_ASIDE / DEFER gate) · §36 (STAND_ASIDE → INVALIDATED) ·
 §18 LLM-failure path · §33 rule 20 (still paper trading; the gate never touches real money)

@@ -132,3 +132,5 @@ export { JUDGE_VERSION_CURRENT, currentJudgePrompt } from './prompts.js';
 export { JudgeOutput } from './schema.js';
 export { buildJudgeEvidence, type JudgeEvidence } from './evidence.js';
 export const JUDGE_AGENT_KEY = KEY;
+export * from './gate.js';
+export * from './consumer.js';

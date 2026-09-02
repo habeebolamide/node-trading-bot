@@ -113,6 +113,13 @@
       "when": 1788348524962,
       "tag": "0015_lucky_living_mummy",
       "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "7",
+      "when": 1788349248690,
+      "tag": "0016_glorious_scarlet_witch",
+      "breakpoints": true
     }
   ]
 }

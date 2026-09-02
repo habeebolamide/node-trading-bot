@@ -811,6 +811,38 @@ export const llmCallLog = pgTable(
   ],
 );
 
+
+/**
+ * judge_decision (m7-override-gate). One row per Judge event where `judgeAction != AGREE` —
+ * every dissent gets a row so §23 direction-agreement rates and per-side calibration can be
+ * computed off a single indexed table. `AGREE` predictions have no row here; the outcome +
+ * signal_feature already carry that story.
+ *
+ * The Judge's own `signal_feature.features` also carries `judgeAction` (for §22 attribution's
+ * single-row read). Duplicating is cheap here and each consumer wants a different shape.
+ */
+export const judgeDecision = pgTable(
+  'judge_decision',
+  {
+    signalId: text('signal_id').notNull(),
+    judgeVersion: integer('judge_version').notNull(),
+    judgeAction: text('judge_action').notNull(),      // AGREE | FLIP | STAND_ASIDE | DEFER
+    detConfidence: numeric('det_confidence').notNull(),
+    judgeConfidence: numeric('judge_confidence').notNull(),
+    detDirection: text('det_direction').notNull(),
+    judgeDirection: text('judge_direction').notNull(),
+    gap: numeric('gap').notNull(),
+    configVersion: integer('config_version').notNull(),
+    /** True when a FLIP was downgraded because planTrade returned NO_TRADE (§18 planner-fails). */
+    flipRefusedByPlanner: boolean('flip_refused_by_planner').notNull().default(false),
+    createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.signalId, t.judgeVersion] }),
+    index('judge_decision_action_idx').on(t.judgeAction),
+  ],
+);
+
 export const schema = {
   domainEvent,
   processedEvent,
@@ -848,4 +880,5 @@ export const schema = {
   paperPositionFill,
   paperPositionOriginatingWallet,
   llmCallLog,
+  judgeDecision,
 };

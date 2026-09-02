@@ -47,6 +47,21 @@ export const SignalThresholdsSchema = z
   })
   .strict();
 
+
+/**
+ * Override-gate thresholds (§18). Defaults per §18's four-rule table. Versioned like every
+ * other scoring input via ScoringConfig — a tightening of the FLIP gate ships as a new
+ * scoring_config row, not an in-place edit (rule 16).
+ */
+export const OverrideGateSchema = z
+  .object({
+    flipDetConfMax: z.number().gt(0).lte(1),        // §18: FLIP requires detConf < this
+    flipGap: z.number().gt(0).lte(1),               // §18: |detConf − llmConf| >= this
+    standAsideDetConfMin: z.number().gt(0).lte(1),  // §18: STAND ASIDE requires detConf >= this
+    standAsideLlmConfMax: z.number().gt(0).lte(1),  // §18: llmConf < this
+  })
+  .strict();
+
 /** Full config shape — validated per domain in `validateScoringConfig`. */
 export const ScoringConfigInputSchema = z.object({
   riskPercent: percent01,
@@ -63,6 +78,13 @@ export const ScoringConfigInputSchema = z.object({
     dataQuality: 0.15,
   }),
   signalThresholds: SignalThresholdsSchema,
+  overrideGate: OverrideGateSchema.default({
+    // §18's worked examples: FLIP@detConf<0.7 gap>=0.2, STAND_ASIDE@detConf>=0.7 llmConf<0.7.
+    flipDetConfMax: 0.7,
+    flipGap: 0.2,
+    standAsideDetConfMin: 0.7,
+    standAsideLlmConfMax: 0.7,
+  }),
   // Memecoin-only:
   stopPct: z.number().gt(0).lt(1).optional(),
   takeProfitPct: z.number().gt(0).optional(),
