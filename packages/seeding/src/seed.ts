@@ -26,7 +26,7 @@ import { perpAgents } from '@tip/agents';
 import { createLogger } from '@tip/domain';
 import { marketSymbol, type MarketSymbol } from '@tip/domain';
 import { ValidationError } from '@tip/domain';
-import { ReplayEngine, resolvePrediction, planningHorizonFor } from '@tip/evaluation';
+import { ReplayEngine, resolvePrediction, feedBrainOnce, planningHorizonFor } from '@tip/evaluation';
 import { EVENT_NAMES } from '@tip/events';
 import { createPrediction } from '@tip/predictions';
 import {
@@ -248,6 +248,12 @@ export async function seedSymbol(opts: SeedOptions & { symbol: string }): Promis
         style: agent.style,
       });
       stats.outcomesResolved += written;
+      // Feed the Brain from this prediction's planning-horizon outcome (fixes the third
+      // silent bug: resolvePrediction writes prediction_outcome but NOT the Brain tables;
+      // the batch outcomeSweep did the Brain write, and the seeder never called it — so
+      // brain_setup_occurrence + brain_setup_memory + brain_agent_occurrence stayed empty
+      // after every seed). At-most-once via prediction.brainWrittenAt.
+      await feedBrainOnce(opts.db, predRes.prediction.id, agent.style);
     } catch (e) {
       stats.errors++;
       log.warn('seed step failed', { symbol: opts.symbol, at: step.asOf.toISOString(), err: String(e) });

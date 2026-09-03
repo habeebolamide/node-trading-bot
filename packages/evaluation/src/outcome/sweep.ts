@@ -146,7 +146,13 @@ export async function resolvePrediction(
  * `brain_written_at`: the UPDATE is CONDITIONAL on that column being NULL, so a concurrent
  * sweep sees zero rows updated and skips.
  */
-async function feedBrainOnce(db: Db, predictionId: string, style: TradingStyle): Promise<boolean> {
+/**
+ * Feed the Brain from ONE resolved prediction. Runs the planning-horizon outcome through
+ * recordSetupOutcome + recordAgentOutcome, guarded by prediction.brainWrittenAt (§at-most-once).
+ * Exported so the seeder can call it directly per prediction — the batch sweep isn't the only
+ * caller anymore. Returns true iff this call was the one that stamped brainWrittenAt.
+ */
+export async function feedBrainOnce(db: Db, predictionId: string, style: TradingStyle): Promise<boolean> {
   const p = (await db.select().from(prediction).where(eq(prediction.id, predictionId)).limit(1))[0];
   if (!p || p.brainWrittenAt !== null) return false;
   // m7-shadow-predictions: shadows do NOT feed the Brain. A Judge that consistently flips right
