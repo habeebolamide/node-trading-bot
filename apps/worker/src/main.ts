@@ -24,6 +24,9 @@ import { createJudgeTierHandlers } from './analysis/judge-tier.js';
 import { createTickHandler } from './analysis/tick-monitor.js';
 import { createWalletExitHandler } from './analysis/wallet-exit-monitor.js';
 import { createEntryOrchestrator, expireStaleSignals } from './analysis/entry-orchestrator.js';
+import { MemecoinAnalysisTier } from './analysis/memecoin-analysis.js';
+import { createMemecoinEntryOrchestrator } from './analysis/memecoin-entry.js';
+import { createMemecoinTickHandler } from './analysis/memecoin-tick.js';
 import { createShadowInserter } from './analysis/shadow-inserter.js';
 import { loadPerpRiskInputs } from './analysis/risk-inputs.js';
 import { createRiskAgent } from '@tip/agents';
@@ -158,6 +161,15 @@ async function main(): Promise<void> {
   }));
   console.log('[worker] entry orchestrator live (signal → prediction → paper open)');
 
+  // Memecoin entry orchestrator (audit-2 Batch D) — same seat, memecoin path.
+  // Domain-refuses non-memecoin; runs §9a token claim → planMemecoin → memecoinBuyFill.
+  // Without a live reserves resolver every entry NO_FILLs (rule 25 — the plan's own answer).
+  signalProcessingHandlers.push(createMemecoinEntryOrchestrator({
+    db, bus,
+    log: (m, meta) => console.log(`[memecoin-entry] ${m}`, meta ?? ''),
+  }));
+  console.log('[worker] memecoin entry orchestrator live (NO_FILL until reserves resolver lands — rule 25)');
+
   // Shadow inserter (§18, audit-2 #12) — subscribes to signal.flipped / signal.stood_aside
   // and materializes the counterfactual shadow prediction + paper position so §23's
   // "is the LLM worth it" question finally has data.
@@ -179,6 +191,29 @@ async function main(): Promise<void> {
 
   // ── Lifecycle sweep — clears expired COOLDOWN / daily-loss BLOCKED every 30s (§37) ──
   const lifecycleTimer = setInterval(() => { void tickLifecycle(db).catch(() => undefined); }, 30_000);
+
+  // ── Batch D schedulers (§4 wallet re-scoring + §5 cluster recompute — audit-2). Both are
+  //    cheap idempotent bulk passes; running them on wall-clock intervals is the MVP trigger
+  //    the plan describes as "every 25 new trades or a daily job". ──
+  const walletRescoreTimer = setInterval(() => {
+    void import('@tip/wallets').then(({ scoreAllWallets }) =>
+      scoreAllWallets(db, { log: (msg) => console.log(`[wallet-rescore] ${msg}`) }))
+      .catch((e) => console.warn('[wallet-rescore] failed:', e instanceof Error ? e.message : e));
+  }, 6 * 3600_000); // every 6h — bounded, safe to re-run
+  let clusterRecomputeTimer: NodeJS.Timeout | undefined;
+  if (config.HELIUS_API_KEY) {
+    clusterRecomputeTimer = setInterval(() => {
+      void (async () => {
+        const [{ recomputeClusters }, { HeliusRestClient }] = await Promise.all([
+          import('@tip/watchlist'), import('@tip/ingestion'),
+        ]);
+        await recomputeClusters(db, {
+          rest: new HeliusRestClient({ apiKey: config.HELIUS_API_KEY! }),
+          log: (m, meta) => console.log(`[cluster-recompute] ${m}`, meta ?? ''),
+        });
+      })().catch((e) => console.warn('[cluster-recompute] failed:', e instanceof Error ? e.message : e));
+    }, 24 * 3600_000); // once a day
+  }
 
   // ── Helius memecoin ingestion (M1) ────────────────────────────
   // Always consume webhooks (drains the blockchain-ingestion queue + parses); the REST liveness
@@ -208,7 +243,21 @@ async function main(): Promise<void> {
   // (same dispatcher rule as the market queue above — competing workers would split the events).
   const walletAnalysisHandlers: Array<(e: DomainEvent) => Promise<void>> = [
     createWalletExitHandler({ db, bus, log: (m, meta) => console.log(`[wallet-exit] ${m}`, meta ?? '') }) as (e: DomainEvent) => Promise<void>,
+    // Batch D: every SELL/BUY swap on a held memecoin mint is a tick — drives evalTick
+    // for OPEN memecoin positions (SL/TP/ladder/horizon + token-claim release on close).
+    createMemecoinTickHandler({ db, bus, log: (m, meta) => console.log(`[memecoin-tick] ${m}`, meta ?? '') }) as (e: DomainEvent) => Promise<void>,
   ];
+
+  // Batch D: memecoin analysis tier consumes convergence events → runs memecoin agents →
+  // Token Risk HARD VETO → SignalEngine composes → publishes signal.created. Registered on
+  // the signal-processing dispatcher next to the perp signal path.
+  const memecoinAnalysis = new MemecoinAnalysisTier({ db, bus, log: (m, meta) => console.log(`[memecoin-analysis] ${m}`, meta ?? '') });
+  signalProcessingHandlers.push(async (event: DomainEvent) => {
+    if (event.type === EVENT_NAMES.MEMECOIN_WALLET_CONVERGENCE_DETECTED) {
+      await memecoinAnalysis.onConvergence(event as never);
+    }
+  });
+  console.log('[worker] memecoin analysis tier live');
   let convergenceBatcher: Batcher | undefined;
   if (config.HELIUS_API_KEY && config.HELIUS_WEBHOOK_SECRET && config.HELIUS_WEBHOOK_URL) {
     const rest = new HeliusRestClient({ apiKey: config.HELIUS_API_KEY });
@@ -293,6 +342,8 @@ async function main(): Promise<void> {
     console.log(`[worker] ${signal} — draining`);
     clearInterval(monitorTimer);
     clearInterval(lifecycleTimer);
+    clearInterval(walletRescoreTimer);
+    if (clusterRecomputeTimer) clearInterval(clusterRecomputeTimer);
     clearInterval(outcomeTimer);
     clearInterval(signalTtlTimer);
     poller.stop();

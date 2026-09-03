@@ -18,6 +18,7 @@ import type { DomainEvent } from '@tip/domain';
 import { EVENT_NAMES, PRIORITY, QUEUE_NAMES, type EventBus } from '@tip/events';
 import { processWalletSell } from '@tip/paper-engine';
 import { enterCooldown } from '@tip/trading-agents';
+import { releaseTokenByPosition } from '@tip/agents';
 
 /** Matches NormalizedWalletTx (@tip/ingestion provider seam) — the §12 normalized shape. */
 interface WalletTxPayload {
@@ -77,6 +78,7 @@ export function createWalletExitHandler(deps: WalletExitMonitorDeps): (event: Do
             txSignature: p.signature,
           },
         }, { priority: PRIORITY.FAST }); // §11 reaction lane — thesis-death exit must not queue
+        await releaseTokenByPosition(deps.db, o.positionId); // §9a — free the mint on any exit
         await enterCooldown(deps.db, o.tradingAgentId, cooldownMs, new Date());
         log('wallet-exit close', { positionId: o.positionId, accumulator: o.accumulator });
       } else {
