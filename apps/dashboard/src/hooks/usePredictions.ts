@@ -2,7 +2,7 @@ import { useQuery } from '@tanstack/react-query';
 import { apiGet } from '@/lib/api';
 
 export interface PredictionRow {
-  id: string; tradingAgentId: string; signalId: string;
+  id: string; tradingAgentId: string; agentName: string; signalId: string;
   domain: string; symbol: string; direction: string;
   score: string; confidence: string; horizon: string;
   entry: string; stopLoss: string; takeProfit: string | null;
@@ -11,11 +11,17 @@ export interface PredictionRow {
   riskReward: string; thesis: string | null;
   isShadow: boolean; shadowOf: string | null;
   configVersion: number; createdAt: string;
-  // Joined from paper_position — null when no position exists yet.
+  // Position outcome (LIVE path — the entry orchestrator opened a paper position).
   positionState: 'OPEN' | 'CLOSED' | 'PENDING_ENTRY' | 'EXPIRED' | null;
   closeReason: 'STOP_LOSS' | 'TAKE_PROFIT' | 'HORIZON_EXPIRY' | 'WALLET_EXIT' | 'LIMIT_EXPIRY' | null;
   closedAt: string | null;
   realizedPnl: string | null;
+  // Seeded-outcome fallback (SEEDED path — prediction_outcome only, no position).
+  outcomeWon: boolean | null;
+  outcomeReturnPct: string | null;
+  outcomeHitTarget: boolean | null;
+  outcomeResolution: 'TICK' | 'CANDLE_1M_CONSERVATIVE' | null;
+  outcomeResolvedAt: string | null;
 }
 
 export interface PaperPositionRow {

@@ -94,6 +94,8 @@ describe.skipIf(!DATABASE_URL)('dashboard routes (integration)', () => {
     expect(r.body.rows[0]).toHaveProperty('positionState');
     expect(r.body.rows[0]).toHaveProperty('closeReason');
     expect(r.body.rows[0]).toHaveProperty('realizedPnl');
+    expect(r.body.rows[0]).toHaveProperty('agentName');
+    expect(r.body.rows[0].agentName).toMatch(/^API-/);
   });
 
   it('GET /api/predictions/:id returns prediction + outcomes + position', async () => {

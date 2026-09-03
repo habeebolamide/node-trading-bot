@@ -4,9 +4,10 @@ import { Card, CardBody, CardHeader } from '@/components/ui/Card';
 import { Badge } from '@/components/ui/Badge';
 import { Skeleton } from '@/components/ui/Skeleton';
 import { Table, Thead, Th, Tbody, Tr, Td } from '@/components/ui/Table';
-import { usePrediction, usePredictions, type PredictionRow } from '@/hooks/usePredictions';
+import { usePrediction, usePredictions } from '@/hooks/usePredictions';
 import { usePredictionAttribution, usePredictionAutopsy } from '@/hooks/usePredictionExtras';
 import { PredictionOutcome } from '@/components/PredictionOutcome';
+import { useAgents } from '@/hooks/useAgents';
 
 const PAGE_SIZE = 50;
 
@@ -19,7 +20,9 @@ export function Predictions() {
 
 function PredictionList() {
   const [offset, setOffset] = useState(0);
-  const q = usePredictions({ limit: PAGE_SIZE, offset });
+  const [agentId, setAgentId] = useState('');
+  const agents = useAgents();
+  const q = usePredictions({ ...(agentId ? { agentId } : {}), limit: PAGE_SIZE, offset });
   const total = q.data?.total ?? 0;
   const shown = q.data?.rows.length ?? 0;
   const from = total === 0 ? 0 : offset + 1;
@@ -30,17 +33,32 @@ function PredictionList() {
   return (
     <div>
       <h1 className="mb-4 text-lg font-semibold">Predictions</h1>
+      <div className="mb-3 flex items-center gap-2 text-xs">
+        <label>
+          Agent:
+          <select
+            value={agentId}
+            onChange={(event) => { setAgentId(event.target.value); setOffset(0); }}
+            className="ml-1 rounded-md border border-neutral-800 bg-neutral-950 px-2 py-1"
+            aria-label="Filter predictions by agent"
+          >
+            <option value="">all agents</option>
+            {(agents.data ?? []).map((agent) => <option key={agent.id} value={agent.id}>{agent.name}</option>)}
+          </select>
+        </label>
+      </div>
       {q.isLoading && !q.data ? <Skeleton className="h-40" /> : (
         <Card>
           <Table>
             <Thead><Tr>
-              <Th>Symbol</Th><Th>Direction</Th><Th>Entry</Th><Th>SL</Th><Th>TP</Th><Th>R:R</Th>
+              <Th>Symbol</Th><Th>Agent</Th><Th>Direction</Th><Th>Entry</Th><Th>SL</Th><Th>TP</Th><Th>R:R</Th>
               <Th>Outcome</Th><Th>Real?</Th><Th>Created</Th>
             </Tr></Thead>
             <Tbody>
               {(q.data?.rows ?? []).map((p) => (
                 <Tr key={p.id}>
                   <Td><Link className="text-accent hover:underline" to={`/predictions/${p.id}`}>{p.symbol}</Link></Td>
+                  <Td>{p.agentName}</Td>
                   <Td>{p.direction}</Td>
                   <Td className="tabular-nums">{Number(p.entry).toFixed(2)}</Td>
                   <Td className="tabular-nums">{Number(p.stopLoss).toFixed(2)}</Td>
@@ -52,7 +70,7 @@ function PredictionList() {
                 </Tr>
               ))}
               {shown === 0 && !q.isLoading && (
-                <Tr><Td colSpan={9} className="text-neutral-500">No predictions yet.</Td></Tr>
+                <Tr><Td colSpan={10} className="text-neutral-500">No predictions yet.</Td></Tr>
               )}
             </Tbody>
           </Table>

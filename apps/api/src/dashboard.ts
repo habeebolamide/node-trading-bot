@@ -13,7 +13,7 @@ import {
   brainAgentMemory, brainTokenMemory, clusterRun, domainEvent,
   judgeDecision, learningHypothesis, llmCallLog,
   paperPortfolio, paperPosition, prediction, predictionOutcome, signal, signalFeature,
-  signalNoTrade, signalRisk, token, tradeAutopsy, wallet, walletCluster,
+  signalNoTrade, signalRisk, token, tradeAutopsy, tradingAgent, wallet, walletCluster,
 } from '@tip/database';
 import { createBrain, tokenMemoryAsOf, type Domain } from '@tip/brain';
 import {
@@ -61,6 +61,7 @@ export function dashboardRouter(db: Db): Router {
     const rows = await db.select({
       // prediction cols
       id: prediction.id, tradingAgentId: prediction.tradingAgentId, signalId: prediction.signalId,
+      agentName: tradingAgent.name,
       domain: prediction.domain, symbol: prediction.symbol, direction: prediction.direction,
       score: prediction.score, confidence: prediction.confidence, horizon: prediction.horizon,
       entry: prediction.entry, stopLoss: prediction.stopLoss, takeProfit: prediction.takeProfit,
@@ -69,12 +70,26 @@ export function dashboardRouter(db: Db): Router {
       riskReward: prediction.riskReward, thesis: prediction.thesis,
       isShadow: prediction.isShadow, shadowOf: prediction.shadowOf,
       configVersion: prediction.configVersion, createdAt: prediction.createdAt,
-      // position outcome (nullable — a prediction may have no position yet)
+      // Position outcome (nullable — the LIVE path opens one via the entry orchestrator).
       positionState: paperPosition.state, closeReason: paperPosition.closeReason,
       closedAt: paperPosition.closedAt, realizedPnl: paperPosition.realizedPnl,
+      // Seeded-outcome fallback: `npm run seed-brain` resolves predictions directly against
+      // 1m candles WITHOUT opening a paper position (§25 seeding does not open positions —
+      // it just feeds the Brain). Those outcomes live in prediction_outcome. Joining on the
+      // primary horizon lets the UI render the seeded WIN/LOSS + return alongside real trades.
+      outcomeWon: predictionOutcome.won,
+      outcomeReturnPct: predictionOutcome.returnPct,
+      outcomeHitTarget: predictionOutcome.hitTarget,
+      outcomeResolution: predictionOutcome.outcomeResolution,
+      outcomeResolvedAt: predictionOutcome.resolvedAt,
     })
       .from(prediction)
+      .innerJoin(tradingAgent, eq(tradingAgent.id, prediction.tradingAgentId))
       .leftJoin(paperPosition, eq(paperPosition.predictionId, prediction.id))
+      .leftJoin(predictionOutcome, and(
+        eq(predictionOutcome.predictionId, prediction.id),
+        eq(predictionOutcome.horizon, prediction.horizon),
+      ))
       .where(where)
       .orderBy(desc(prediction.createdAt))
       .limit(limit).offset(offset);
