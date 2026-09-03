@@ -8,6 +8,7 @@ import { safeEqual, withTimeout } from './util.js';
 import { walletsRouter } from './wallets.js';
 import { tradingAgentsRouter } from './trading-agents.js';
 import { seedingRouter } from './seeding.js';
+import { backfillRouter } from './backfill.js';
 import { dashboardRouter } from './dashboard.js';
 
 export interface ApiDeps {
@@ -18,6 +19,8 @@ export interface ApiDeps {
   webhookSecret: string | undefined;
   /** Watchlist service (m3-watchlist). Undefined = /wallets endpoints disabled. */
   watchlist?: Watchlist;
+  /** Bybit testnet toggle for the backfill router — mirrors the worker's config. */
+  bybitTestnet?: boolean;
   /** Process start time for uptime reporting. */
   startedAt?: number;
 }
@@ -44,6 +47,7 @@ export function createApp(deps: ApiDeps): Express {
   app.use('/trading-agents', seedingRouter(deps.db));
   app.use('/trading-agents', tradingAgentsRouter(deps.db));
   app.use('/api', dashboardRouter(deps.db));
+  app.use('/api/backfill', backfillRouter(deps.db, { testnet: deps.bybitTestnet ?? false }));
 
   // ── Liveness + dependency health ──────────────────────────────
   app.get('/health', async (_req: Request, res: Response) => {

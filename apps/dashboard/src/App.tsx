@@ -9,6 +9,7 @@ import { Portfolios } from '@/pages/Portfolios';
 import { Brain } from '@/pages/Brain';
 import { Performance } from '@/pages/Performance';
 import { Backtests } from '@/pages/Backtests';
+import { Data } from '@/pages/Data';
 import { Attribution } from '@/pages/Attribution';
 import { LlmReview } from '@/pages/LlmReview';
 import { Tokens } from '@/pages/Tokens';
@@ -27,6 +28,7 @@ const router = createBrowserRouter([
       { index: true, element: <Overview /> },
       { path: 'agents', element: <Agents /> },
       { path: 'agents/:id', element: <Agents /> },
+      { path: 'data', element: <Data /> },
       { path: 'signals', element: <Signals /> },
       { path: 'signals/:id', element: <Signals /> },
       { path: 'predictions', element: <Predictions /> },

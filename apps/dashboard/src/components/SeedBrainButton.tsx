@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { Link } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiGet, apiPost, type ApiError } from '@/lib/api';
 
@@ -68,7 +69,17 @@ export function SeedBrainButton({ agentId, domain, status }: {
       >
         {starting ? 'Starting…' : 'Seed Brain'}
       </button>
-      {error && <span className="text-xs text-red-300">{error}</span>}
+      {error && (
+        <span className="text-xs text-red-300">
+          {error}
+          {error === 'No backfill for this token' && (
+            <>
+              {' '}·{' '}
+              <Link to="/data" className="text-accent hover:underline">Run backfill →</Link>
+            </>
+          )}
+        </span>
+      )}
     </span>
   );
 }

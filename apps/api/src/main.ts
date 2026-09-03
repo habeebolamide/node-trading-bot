@@ -47,6 +47,7 @@ async function main(): Promise<void> {
     redis,
     bus,
     webhookSecret: config.HELIUS_WEBHOOK_SECRET,
+    bybitTestnet: config.BYBIT_TESTNET,
     startedAt: Date.now(),
     ...(watchlist ? { watchlist } : {}),
   };
