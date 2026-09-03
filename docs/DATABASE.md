@@ -136,8 +136,15 @@ active when it was created (rule 16 — never blend versions).
   they were made under. "Did this change help?" becomes answerable.
 
 ### `agent_performance`
-Per (agentKey, agentVersion) live scorecard — fired count, agreement rate with composite,
-version-scoped so a version bump starts a clean slate.
+**Per-user-agent scorecard.** One row per `(tradingAgentId, agentKey, agentVersion)` — separate
+from `brain_agent_memory` which is DOMAIN-wide (§16). Answers "how has Momentum contributed to
+THIS user's SOL scalp agent specifically?" while `brain_agent_memory` answers "is
+Momentum-the-analyst predictive across the whole domain?".
+- **Holds:** `wins`, `losses`, `last_updated_at`.
+- **Written by:** `feedBrainOnce` (same feed path — seeded + live). One increment per
+  contribution: agent's own score-sign matches realized direction → win, else loss. Zero-score
+  ("no opinion") doesn't move the scorecard either way — same discipline §16 uses.
+- **Read by:** the Agents-detail Performance tab (per-agent hit rates).
 
 ---
 

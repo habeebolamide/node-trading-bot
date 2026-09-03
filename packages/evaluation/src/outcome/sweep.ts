@@ -11,7 +11,7 @@
  */
 import { and, asc, desc, eq, inArray, isNull, lte, sql } from 'drizzle-orm';
 import {
-  marketCandle, paperPosition, prediction, predictionOutcome, tradingAgent, type Db,
+  agentPerformance, marketCandle, paperPosition, prediction, predictionOutcome, tradingAgent, type Db,
 } from '@tip/database';
 import type { TradingStyle } from '@tip/trading-agents';
 import { recordAgentOutcome, recordSetupOutcome } from '@tip/brain';
@@ -197,7 +197,47 @@ export async function feedBrainOnce(db: Db, predictionId: string, style: Trading
     { predictionId: p.id, domain, closedAt, realizedDirection },
     contributions,
   );
+  // Per-TRADING-AGENT scorecard (§14): brain_agent_memory is domain-wide, agent_performance
+  // is scoped to THIS user's specific agent so the Agents page can show "on your SOL scalp
+  // agent, Momentum has been right 61% of the time." Upsert wins/losses per contribution:
+  // an agent's individual score-sign matching realizedDirection is a win. Zero-score (no
+  // opinion) doesn't count either way — same rule §16 uses.
+  await recordPerAgentPerformance(db, p.tradingAgentId, contributions, realizedDirection);
   return true;
+}
+
+/**
+ * agent_performance upsert — one row per (tradingAgentId, agentKey, agentVersion), incrementing
+ * `wins` or `losses` by the per-contribution direction match. Idempotent by construction: the
+ * caller (`feedBrainOnce`) is guarded by prediction.brainWrittenAt, so a replayed sweep can't
+ * double-count. Empty contributions (a rare no-contributing-agents signal) is a no-op.
+ */
+async function recordPerAgentPerformance(
+  db: Db,
+  tradingAgentId: string,
+  contributions: readonly { agent: string; agentVersion: number; score: number }[],
+  realizedDirection: 1 | -1,
+): Promise<void> {
+  for (const c of contributions) {
+    if (c.score === 0) continue; // no opinion — doesn't move the scorecard either way
+    const agentSign = c.score > 0 ? 1 : -1;
+    const won = agentSign === realizedDirection;
+    await db
+      .insert(agentPerformance)
+      .values({
+        id: `${tradingAgentId}:${c.agent}:${c.agentVersion}`,
+        tradingAgentId, agentKey: c.agent, agentVersion: c.agentVersion,
+        wins: won ? 1 : 0, losses: won ? 0 : 1, lastUpdatedAt: new Date(),
+      })
+      .onConflictDoUpdate({
+        target: [agentPerformance.tradingAgentId, agentPerformance.agentKey, agentPerformance.agentVersion],
+        set: {
+          wins: won ? sql`${agentPerformance.wins} + 1` : agentPerformance.wins,
+          losses: won ? agentPerformance.losses : sql`${agentPerformance.losses} + 1`,
+          lastUpdatedAt: new Date(),
+        },
+      });
+  }
 }
 
 /** Batch sweep — every unresolved elapsed horizon across every prediction, then feed the Brain. */
