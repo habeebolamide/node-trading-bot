@@ -227,6 +227,11 @@ export async function seedSymbol(opts: SeedOptions & { symbol: string }): Promis
           agent: c.agent, agentVersion: c.agentVersion, contribution: c.contribution, weight: c.weight,
           score: outputs.find((o) => o?.agent === c.agent)?.score ?? 0,
         })),
+        // §25 replay: T1 anchors on prediction.createdAt for seeded rows (no paper_position).
+        // Without this override, `defaultNow()` stamped today and the resolver searched for
+        // 1m candles past today — finding none, every seeded outcome resolved to
+        // `won=false, returnPct=0`. Bar closeTime IS the historical T1 (same anchor §21).
+        createdAt,
       });
       if (!predRes.created) continue;
       stats.predictionsCreated++;

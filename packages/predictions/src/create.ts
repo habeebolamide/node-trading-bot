@@ -87,6 +87,12 @@ export async function createPrediction(db: Db, input: CreatePredictionInput): Pr
         configVersion: setup.configVersion,
         isShadow: input.isShadow ?? false,
         shadowOf: input.shadowOf ?? null,
+        // §25 replay: the seeder walks historical bars, so `createdAt` must be the BAR's
+        // close time (T0), not `now()`. Without the override, `defaultNow()` stamps today,
+        // t1 anchors on today, and the outcome resolver looks for 1m candles past today —
+        // finds none, and every seeded outcome finalizes as `won=false, returnPct=0`.
+        // Optional so live callers keep the default-now behaviour.
+        ...(input.createdAt ? { createdAt: input.createdAt } : {}),
       })
       .returning();
 

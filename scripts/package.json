@@ -12,7 +12,8 @@
     "helius-webhook": "tsx src/helius-webhook.ts",
     "score": "tsx src/score-wallets.ts",
     "recompute-clusters": "tsx src/recompute-clusters.ts",
-    "seed-brain": "tsx src/seed-brain.ts"
+    "seed-brain": "tsx src/seed-brain.ts",
+    "reset-brain": "tsx src/reset-brain.ts"
   },
   "dependencies": {
     "@tip/database": "*",

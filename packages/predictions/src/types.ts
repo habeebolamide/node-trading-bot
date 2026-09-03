@@ -56,6 +56,12 @@ export interface CreatePredictionInput {
   /** §18 Judge-override machinery (M7). Both stay defaults here. */
   readonly isShadow?: boolean;
   readonly shadowOf?: string | null;
+  /**
+   * Optional override for `createdAt` — the seeder passes the historical bar's close time
+   * so the outcome resolver can find the RIGHT 1m candles. Omit in live code so `defaultNow()`
+   * stamps the actual insert wall-clock.
+   */
+  readonly createdAt?: Date;
 }
 
 export interface CreatePredictionResult {
