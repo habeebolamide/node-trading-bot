@@ -18,3 +18,4 @@ export * from './hypothesis/backtest.js';
 export * from './hypothesis/pipeline.js';
 export * from './hypothesis/promote.js';
 export * from './hypothesis/propose.js';
+export * from './hypothesis/autotune.js';

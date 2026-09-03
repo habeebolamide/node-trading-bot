@@ -11,6 +11,8 @@ import { usePredictions } from '@/hooks/usePredictions';
 import { usePortfolios, usePositions } from '@/hooks/usePortfolios';
 import { useHeadline } from '@/hooks/useMetrics';
 import { PredictionOutcome } from '@/components/PredictionOutcome';
+import { AutopsyPanel } from '@/components/AutopsyPanel';
+import { ConfigVersionSwitcher } from '@/components/ConfigVersionSwitcher';
 
 const PREDICTIONS_PAGE_SIZE = 50;
 
@@ -65,6 +67,15 @@ function AgentSignals({ agentId }: { agentId: string }) {
 }
 
 function AgentPredictions({ agentId, domain }: { agentId: string; domain: string }) {
+  return (
+    <div className="space-y-4">
+      <AutopsyPanel agentId={agentId} domain={domain} />
+      <AgentPredictionsTable agentId={agentId} domain={domain} />
+    </div>
+  );
+}
+
+function AgentPredictionsTable({ agentId, domain }: { agentId: string; domain: string }) {
   const [offset, setOffset] = useState(0);
   const q = usePredictions({ agentId, domain, limit: PREDICTIONS_PAGE_SIZE, offset });
   const total = q.data?.total ?? 0;
@@ -199,6 +210,7 @@ function AgentConfig({ agent }: { agent: AgentRow }) {
   const weights = Object.entries(agent.config.agentWeights ?? {}).sort((a, b) => b[1] - a[1]);
   return (
     <div className="space-y-4">
+      <ConfigVersionSwitcher agentId={agent.id} />
       <Card>
         <CardHeader>Agent weights (active config v{agent.activeConfigVersion})</CardHeader>
         <Table>
@@ -220,8 +232,7 @@ function AgentConfig({ agent }: { agent: AgentRow }) {
 {JSON.stringify(agent.config, null, 2)}
           </pre>
           <p className="mt-2 text-xs text-neutral-500">
-            Config is versioned (rule 16). Edits are CLI-only via <code>PATCH /trading-agents/:id</code>
-            — the UI displays the current version, never writes.
+            Config is versioned (rule 16). Edits arrive via the Autopsy + Auto-Tune flow on the Predictions tab, or via <code>PATCH /trading-agents/:id/config</code>. Switch versions above.
           </p>
         </CardBody>
       </Card>

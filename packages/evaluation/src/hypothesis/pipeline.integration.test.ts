@@ -121,18 +121,22 @@ describe.skipIf(!DATABASE_URL)('hypothesis pipeline (integration)', () => {
     expect(rows).toHaveLength(0);
   });
 
-  it('PROMOTION: takes a BACKTEST_PASSED hypothesis, inserts a NEW scoring_config row, marks PROMOTED', async () => {
-    // Move the earlier PROPOSED row to BACKTEST_PASSED (mimicking a passing backtest + OOS).
+  it('PROMOTION: takes an OOS_PASSED hypothesis, inserts a NEW scoring_config row, marks PROMOTED', async () => {
+    // Move the earlier PROPOSED row to OOS_PASSED (audit-3 fix: BACKTEST_PASSED alone no
+    // longer promotes — OOS must confirm). mimicking a passing backtest + OOS confirmation.
     const rows = await db.select().from(learningHypothesis)
       .where(and(eq(learningHypothesis.setupId, uniqueSetup), eq(learningHypothesis.category, 'POSITIONING_MISREAD')));
     const h = rows[0]!;
-    await db.update(learningHypothesis).set({ status: 'BACKTEST_PASSED' }).where(eq(learningHypothesis.id, h.id));
+    await db.update(learningHypothesis).set({ status: 'OOS_PASSED' }).where(eq(learningHypothesis.id, h.id));
 
     // Read current active version (v1) → after promotion we expect v2.
     const beforeActive = (await db.select().from(scoringConfig)
       .where(and(eq(scoringConfig.tradingAgentId, agentId), eq(scoringConfig.active, true))))[0]!;
 
-    const result = await promoteHypothesis(db, { hypothesisId: h.id, tradingAgentId: agentId });
+    const result = await promoteHypothesis(db, {
+      hypothesisId: h.id, tradingAgentId: agentId, style: 'day',
+      minPredictionsForBootstrap: 0, // test seeds autopsies but no predictions; bypass the guard
+    });
     expect(result.promoted).toBe(true);
     expect(result.fromConfigVersion).toBe(beforeActive.version);
     expect(result.toConfigVersion).toBe(beforeActive.version + 1);
@@ -163,7 +167,7 @@ describe.skipIf(!DATABASE_URL)('hypothesis pipeline (integration)', () => {
       .where(and(eq(learningHypothesis.setupId, uniqueSetup), eq(learningHypothesis.status, 'PROMOTED'))))[0];
     // A PROMOTED row cannot be re-promoted.
     if (proposedRow) {
-      const r = await promoteHypothesis(db, { hypothesisId: proposedRow.id, tradingAgentId: agentId });
+      const r = await promoteHypothesis(db, { hypothesisId: proposedRow.id, tradingAgentId: agentId, style: 'day' });
       expect(r.promoted).toBe(false);
       expect(r.reason).toContain('not promotable');
     }

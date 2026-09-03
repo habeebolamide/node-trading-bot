@@ -48,6 +48,7 @@ async function main(): Promise<void> {
     bus,
     webhookSecret: config.HELIUS_WEBHOOK_SECRET,
     bybitTestnet: config.BYBIT_TESTNET,
+    ...(config.DEEPSEEK_API_KEY ? { deepseekApiKey: config.DEEPSEEK_API_KEY } : {}),
     startedAt: Date.now(),
     ...(watchlist ? { watchlist } : {}),
   };

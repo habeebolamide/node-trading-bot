@@ -9,6 +9,7 @@ import { walletsRouter } from './wallets.js';
 import { tradingAgentsRouter } from './trading-agents.js';
 import { seedingRouter } from './seeding.js';
 import { backfillRouter } from './backfill.js';
+import { autopsyRouter } from './autopsy.js';
 import { dashboardRouter } from './dashboard.js';
 
 export interface ApiDeps {
@@ -21,6 +22,8 @@ export interface ApiDeps {
   watchlist?: Watchlist;
   /** Bybit testnet toggle for the backfill router — mirrors the worker's config. */
   bybitTestnet?: boolean;
+  /** DeepSeek API key for the LLM-driven autopsy router. */
+  deepseekApiKey?: string;
   /** Process start time for uptime reporting. */
   startedAt?: number;
 }
@@ -45,6 +48,7 @@ export function createApp(deps: ApiDeps): Express {
   // TradingAgent routes (m4-tradingagent). Always mounted — needs only DB access.
   // Seeding routes mount FIRST: '/seeding/status' must not be swallowed by the CRUD '/:id'.
   app.use('/trading-agents', seedingRouter(deps.db));
+  app.use('/trading-agents', autopsyRouter(deps.db, { ...(deps.deepseekApiKey ? { deepseekApiKey: deps.deepseekApiKey } : {}) }));
   app.use('/trading-agents', tradingAgentsRouter(deps.db));
   app.use('/api', dashboardRouter(deps.db));
   app.use('/api/backfill', backfillRouter(deps.db, { testnet: deps.bybitTestnet ?? false }));

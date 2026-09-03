@@ -959,7 +959,7 @@ export const learningHypothesis = pgTable(
     categoryKind: text('category_kind').notNull(), // 'FAILURE' | 'SUCCESS'
     evidenceCount: numeric('evidence_count').notNull(), // effective-n at eligibility time
     proposedChange: jsonb('proposed_change').notNull(),
-    status: text('status').notNull(),           // PROPOSED | BACKTEST_PASSED | OOS_PENDING | PROMOTED | REJECTED | DEFERRED_BOOTSTRAP
+    status: text('status').notNull(),           // PROPOSED | BACKTEST_PASSED | OOS_PENDING | OOS_PASSED | PROMOTED | REJECTED | DEFERRED_BOOTSTRAP
     backtestResult: jsonb('backtest_result'),
     oosResult: jsonb('oos_result'),
     fromConfigVersion: integer('from_config_version'),

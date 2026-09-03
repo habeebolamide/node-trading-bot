@@ -100,4 +100,33 @@ describe.skipIf(!DATABASE_URL)('/trading-agents (integration, Postgres)', () => 
     const res = await request(app).get('/trading-agents/does-not-exist');
     expect(res.status).toBe(404);
   });
+
+  it('config version switcher — GET /:id/configs lists versions; POST /:id/active-config flips', async () => {
+    const app = createApp(stubDeps(db));
+    const unique = { ...validPerpBody, name: `SW-${randomUUID().slice(0, 6)}` };
+    const post = await request(app).post('/trading-agents').send(unique);
+    expect(post.status).toBe(201);
+    const id = post.body.id as string;
+    created.push(id);
+
+    // Bump to v2 via PATCH.
+    await request(app).patch(`/trading-agents/${id}/config`).send({
+      ...unique.config, agentWeights: { 'perp.momentum': 0.35 },
+    }).expect(200);
+
+    const list = await request(app).get(`/trading-agents/${id}/configs`);
+    expect(list.status).toBe(200);
+    expect(list.body.activeVersion).toBe(2);
+    expect(list.body.versions).toHaveLength(2);
+    expect(list.body.versions[0].version).toBe(2); // desc order
+
+    // Switch back to v1.
+    const switchRes = await request(app).post(`/trading-agents/${id}/active-config`).send({ version: 1 });
+    expect(switchRes.status).toBe(200);
+    expect(switchRes.body.activeConfigVersion).toBe(1);
+
+    // Refuses unknown version.
+    const bad = await request(app).post(`/trading-agents/${id}/active-config`).send({ version: 99 });
+    expect(bad.status).toBe(400);
+  });
 });
