@@ -1486,6 +1486,50 @@ until live volume fills it. Both statements are true simultaneously and do not c
 - This removes the historical-data requirement from Task 4's provider evaluation (§34) — the Solana provider only needs to support **live wallet/token watching** (webhooks, parsed swaps, real-time delivery), not deep historical archival access. This is a meaningfully easier bar: Helius' free tier (30M CU/month, webhooks, enhanced parsed transaction APIs) is sufficient for MVP live watching on this scope.
 - If memecoin backtesting/seeding becomes worth doing later, it's a genuine future-phase decision, revisited with real provider research at that point — not something this MVP needs to solve now.
 
+### Seed vs live parity (addendum, build-time — audit-3 clarifications)
+
+*A live-vs-seed audit turned up three silent bugs (all fixed): (a) `prediction.createdAt` used
+`defaultNow()` so seeded outcomes anchored on today and resolved as `won=false, returnPct=0`;
+(b) the seeder called `resolvePrediction` but not `feedBrainOnce`, so the Brain tables stayed
+empty; (c) `agent_performance` had zero writers repo-wide. This addendum documents the invariant
+"seed must produce the same downstream state a live run would" so the next audit doesn't have
+to rediscover it.*
+
+**Seed writes (must match live-on-close):**
+
+- `signal` + `signal_feature` — every fired signal + per-agent features
+- `signal_no_trade` — planner refusals (INSUFFICIENT_RR / CANNOT_SIZE_SAFELY / etc.)
+- `signal_risk` — Risk Agent verdict (audit-3: same veto the live pipeline applies)
+- `prediction` — with `createdAt = bar.closeTime` so outcomes anchor correctly
+- `prediction_outcome` — every horizon in the style's Task-7 set
+- `brain_setup_occurrence` + `brain_setup_memory` — via `feedBrainOnce`
+- `brain_agent_occurrence` + `brain_agent_memory` — same
+- `agent_performance` — per-user-agent scorecard, one row per `(tradingAgentId, agentKey, agentVersion)`
+
+**Seed deliberately DOES NOT write (per §25 scope):**
+
+- `paper_position` / `paper_position_fill` / `paper_portfolio` — "seeding does not open paper
+  positions; it resolves the counterfactual and feeds the Brain." Live has cash/equity/drawdown;
+  seed does not. Portfolio metrics live-only.
+- `judge_decision` — the Judge is deterministic-input LLM output but the LLM call itself is
+  non-deterministic AND costs money per bar. Seed omits the Judge; live invokes it when
+  `DEEPSEEK_API_KEY` is set.
+- `trade_autopsy` / `learning_hypothesis` — perp autopsy is a live-only loop (§24 defers
+  memecoin autopsy entirely). Seeded predictions are not autopsied.
+
+**Live-only writes not related to individual predictions (unchanged, unaffected by seed):**
+
+- `wallet_score_event` / `brain_wallet_memory` — driven by `scoreAllWallets` on a schedule
+- `cluster_run` / `wallet_cluster` — driven by `recomputeClusters` on a schedule
+- `active_token_claim` — memecoin live only (seeded perp never touches it)
+
+**The invariant:** if a table has a live-on-close writer, seed must call the same writer with
+the same inputs — otherwise seeded state drifts from what "we had been running live for six
+months" would look like. The `feedBrainOnce` fix + Risk-Agent-in-seed fix + `agent_performance`
+fix all restore this invariant. A future contributor adding a new close-side write MUST add it
+to seed too or explicitly document why not (usually: LLM cost, or the write is per-position
+which seed doesn't have).
+
 ---
 
 ## 26. Dashboard

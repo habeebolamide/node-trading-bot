@@ -5,3 +5,4 @@ export * from './common/risk-agent.js';
 export * from './memecoin/index.js';
 export * from './perp/index.js';
 export * from './common/candles.js';
+export * from './common/risk-inputs.js';

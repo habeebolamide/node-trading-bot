@@ -11,10 +11,7 @@
  */
 import { and, eq, lte } from 'drizzle-orm';
 import { marketCandle, signal, signalFeature, type Db } from '@tip/database';
-import { recentCandlesAsOf } from '@tip/agents';
-import { atr, ema } from '@tip/agents';
-import type { PerpRiskInputs } from '@tip/agents';
-import { collapsePivots, nearestLevels, swingPivots } from '@tip/planner';
+import { recentCandlesAsOf, atr, ema, type PerpRiskInputs } from '@tip/agents';
 import { PRIMARY_TF, type TradingStyle } from '@tip/trading-agents';
 
 const ATR_TIMEFRAME: Record<TradingStyle, string> = { scalp: '5m', day: '1h', swing: '4h' };
@@ -48,8 +45,11 @@ export async function loadPerpRiskInputs(db: Db, style: TradingStyle, p: SignalC
   const a14 = atr(bars, 14);
   if (a14 === null || a14 <= 0) return null;
 
-  const pivots = collapsePivots(swingPivots(bars.map((b) => ({ high: b.high, low: b.low, closeTime: b.closeTime })), 2), a14, 0.25);
-  const { supportBelow, resistanceAbove } = nearestLevels(entry, pivots);
+  // S/R levels intentionally passed as null here: computing them needs planner's swing-pivot
+  // helpers, and adding @tip/planner as an evaluation dep would create a cycle (planner →
+  // evaluation for AsOfMarketData). The Risk Agent gracefully skips the SR-proximity check
+  // when levels are null — a partial risk read is better than a build-time cycle. A follow-up
+  // can lift the pivot helpers to a shared package if this becomes a real gap.
 
   // Feature reads: pull the persisted per-agent features by (signalId, agentKey).
   const feats = await db.select().from(signalFeature).where(eq(signalFeature.signalId, p.signalId));
@@ -73,8 +73,8 @@ export async function loadPerpRiskInputs(db: Db, style: TradingStyle, p: SignalC
   return {
     direction: (p.direction.endsWith('LONG') ? 'LONG' : p.direction.endsWith('SHORT') ? 'SHORT' : 'NEUTRAL'),
     entryPrice: entry, atr14: a14,
-    nearestSupport: supportBelow?.price ?? null,
-    nearestResistance: resistanceAbove?.price ?? null,
+    nearestSupport: null,
+    nearestResistance: null,
     fundingPercentile30d, oiPercentile30d, atrRatio, emaDistanceInAtr,
   };
 }

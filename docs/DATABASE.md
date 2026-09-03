@@ -314,6 +314,32 @@ The hypothesis pipeline's queue. State machine: `PROPOSED` → `BACKTEST_PASSED`
 
 ---
 
+## Seed vs live — which tables get written when
+
+**Rule:** seed must write the same tables live would on close, except for the position/
+portfolio row and the LLM outputs (per §25). If you add a new close-side write and don't
+also update the seeder, you break replay parity.
+
+| Table | Live path | Seed path | Why |
+|---|---|---|---|
+| `signal` + `signal_feature` | ✅ | ✅ | Every fired signal + per-agent features |
+| `signal_no_trade` | ✅ | ✅ | Planner refusals |
+| `signal_risk` | ✅ | ✅ | Risk Agent runs in seed too (audit-3 fix) |
+| `prediction` | ✅ | ✅ | With `createdAt = bar.closeTime` in seed |
+| `prediction_outcome` | ✅ | ✅ | Every horizon in Task-7 set |
+| `brain_setup_occurrence` + `brain_setup_memory` | ✅ | ✅ | Via `feedBrainOnce` |
+| `brain_agent_occurrence` + `brain_agent_memory` | ✅ | ✅ | Same |
+| `agent_performance` | ✅ | ✅ | Per-user-agent scorecard |
+| `paper_position` / `paper_position_fill` | ✅ | ❌ | §25: seed doesn't open paper positions |
+| `paper_portfolio` | ✅ | ❌ | No positions → no cash/equity/drawdown updates |
+| `judge_decision` | ✅ (if DEEPSEEK_API_KEY) | ❌ | LLM cost + non-deterministic output |
+| `trade_autopsy` / `learning_hypothesis` | ✅ (perp) | ❌ | Live-only loop |
+| `active_token_claim` | ✅ (memecoin) | — | Perp seed doesn't touch memecoin |
+| `wallet_score_event` / `brain_wallet_memory` | ✅ (scheduler) | — | Schedule-driven, unrelated to individual predictions |
+| `cluster_run` / `wallet_cluster` | ✅ (scheduler) | — | Same |
+
+---
+
 ## Group 10 — Governance / cross-cutting
 
 ### `active_token_claim` — see Group 8 (§9a atomicity guard)

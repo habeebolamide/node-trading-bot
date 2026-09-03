@@ -28,8 +28,7 @@ import { MemecoinAnalysisTier } from './analysis/memecoin-analysis.js';
 import { createMemecoinEntryOrchestrator } from './analysis/memecoin-entry.js';
 import { createMemecoinTickHandler } from './analysis/memecoin-tick.js';
 import { createShadowInserter } from './analysis/shadow-inserter.js';
-import { loadPerpRiskInputs } from './analysis/risk-inputs.js';
-import { createRiskAgent } from '@tip/agents';
+import { createRiskAgent, loadPerpRiskInputs } from '@tip/agents';
 import { blockAgentsForStaleFeed, unblockAgentsForRecoveredFeed } from '@tip/trading-agents';
 import { withEventDedup } from './dedup.js';
 import { createTelegramAlertHandler } from './alerts/telegram.js';
@@ -66,15 +65,15 @@ async function main(): Promise<void> {
       }
       // §37 BLOCK the affected agents — "the specific bug that killed the previous bot"
       // (audit-2 #7: the bridge existed, main.ts wired onStale to console.warn only).
-      void blockAgentsForStaleFeed(db, id).then((ids) => {
+      void blockAgentsForStaleFeed(db, id).then((ids: readonly string[]) => {
         if (ids.length > 0) console.warn(`[staleness] BLOCKED ${ids.length} agent(s) for stale feed ${id}`);
-      }).catch((e) => console.warn('[staleness] block failed:', e instanceof Error ? e.message : e));
+      }).catch((e: unknown) => console.warn('[staleness] block failed:', e instanceof Error ? e.message : e));
     },
     onRecover: (id, down) => {
       console.log(`[staleness] ${id} recovered (was down ~${Math.round(down / 1000)}s)`);
-      void unblockAgentsForRecoveredFeed(db, id).then((ids) => {
+      void unblockAgentsForRecoveredFeed(db, id).then((ids: readonly string[]) => {
         if (ids.length > 0) console.log(`[staleness] cleared BLOCKED on ${ids.length} agent(s) for recovered feed ${id}`);
-      }).catch((e) => console.warn('[staleness] unblock failed:', e instanceof Error ? e.message : e));
+      }).catch((e: unknown) => console.warn('[staleness] unblock failed:', e instanceof Error ? e.message : e));
     },
   });
   const adapter = new BybitAdapter({
@@ -123,12 +122,12 @@ async function main(): Promise<void> {
   // the signal, and downstream handlers all short-circuit on non-ACTIVE state.
   const riskAgent = createRiskAgent({
     bus,
-    loadPerpInputs: async (p) => {
+    loadPerpInputs: async (p: { tradingAgentId: string; signalId: string; symbol: string; domain: 'perp' | 'memecoin'; direction: string }) => {
       const a = (await db.select({ style: tradingAgent.tradingStyle }).from(tradingAgent).where(eq(tradingAgent.id, p.tradingAgentId)).limit(1))[0];
       if (!a) return null;
       return loadPerpRiskInputs(db, a.style as never, p);
     },
-    log: (m, meta) => console.log(`[risk] ${m}`, meta ?? ''),
+    log: (m: string, meta?: unknown) => console.log(`[risk] ${m}`, meta ?? ''),
   });
   signalProcessingHandlers.push(async (event: DomainEvent) => {
     if (event.type !== EVENT_NAMES.SIGNAL_CREATED) return;

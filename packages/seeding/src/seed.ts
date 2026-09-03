@@ -22,7 +22,7 @@
  */
 import { randomUUID } from 'node:crypto';
 import { and, eq, lte } from 'drizzle-orm';
-import { perpAgents } from '@tip/agents';
+import { perpAgents, createRiskAgent, isVetoed, loadPerpRiskInputs } from '@tip/agents';
 import { createLogger } from '@tip/domain';
 import { marketSymbol, type MarketSymbol } from '@tip/domain';
 import { ValidationError } from '@tip/domain';
@@ -212,6 +212,36 @@ export async function seedSymbol(opts: SeedOptions & { symbol: string }): Promis
       });
       if (!sigRes.created || !sigRes.signalId) continue; // fingerprint dedup — the same bar seen twice
       stats.signalsCreated++;
+
+      // §40.12 Risk Agent — SAME veto the live pipeline applies (audit-3 gap: seed used to
+      // skip Risk entirely, so seeded Brain evidence included setups a live signal would have
+      // INVALIDATED). Uses the same `loadPerpRiskInputs` reader the worker uses, so the veto
+      // decision is byte-identical between seed and live for the same signal state.
+      const seedRiskAgent = createRiskAgent({
+        loadPerpInputs: async (p) => loadPerpRiskInputs(opts.db, agent.style, p),
+      });
+      const seedRiskCtx = {
+        db: opts.db, now: createdAt,
+        tradingAgentId: opts.tradingAgentId, configVersion: agent.configVersion,
+        domain: 'perp' as const, primaryTf: PRIMARY_TF[agent.style],
+        walletScoreAsOf: async () => null, activeClusterMap: async () => new Map(),
+      };
+      const riskEvent = {
+        id: `seed-risk-${randomUUID()}`, type: EVENT_NAMES.SIGNAL_CREATED, version: 1,
+        eventTime: createdAt.toISOString(), processingTime: new Date().toISOString(), source: 'seed',
+        payload: {
+          signalId: sigRes.signalId, tradingAgentId: opts.tradingAgentId, symbol: opts.symbol,
+          domain: 'perp' as const, direction: composite.direction,
+          compositeScore: composite.compositeScore, confidence,
+          configVersion: agent.configVersion, expiresAt: expiresAt.toISOString(),
+        },
+      };
+      const riskOut = await seedRiskAgent.analyze(riskEvent, seedRiskCtx).catch(() => null);
+      if (isVetoed(riskOut)) {
+        // Risk-INVALIDATED — signal has already been transitioned; skip prediction like live does.
+        stats.noTrades++;
+        continue;
+      }
 
       const plan = await planTrade(
         { symbol: opts.symbol, domain: 'perp', direction: composite.direction },
