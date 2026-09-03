@@ -1,3 +1,5 @@
+import { useState } from 'react';
+import { Link } from 'react-router-dom';
 import { Card, CardBody, CardHeader } from '@/components/ui/Card';
 import { Badge } from '@/components/ui/Badge';
 import { Skeleton } from '@/components/ui/Skeleton';
@@ -8,6 +10,9 @@ import { useSignals } from '@/hooks/useSignals';
 import { usePredictions } from '@/hooks/usePredictions';
 import { usePortfolios, usePositions } from '@/hooks/usePortfolios';
 import { useHeadline } from '@/hooks/useMetrics';
+import { PredictionOutcome } from '@/components/PredictionOutcome';
+
+const PREDICTIONS_PAGE_SIZE = 50;
 
 /** Tabs per §26 Agent detail: Overview / Signals / Predictions / Paper Portfolio / Performance
  *  / Configuration. Each tab reads from an existing /api endpoint. */
@@ -60,28 +65,57 @@ function AgentSignals({ agentId }: { agentId: string }) {
 }
 
 function AgentPredictions({ agentId, domain }: { agentId: string; domain: string }) {
-  const q = usePredictions({ agentId, domain, limit: 100 });
-  if (q.isLoading) return <Skeleton className="h-40" />;
+  const [offset, setOffset] = useState(0);
+  const q = usePredictions({ agentId, domain, limit: PREDICTIONS_PAGE_SIZE, offset });
+  const total = q.data?.total ?? 0;
+  const shown = q.data?.rows.length ?? 0;
+  const from = total === 0 ? 0 : offset + 1;
+  const to = offset + shown;
+  const hasPrev = offset > 0;
+  const hasNext = offset + shown < total;
+
+  if (q.isLoading && !q.data) return <Skeleton className="h-40" />;
   return (
     <Card>
       <Table>
-        <Thead><Tr><Th>Symbol</Th><Th>Direction</Th><Th>Entry</Th><Th>SL</Th><Th>TP</Th><Th>R:R</Th><Th>Shadow?</Th><Th>Created</Th></Tr></Thead>
+        <Thead><Tr>
+          <Th>Symbol</Th><Th>Direction</Th><Th>Entry</Th><Th>SL</Th><Th>TP</Th><Th>R:R</Th>
+          <Th>Outcome</Th><Th>Real?</Th><Th>Created</Th>
+        </Tr></Thead>
         <Tbody>
           {(q.data?.rows ?? []).map((p) => (
             <Tr key={p.id}>
-              <Td>{p.symbol}</Td>
+              <Td><Link className="text-accent hover:underline" to={`/predictions/${p.id}`}>{p.symbol}</Link></Td>
               <Td>{p.direction}</Td>
               <Td className="tabular-nums">{Number(p.entry).toFixed(2)}</Td>
               <Td className="tabular-nums">{Number(p.stopLoss).toFixed(2)}</Td>
               <Td className="tabular-nums">{p.takeProfit ? Number(p.takeProfit).toFixed(2) : '—'}</Td>
               <Td className="tabular-nums">{Number(p.riskReward).toFixed(2)}</Td>
+              <Td><PredictionOutcome p={p} /></Td>
               <Td>{p.isShadow ? <Badge tone="warn">shadow</Badge> : <Badge tone="success">real</Badge>}</Td>
-              <Td className="text-neutral-400">{new Date(p.createdAt).toISOString()}</Td>
+              <Td className="text-neutral-400 text-xs">{new Date(p.createdAt).toISOString().slice(0, 19).replace('T', ' ')}</Td>
             </Tr>
           ))}
-          {(q.data?.rows ?? []).length === 0 && <Tr><Td colSpan={8} className="text-neutral-500">No predictions yet.</Td></Tr>}
+          {shown === 0 && !q.isLoading && (
+            <Tr><Td colSpan={9} className="text-neutral-500">No predictions yet.</Td></Tr>
+          )}
         </Tbody>
       </Table>
+      <CardBody className="flex items-center justify-between border-t border-neutral-900 py-2 text-xs text-neutral-400">
+        <span>{total > 0 ? `${from}–${to} of ${total.toLocaleString()}` : '—'}</span>
+        <div className="flex items-center gap-2">
+          <button
+            disabled={!hasPrev || q.isFetching}
+            onClick={() => setOffset(Math.max(0, offset - PREDICTIONS_PAGE_SIZE))}
+            className="rounded-md border border-neutral-800 px-3 py-1 hover:border-accent hover:text-accent disabled:opacity-40 disabled:hover:border-neutral-800 disabled:hover:text-neutral-400"
+          >← Prev</button>
+          <button
+            disabled={!hasNext || q.isFetching}
+            onClick={() => setOffset(offset + PREDICTIONS_PAGE_SIZE)}
+            className="rounded-md border border-neutral-800 px-3 py-1 hover:border-accent hover:text-accent disabled:opacity-40 disabled:hover:border-neutral-800 disabled:hover:text-neutral-400"
+          >Next →</button>
+        </div>
+      </CardBody>
     </Card>
   );
 }

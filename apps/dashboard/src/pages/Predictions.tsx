@@ -6,6 +6,7 @@ import { Skeleton } from '@/components/ui/Skeleton';
 import { Table, Thead, Th, Tbody, Tr, Td } from '@/components/ui/Table';
 import { usePrediction, usePredictions, type PredictionRow } from '@/hooks/usePredictions';
 import { usePredictionAttribution, usePredictionAutopsy } from '@/hooks/usePredictionExtras';
+import { PredictionOutcome } from '@/components/PredictionOutcome';
 
 const PAGE_SIZE = 50;
 
@@ -15,43 +16,6 @@ export function Predictions() {
   return <PredictionList />;
 }
 
-/**
- * Outcome badge for the list column (fix #3). A prediction can be:
- *   - not yet opened (positionState=null, unusual — see the entry orchestrator)
- *   - PENDING_ENTRY / OPEN (still live)
- *   - CLOSED with a specific closeReason (SL / TP / HORIZON / WALLET_EXIT / LIMIT_EXPIRY)
- *   - EXPIRED — the pending limit window elapsed
- * The realized P&L (when closed) is shown alongside the tone-coded reason.
- */
-function OutcomeCell({ p }: { p: PredictionRow }) {
-  if (p.positionState === null) return <span className="text-neutral-500 text-xs">no position</span>;
-  if (p.positionState === 'PENDING_ENTRY') return <Badge tone="warn">pending limit</Badge>;
-  if (p.positionState === 'OPEN') return <Badge tone="info">open</Badge>;
-  if (p.positionState === 'EXPIRED') return <Badge tone="neutral">limit expired</Badge>;
-  // CLOSED — the shape the user asked for: which exit fired + realized P&L.
-  const reason = p.closeReason;
-  const tone = reason === 'TAKE_PROFIT' ? 'success'
-             : reason === 'STOP_LOSS' ? 'danger'
-             : reason === 'WALLET_EXIT' ? 'warn'
-             : 'neutral';
-  const label = reason === 'TAKE_PROFIT' ? 'TP hit'
-             : reason === 'STOP_LOSS' ? 'SL hit'
-             : reason === 'HORIZON_EXPIRY' ? 'horizon'
-             : reason === 'WALLET_EXIT' ? 'wallet exit'
-             : reason === 'LIMIT_EXPIRY' ? 'limit expired'
-             : (reason ?? 'closed');
-  const pnl = p.realizedPnl !== null ? Number(p.realizedPnl) : null;
-  return (
-    <span className="flex items-center gap-2">
-      <Badge tone={tone}>{label}</Badge>
-      {pnl !== null && (
-        <span className={`tabular-nums text-xs ${pnl > 0 ? 'text-emerald-300' : pnl < 0 ? 'text-red-300' : 'text-neutral-400'}`}>
-          {pnl > 0 ? '+' : ''}{pnl.toFixed(2)}
-        </span>
-      )}
-    </span>
-  );
-}
 
 function PredictionList() {
   const [offset, setOffset] = useState(0);
@@ -82,7 +46,7 @@ function PredictionList() {
                   <Td className="tabular-nums">{Number(p.stopLoss).toFixed(2)}</Td>
                   <Td className="tabular-nums">{p.takeProfit ? Number(p.takeProfit).toFixed(2) : '—'}</Td>
                   <Td className="tabular-nums">{Number(p.riskReward).toFixed(2)}</Td>
-                  <Td><OutcomeCell p={p} /></Td>
+                  <Td><PredictionOutcome p={p} /></Td>
                   <Td>{p.isShadow ? <Badge tone="warn">shadow</Badge> : <Badge tone="success">real</Badge>}</Td>
                   <Td className="text-neutral-400 text-xs">{new Date(p.createdAt).toISOString().slice(0, 19).replace('T', ' ')}</Td>
                 </Tr>
@@ -137,7 +101,7 @@ function PredictionDetail({ id }: { id: string }) {
         <Badge tone={p.isShadow ? 'warn' : 'success'}>{p.isShadow ? 'shadow' : 'real'}</Badge>
         <Badge tone="neutral">{p.direction}</Badge>
         <Badge tone="neutral">v{p.configVersion}</Badge>
-        <OutcomeCell p={p} />
+        <PredictionOutcome p={p} />
       </div>
 
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
