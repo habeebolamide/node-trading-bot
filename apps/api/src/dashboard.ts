@@ -47,25 +47,51 @@ export function dashboardRouter(db: Db): Router {
     const domain = asString(req.query.domain) as Domain | undefined;
     const from = req.query.from ? asDate(req.query.from, new Date(0)) : undefined;
     const to = req.query.to ? asDate(req.query.to, new Date()) : undefined;
-    const limit = asNumber(req.query.limit, 100)!;
+    const limit = Math.min(500, asNumber(req.query.limit, 50)!);
+    const offset = Math.max(0, asNumber(req.query.offset, 0)!);
     const conds = [] as ReturnType<typeof eq>[];
     if (agentId) conds.push(eq(prediction.tradingAgentId, agentId));
     if (domain) conds.push(eq(prediction.domain, domain));
     if (from) conds.push(gte(prediction.createdAt, from));
     if (to) conds.push(lte(prediction.createdAt, to));
-    const rows = await db.select().from(prediction)
-      .where(conds.length ? and(...conds) : undefined)
+    const where = conds.length ? and(...conds) : undefined;
+    // LEFT JOIN paper_position (the position that this prediction opened, if any) so the row
+    // carries close_reason + realized_pnl + closed_at without a second round-trip. Positions
+    // are unique on prediction_id, so this is a scalar join.
+    const rows = await db.select({
+      // prediction cols
+      id: prediction.id, tradingAgentId: prediction.tradingAgentId, signalId: prediction.signalId,
+      domain: prediction.domain, symbol: prediction.symbol, direction: prediction.direction,
+      score: prediction.score, confidence: prediction.confidence, horizon: prediction.horizon,
+      entry: prediction.entry, stopLoss: prediction.stopLoss, takeProfit: prediction.takeProfit,
+      positionSize: prediction.positionSize, notional: prediction.notional,
+      leverage: prediction.leverage, requiredMargin: prediction.requiredMargin,
+      riskReward: prediction.riskReward, thesis: prediction.thesis,
+      isShadow: prediction.isShadow, shadowOf: prediction.shadowOf,
+      configVersion: prediction.configVersion, createdAt: prediction.createdAt,
+      // position outcome (nullable — a prediction may have no position yet)
+      positionState: paperPosition.state, closeReason: paperPosition.closeReason,
+      closedAt: paperPosition.closedAt, realizedPnl: paperPosition.realizedPnl,
+    })
+      .from(prediction)
+      .leftJoin(paperPosition, eq(paperPosition.predictionId, prediction.id))
+      .where(where)
       .orderBy(desc(prediction.createdAt))
-      .limit(limit);
-    res.json({ rows, total: rows.length });
+      .limit(limit).offset(offset);
+    const [totalRow] = await db.select({ n: count() }).from(prediction).where(where);
+    res.json({ rows, total: Number(totalRow?.n ?? 0), limit, offset });
   };
   r.get('/predictions', listPredictions);
 
   r.get('/predictions/:id', async (req, res) => {
     const row = (await db.select().from(prediction).where(eq(prediction.id, req.params.id)).limit(1))[0];
     if (!row) { res.status(404).json({ error: 'not found' }); return; }
-    const outcomes = await db.select().from(predictionOutcome).where(eq(predictionOutcome.predictionId, row.id));
-    res.json({ prediction: row, outcomes });
+    const [outcomes, position] = await Promise.all([
+      db.select().from(predictionOutcome).where(eq(predictionOutcome.predictionId, row.id)),
+      db.select().from(paperPosition).where(eq(paperPosition.predictionId, row.id)).limit(1)
+        .then((rows) => rows[0] ?? null),
+    ]);
+    res.json({ prediction: row, outcomes, position });
   });
 
   r.get('/predictions/:id/attribution', async (req, res) => {

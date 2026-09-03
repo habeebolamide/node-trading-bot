@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { Card, CardBody, CardHeader } from '@/components/ui/Card';
 import { Badge } from '@/components/ui/Badge';
@@ -6,44 +7,111 @@ import { Table, Thead, Th, Tbody, Tr, Td } from '@/components/ui/Table';
 import { usePrediction, usePredictions, type PredictionRow } from '@/hooks/usePredictions';
 import { usePredictionAttribution, usePredictionAutopsy } from '@/hooks/usePredictionExtras';
 
+const PAGE_SIZE = 50;
+
 export function Predictions() {
   const { id } = useParams();
   if (id) return <PredictionDetail id={id} />;
   return <PredictionList />;
 }
 
-function PredictionList() {
-  const q = usePredictions({ limit: 200 });
+/**
+ * Outcome badge for the list column (fix #3). A prediction can be:
+ *   - not yet opened (positionState=null, unusual — see the entry orchestrator)
+ *   - PENDING_ENTRY / OPEN (still live)
+ *   - CLOSED with a specific closeReason (SL / TP / HORIZON / WALLET_EXIT / LIMIT_EXPIRY)
+ *   - EXPIRED — the pending limit window elapsed
+ * The realized P&L (when closed) is shown alongside the tone-coded reason.
+ */
+function OutcomeCell({ p }: { p: PredictionRow }) {
+  if (p.positionState === null) return <span className="text-neutral-500 text-xs">no position</span>;
+  if (p.positionState === 'PENDING_ENTRY') return <Badge tone="warn">pending limit</Badge>;
+  if (p.positionState === 'OPEN') return <Badge tone="info">open</Badge>;
+  if (p.positionState === 'EXPIRED') return <Badge tone="neutral">limit expired</Badge>;
+  // CLOSED — the shape the user asked for: which exit fired + realized P&L.
+  const reason = p.closeReason;
+  const tone = reason === 'TAKE_PROFIT' ? 'success'
+             : reason === 'STOP_LOSS' ? 'danger'
+             : reason === 'WALLET_EXIT' ? 'warn'
+             : 'neutral';
+  const label = reason === 'TAKE_PROFIT' ? 'TP hit'
+             : reason === 'STOP_LOSS' ? 'SL hit'
+             : reason === 'HORIZON_EXPIRY' ? 'horizon'
+             : reason === 'WALLET_EXIT' ? 'wallet exit'
+             : reason === 'LIMIT_EXPIRY' ? 'limit expired'
+             : (reason ?? 'closed');
+  const pnl = p.realizedPnl !== null ? Number(p.realizedPnl) : null;
   return (
-    <div>
-      <h1 className="mb-4 text-lg font-semibold">Predictions</h1>
-      {q.isLoading ? <Skeleton className="h-40" /> : (
-        <Card>
-          <Table>
-            <Thead><Tr><Th>Symbol</Th><Th>Direction</Th><Th>Entry</Th><Th>SL</Th><Th>TP</Th><Th>R:R</Th><Th>Shadow?</Th><Th>Created</Th></Tr></Thead>
-            <Tbody>
-              {(q.data?.rows ?? []).map((p) => <PredictionRowLink key={p.id} p={p} />)}
-              {(q.data?.rows ?? []).length === 0 && <Tr><Td colSpan={8} className="text-neutral-500">No predictions yet.</Td></Tr>}
-            </Tbody>
-          </Table>
-        </Card>
+    <span className="flex items-center gap-2">
+      <Badge tone={tone}>{label}</Badge>
+      {pnl !== null && (
+        <span className={`tabular-nums text-xs ${pnl > 0 ? 'text-emerald-300' : pnl < 0 ? 'text-red-300' : 'text-neutral-400'}`}>
+          {pnl > 0 ? '+' : ''}{pnl.toFixed(2)}
+        </span>
       )}
-    </div>
+    </span>
   );
 }
 
-function PredictionRowLink({ p }: { p: PredictionRow }) {
+function PredictionList() {
+  const [offset, setOffset] = useState(0);
+  const q = usePredictions({ limit: PAGE_SIZE, offset });
+  const total = q.data?.total ?? 0;
+  const shown = q.data?.rows.length ?? 0;
+  const from = total === 0 ? 0 : offset + 1;
+  const to = offset + shown;
+  const hasPrev = offset > 0;
+  const hasNext = offset + shown < total;
+
   return (
-    <Tr>
-      <Td><Link className="text-accent hover:underline" to={`/predictions/${p.id}`}>{p.symbol}</Link></Td>
-      <Td>{p.direction}</Td>
-      <Td className="tabular-nums">{Number(p.entry).toFixed(2)}</Td>
-      <Td className="tabular-nums">{Number(p.stopLoss).toFixed(2)}</Td>
-      <Td className="tabular-nums">{p.takeProfit ? Number(p.takeProfit).toFixed(2) : '—'}</Td>
-      <Td className="tabular-nums">{Number(p.riskReward).toFixed(2)}</Td>
-      <Td>{p.isShadow ? <Badge tone="warn">shadow</Badge> : <Badge tone="success">real</Badge>}</Td>
-      <Td className="text-neutral-400 text-xs">{new Date(p.createdAt).toISOString()}</Td>
-    </Tr>
+    <div>
+      <h1 className="mb-4 text-lg font-semibold">Predictions</h1>
+      {q.isLoading && !q.data ? <Skeleton className="h-40" /> : (
+        <Card>
+          <Table>
+            <Thead><Tr>
+              <Th>Symbol</Th><Th>Direction</Th><Th>Entry</Th><Th>SL</Th><Th>TP</Th><Th>R:R</Th>
+              <Th>Outcome</Th><Th>Real?</Th><Th>Created</Th>
+            </Tr></Thead>
+            <Tbody>
+              {(q.data?.rows ?? []).map((p) => (
+                <Tr key={p.id}>
+                  <Td><Link className="text-accent hover:underline" to={`/predictions/${p.id}`}>{p.symbol}</Link></Td>
+                  <Td>{p.direction}</Td>
+                  <Td className="tabular-nums">{Number(p.entry).toFixed(2)}</Td>
+                  <Td className="tabular-nums">{Number(p.stopLoss).toFixed(2)}</Td>
+                  <Td className="tabular-nums">{p.takeProfit ? Number(p.takeProfit).toFixed(2) : '—'}</Td>
+                  <Td className="tabular-nums">{Number(p.riskReward).toFixed(2)}</Td>
+                  <Td><OutcomeCell p={p} /></Td>
+                  <Td>{p.isShadow ? <Badge tone="warn">shadow</Badge> : <Badge tone="success">real</Badge>}</Td>
+                  <Td className="text-neutral-400 text-xs">{new Date(p.createdAt).toISOString().slice(0, 19).replace('T', ' ')}</Td>
+                </Tr>
+              ))}
+              {shown === 0 && !q.isLoading && (
+                <Tr><Td colSpan={9} className="text-neutral-500">No predictions yet.</Td></Tr>
+              )}
+            </Tbody>
+          </Table>
+          {/* Pagination row — fix #2. `placeholderData` on the hook keeps the current rows
+              visible while the next page loads, so the buttons never blink an empty table. */}
+          <CardBody className="flex items-center justify-between border-t border-neutral-900 py-2 text-xs text-neutral-400">
+            <span>{total > 0 ? `${from}–${to} of ${total.toLocaleString()}` : '—'}</span>
+            <div className="flex items-center gap-2">
+              <button
+                disabled={!hasPrev || q.isFetching}
+                onClick={() => setOffset(Math.max(0, offset - PAGE_SIZE))}
+                className="rounded-md border border-neutral-800 px-3 py-1 hover:border-accent hover:text-accent disabled:opacity-40 disabled:hover:border-neutral-800 disabled:hover:text-neutral-400"
+              >← Prev</button>
+              <button
+                disabled={!hasNext || q.isFetching}
+                onClick={() => setOffset(offset + PAGE_SIZE)}
+                className="rounded-md border border-neutral-800 px-3 py-1 hover:border-accent hover:text-accent disabled:opacity-40 disabled:hover:border-neutral-800 disabled:hover:text-neutral-400"
+              >Next →</button>
+            </div>
+          </CardBody>
+        </Card>
+      )}
+    </div>
   );
 }
 
@@ -54,6 +122,7 @@ function PredictionDetail({ id }: { id: string }) {
   if (q.isLoading) return <Skeleton className="h-40" />;
   if (!q.data) return <p className="text-neutral-500">Not found.</p>;
   const p = q.data.prediction;
+  const pos = q.data.position;
   const feats = attribution.data?.features ?? [];
   const judge = attribution.data?.judge ?? null;
   const risk = attribution.data?.risk ?? null;
@@ -68,6 +137,7 @@ function PredictionDetail({ id }: { id: string }) {
         <Badge tone={p.isShadow ? 'warn' : 'success'}>{p.isShadow ? 'shadow' : 'real'}</Badge>
         <Badge tone="neutral">{p.direction}</Badge>
         <Badge tone="neutral">v{p.configVersion}</Badge>
+        <OutcomeCell p={p} />
       </div>
 
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
@@ -85,6 +155,32 @@ function PredictionDetail({ id }: { id: string }) {
             <div className="text-neutral-400">Horizon</div><div className="text-right">{p.horizon}</div>
           </CardBody>
         </Card>
+
+        {pos && (
+          <Card>
+            <CardHeader>Paper position (§20)</CardHeader>
+            <CardBody className="grid grid-cols-2 gap-2 text-sm">
+              <div className="text-neutral-400">State</div>
+              <div className="text-right">
+                {pos.state === 'OPEN' ? <Badge tone="info">OPEN</Badge>
+                : pos.state === 'CLOSED' ? <Badge tone={pos.closeReason === 'TAKE_PROFIT' ? 'success' : pos.closeReason === 'STOP_LOSS' ? 'danger' : 'neutral'}>{pos.closeReason ?? 'CLOSED'}</Badge>
+                : <Badge tone="neutral">{pos.state}</Badge>}
+              </div>
+              <div className="text-neutral-400">Fill price</div><div className="tabular-nums text-right">{Number(pos.entryPrice).toFixed(6)}</div>
+              <div className="text-neutral-400">Size (remaining)</div><div className="tabular-nums text-right">{Number(pos.remainingSize).toFixed(4)} / {Number(pos.size).toFixed(4)}</div>
+              <div className="text-neutral-400">Realized P&L</div>
+              <div className={`tabular-nums text-right ${Number(pos.realizedPnl) > 0 ? 'text-emerald-300' : Number(pos.realizedPnl) < 0 ? 'text-red-300' : ''}`}>
+                {Number(pos.realizedPnl).toFixed(4)}
+              </div>
+              <div className="text-neutral-400">MFE / MAE</div><div className="tabular-nums text-right">{Number(pos.mfe).toFixed(4)} / {Number(pos.mae).toFixed(4)}</div>
+              <div className="text-neutral-400">Opened</div><div className="text-right text-xs">{new Date(pos.openedAtProcessing).toISOString().slice(0, 19).replace('T', ' ')}</div>
+              {pos.closedAt && (<>
+                <div className="text-neutral-400">Closed</div>
+                <div className="text-right text-xs">{new Date(pos.closedAt).toISOString().slice(0, 19).replace('T', ' ')}</div>
+              </>)}
+            </CardBody>
+          </Card>
+        )}
 
         <Card>
           <CardHeader>Judge decision</CardHeader>

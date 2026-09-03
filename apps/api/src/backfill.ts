@@ -112,13 +112,18 @@ export function backfillRouter(db: Db, opts: { testnet?: boolean } = {}): Router
       res.status(409).json({ error: 'a backfill is already in progress for this symbol' });
       return;
     }
-    const body = (req.body ?? {}) as { months?: number; timeframes?: Timeframe[]; oiInterval?: string };
-    const months = Math.max(1, Math.min(24, body.months ?? 6));
+    const body = (req.body ?? {}) as { months?: number; days?: number; timeframes?: Timeframe[]; oiInterval?: string };
+    // Accept `days` (finer for short ranges like 15/30d) OR `months`. `days` wins when both given.
+    // Clamp to [1 day, 24 months]. `months` is retained on the job for legacy display.
+    const rangeDays = body.days !== undefined
+      ? Math.max(1, Math.min(24 * 30, body.days))
+      : Math.max(1, Math.min(24, body.months ?? 6)) * 30;
+    const months = rangeDays / 30;
     const timeframes = body.timeframes && body.timeframes.length > 0 ? body.timeframes : [...DEFAULT_TIMEFRAMES];
     const oiInterval = (body.oiInterval as '5min' | '15min' | '30min' | '1h' | '4h' | '1d') ?? '1h';
 
     const toMs = Date.now();
-    const fromMs = toMs - months * 30 * 24 * 3600_000;
+    const fromMs = toMs - rangeDays * 24 * 3600_000;
     const job: BackfillJob = {
       state: 'running', months,
       from: new Date(fromMs).toISOString(), to: new Date(toMs).toISOString(),

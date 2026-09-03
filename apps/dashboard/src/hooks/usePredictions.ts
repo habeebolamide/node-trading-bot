@@ -11,17 +11,41 @@ export interface PredictionRow {
   riskReward: string; thesis: string | null;
   isShadow: boolean; shadowOf: string | null;
   configVersion: number; createdAt: string;
+  // Joined from paper_position — null when no position exists yet.
+  positionState: 'OPEN' | 'CLOSED' | 'PENDING_ENTRY' | 'EXPIRED' | null;
+  closeReason: 'STOP_LOSS' | 'TAKE_PROFIT' | 'HORIZON_EXPIRY' | 'WALLET_EXIT' | 'LIMIT_EXPIRY' | null;
+  closedAt: string | null;
+  realizedPnl: string | null;
 }
 
-export function usePredictions(params: { agentId?: string; domain?: string; limit?: number }) {
+export interface PaperPositionRow {
+  id: string; portfolioId: string; predictionId: string;
+  symbol: string; domain: string; direction: string; state: string;
+  entryPrice: string; size: string; remainingSize: string;
+  currentStop: string; takeProfit: string | null;
+  openedAtEvent: string; openedAtProcessing: string;
+  closedAt: string | null; closeReason: string | null;
+  realizedPnl: string; mfe: string; mae: string;
+  isShadow: boolean;
+}
+
+export interface PredictionsListResponse {
+  rows: PredictionRow[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+export function usePredictions(params: { agentId?: string; domain?: string; limit?: number; offset?: number }) {
   return useQuery({
     queryKey: ['predictions', params],
-    queryFn: () => apiGet<{ rows: PredictionRow[]; total: number }>('/predictions', params),
+    queryFn: () => apiGet<PredictionsListResponse>('/predictions', params as Record<string, string | number | undefined>),
+    placeholderData: (prev) => prev, // keep previous page visible while the next loads
   });
 }
 export function usePrediction(id: string | undefined) {
   return useQuery({
     enabled: !!id, queryKey: ['prediction', id],
-    queryFn: () => apiGet<{ prediction: PredictionRow; outcomes: unknown[] }>(`/predictions/${id!}`),
+    queryFn: () => apiGet<{ prediction: PredictionRow; outcomes: unknown[]; position: PaperPositionRow | null }>(`/predictions/${id!}`),
   });
 }

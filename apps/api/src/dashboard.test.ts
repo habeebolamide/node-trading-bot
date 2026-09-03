@@ -82,17 +82,25 @@ describe.skipIf(!DATABASE_URL)('dashboard routes (integration)', () => {
     }
   });
 
-  it('GET /api/predictions returns rows', async () => {
-    const r = await request(app).get('/api/predictions').query({ agentId, limit: 10 });
+  it('GET /api/predictions returns paginated rows with a total count', async () => {
+    const r = await request(app).get('/api/predictions').query({ agentId, limit: 10, offset: 0 });
     expect(r.status).toBe(200);
     expect(Array.isArray(r.body.rows)).toBe(true);
     expect(r.body.rows.length).toBeGreaterThanOrEqual(1);
+    expect(typeof r.body.total).toBe('number');
+    expect(r.body.limit).toBe(10);
+    expect(r.body.offset).toBe(0);
+    // Every row exposes the join columns even when null (no paper_position yet).
+    expect(r.body.rows[0]).toHaveProperty('positionState');
+    expect(r.body.rows[0]).toHaveProperty('closeReason');
+    expect(r.body.rows[0]).toHaveProperty('realizedPnl');
   });
 
-  it('GET /api/predictions/:id returns prediction + outcomes', async () => {
+  it('GET /api/predictions/:id returns prediction + outcomes + position', async () => {
     const r = await request(app).get(`/api/predictions/${created.predictions[0]!}`);
     expect(r.status).toBe(200);
     expect(r.body.prediction.id).toBe(created.predictions[0]);
+    expect(r.body).toHaveProperty('position'); // null when no paper_position row exists
     expect(r.body.outcomes.length).toBeGreaterThanOrEqual(1);
   });
 

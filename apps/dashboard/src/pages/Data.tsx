@@ -60,9 +60,24 @@ export function Data() {
   );
 }
 
+/**
+ * Backfill-range presets. Value is the API's `days` field (finer than `months` for the
+ * short-range options operators asked for). 15d ≈ half a month, 30d ≈ one month.
+ */
+const RANGE_PRESETS: { label: string; days: number }[] = [
+  { label: '15 days', days: 15 },
+  { label: '30 days', days: 30 },
+  { label: '3 months', days: 90 },
+  { label: '6 months', days: 180 },
+  { label: '9 months', days: 270 },
+  { label: '12 months', days: 365 },
+  { label: '18 months', days: 540 },
+  { label: '24 months', days: 720 },
+];
+
 function SymbolCard({ coverage, shortDate }: { coverage: SymbolCoverage; shortDate: (s: string | null) => string }) {
   const qc = useQueryClient();
-  const [months, setMonths] = useState(9);
+  const [days, setDays] = useState(270);
   const [error, setError] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
   const job = coverage.job;
@@ -84,16 +99,16 @@ function SymbolCard({ coverage, shortDate }: { coverage: SymbolCoverage; shortDa
           {job?.state === 'failed' && <Badge tone="danger">last run failed</Badge>}
         </div>
         <div className="flex items-center gap-2">
-          <select value={months} onChange={(e) => setMonths(Number(e.target.value))}
+          <select value={days} onChange={(e) => setDays(Number(e.target.value))}
             disabled={running}
             className="rounded-md border border-neutral-800 bg-neutral-950 px-2 py-1 text-xs">
-            {[3, 6, 9, 12, 18, 24].map((m) => <option key={m} value={m}>{m} months</option>)}
+            {RANGE_PRESETS.map((r) => <option key={r.days} value={r.days}>{r.label}</option>)}
           </select>
           <button
             disabled={running || starting}
             onClick={() => {
               setError(null); setStarting(true);
-              apiPost(`/backfill/${coverage.symbol}/run`, { months })
+              apiPost(`/backfill/${coverage.symbol}/run`, { days })
                 .then(() => qc.invalidateQueries({ queryKey: ['backfill.status'] }))
                 .catch((e: ApiError) => setError(e.message))
                 .finally(() => setStarting(false));
