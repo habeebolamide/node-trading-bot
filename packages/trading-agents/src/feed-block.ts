@@ -27,17 +27,34 @@ export function symbolForFeed(feedId: string): string | null {
 }
 
 /**
+ * Map a feed id to the domain(s) it services. Prevents a stale MEMECOIN feed (helius.*) from
+ * blocking PERP agents (and vice-versa). Bug found 2026-09-04: the previous else-branch treated
+ * every symbol-less feed as "block all perp" — so `helius.wallet_webhook STALE` was moving every
+ * perp agent to BLOCKED even though perp doesn't consume Helius at all.
+ */
+export function domainForFeed(feedId: string): 'perp' | 'memecoin' | 'both' {
+  if (feedId.startsWith('bybit.')) return 'perp';
+  if (feedId.startsWith('helius.')) return 'memecoin';
+  return 'both'; // unknown prefix → conservative
+}
+
+/**
  * Block every agent that depends on a now-stale feed. A symbol-scoped feed blocks agents whose
- * `universe` array contains that symbol; a global feed blocks all perp agents. Feed-staleness
- * BLOCKED is INDEFINITE (`until = null`) — cleared by recovery, not a timer.
+ * `universe` array contains that symbol; a global feed blocks agents in the feed's DOMAIN only
+ * (bybit.* → perp, helius.* → memecoin). Feed-staleness BLOCKED is INDEFINITE (`until = null`) —
+ * cleared by recovery, not a timer.
  */
 export async function blockAgentsForStaleFeed(db: Db, feedId: string): Promise<string[]> {
   const symbol = symbolForFeed(feedId);
+  const domain = domainForFeed(feedId);
   const rows = symbol
     ? await db.select({ id: tradingAgent.id }).from(tradingAgent)
         .where(and(ne(tradingAgent.status, 'archived'), sql`${symbol} = ANY(${tradingAgent.universe})`))
-    : await db.select({ id: tradingAgent.id }).from(tradingAgent)
-        .where(and(ne(tradingAgent.status, 'archived'), eq(tradingAgent.domain, 'perp')));
+    : domain === 'both'
+      ? await db.select({ id: tradingAgent.id }).from(tradingAgent)
+          .where(ne(tradingAgent.status, 'archived'))
+      : await db.select({ id: tradingAgent.id }).from(tradingAgent)
+          .where(and(ne(tradingAgent.status, 'archived'), eq(tradingAgent.domain, domain)));
   for (const r of rows) await blockAgent(db, r.id, null);
   return rows.map((r) => r.id);
 }
@@ -45,17 +62,23 @@ export async function blockAgentsForStaleFeed(db: Db, feedId: string): Promise<s
 /**
  * Clear BLOCKED on the agents that depend on a recovered feed. Only clears agents currently in
  * BLOCKED with a null timer (feed-staleness blocks), so a daily-loss BLOCKED (which has a timer)
- * is left alone — a recovered feed must not lift a risk breaker.
+ * is left alone — a recovered feed must not lift a risk breaker. Uses the same domain gating
+ * as blockAgentsForStaleFeed — a recovered helius feed unblocks memecoin agents only, and
+ * vice-versa.
  */
 export async function unblockAgentsForRecoveredFeed(db: Db, feedId: string): Promise<string[]> {
   const symbol = symbolForFeed(feedId);
+  const domain = domainForFeed(feedId);
   const rows = symbol
     ? await db.select({ id: tradingAgent.id }).from(tradingAgent)
         .where(and(eq(tradingAgent.lifecycleState, 'BLOCKED'), sql`${tradingAgent.lifecycleUntil} is null`,
                    sql`${symbol} = ANY(${tradingAgent.universe})`))
-    : await db.select({ id: tradingAgent.id }).from(tradingAgent)
-        .where(and(eq(tradingAgent.lifecycleState, 'BLOCKED'), sql`${tradingAgent.lifecycleUntil} is null`,
-                   eq(tradingAgent.domain, 'perp')));
+    : domain === 'both'
+      ? await db.select({ id: tradingAgent.id }).from(tradingAgent)
+          .where(and(eq(tradingAgent.lifecycleState, 'BLOCKED'), sql`${tradingAgent.lifecycleUntil} is null`))
+      : await db.select({ id: tradingAgent.id }).from(tradingAgent)
+          .where(and(eq(tradingAgent.lifecycleState, 'BLOCKED'), sql`${tradingAgent.lifecycleUntil} is null`,
+                     eq(tradingAgent.domain, domain)));
   for (const r of rows) {
     await db.update(tradingAgent).set({ lifecycleState: 'IDLE', lifecycleUntil: null }).where(eq(tradingAgent.id, r.id));
     await refreshAgentState(db, r.id);
