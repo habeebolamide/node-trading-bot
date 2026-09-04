@@ -39,6 +39,11 @@ makes backfills idempotent — re-running inserts zero duplicates.
 - **Written by:** Bybit live WS on candle confirm + `npm run backfill` for history.
 - **Read by:** every perp agent (via `recentCandlesAsOf`), the planner (pivot detection), the
   outcome resolver (`CANDLE_1M_CONSERVATIVE` mode reads 1m bars).
+- **Columns of note:** `open_time` / `close_time` are the bar's market clock (used for
+  point-in-time reads); `created_at` (defaultNow) is when the row landed locally — useful
+  to distinguish live inserts (~seconds after close) from backfill (`created_at >> close_time`).
+  `created_at` is NOT part of the PK and is not used for filtering — reads are always by
+  `close_time` (Rule 21).
 
 ### `funding_rate`
 Perp funding-rate history per symbol per stamp (usually every 8 hours).

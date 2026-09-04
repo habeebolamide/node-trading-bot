@@ -169,6 +169,13 @@
       "when": 1788367139267,
       "tag": "0023_typical_power_man",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1788510422747,
+      "tag": "0024_lethal_zuras",
+      "breakpoints": true
     }
   ]
 }

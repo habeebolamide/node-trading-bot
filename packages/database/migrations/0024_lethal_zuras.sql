@@ -1,0 +1,1 @@
+ALTER TABLE "market_candle" ADD COLUMN "created_at" timestamp with time zone DEFAULT now() NOT NULL;
