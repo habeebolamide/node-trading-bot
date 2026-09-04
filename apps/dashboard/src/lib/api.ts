@@ -37,3 +37,16 @@ export async function apiPost<T>(path: string, body?: unknown): Promise<T> {
   });
   return jsonOrThrow<T>(res);
 }
+
+/** PATCH helper — same base/escape rules as apiGet. */
+export async function apiPatch<T>(path: string, body?: unknown): Promise<T> {
+  const url = path.startsWith('/../')
+    ? new URL(path.slice(3), window.location.origin)
+    : new URL(BASE + path, window.location.origin);
+  const res = await fetch(url.toString(), {
+    method: 'PATCH',
+    headers: { 'content-type': 'application/json', accept: 'application/json' },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  return jsonOrThrow<T>(res);
+}

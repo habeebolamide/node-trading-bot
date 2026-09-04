@@ -13,6 +13,7 @@ import { useHeadline } from '@/hooks/useMetrics';
 import { PredictionOutcome } from '@/components/PredictionOutcome';
 import { AutopsyPanel } from '@/components/AutopsyPanel';
 import { ConfigVersionSwitcher } from '@/components/ConfigVersionSwitcher';
+import { RiskTuner } from '@/components/RiskTuner';
 
 const PREDICTIONS_PAGE_SIZE = 50;
 
@@ -210,6 +211,7 @@ function AgentConfig({ agent }: { agent: AgentRow }) {
   const weights = Object.entries(agent.config.agentWeights ?? {}).sort((a, b) => b[1] - a[1]);
   return (
     <div className="space-y-4">
+      <RiskTuner agent={agent} />
       <ConfigVersionSwitcher agentId={agent.id} />
       <Card>
         <CardHeader>Agent weights (active config v{agent.activeConfigVersion})</CardHeader>
