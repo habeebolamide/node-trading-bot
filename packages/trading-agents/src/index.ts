@@ -18,3 +18,4 @@ export { canTransition, assertTransition, type SignalState } from './signal-life
 export * from './signal-engine.js';
 export * from './agent-lifecycle.js';
 export * from './feed-block.js';
+export * from './watchlist.js';

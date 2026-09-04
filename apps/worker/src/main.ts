@@ -13,10 +13,10 @@ import {
   HeliusWebhookAdmin,
   HELIUS_WEBHOOK_FEED,
   HELIUS_REST_FEED,
-  DEFAULT_PERP_SYMBOLS,
   DEFAULT_TIMEFRAMES,
   HELIUS_CANARY_WALLET,
 } from '@tip/ingestion';
+import { IngestionController } from './ingestion-controller.js';
 import { HeliusSubscriptionManager, Watchlist, createBuyDetectorHandler, createConvergenceEmitter, type Batcher } from '@tip/watchlist';
 import { startWorkers } from './runner.js';
 import { PerpAnalysisTier } from './analysis/perp-analysis.js';
@@ -51,7 +51,11 @@ async function main(): Promise<void> {
   console.log(`[worker] started ${workers.length} queue worker(s)`);
 
   // ── Bybit market-data ingestion (M1) ──────────────────────────
-  const symbols = [...DEFAULT_PERP_SYMBOLS];
+  // Symbols are derived DYNAMICALLY from the trading_agent table by the IngestionController
+  // below — zero perp agents = no WS subscription, first agent creation = live start via
+  // trading_agent.upserted event. `symbols` starts empty; the adapter's own start() no-ops
+  // WS subscription until setSymbols() lands the first non-empty set.
+  const symbols: import('@tip/domain').MarketSymbol[] = [];
   const timeframes = [...DEFAULT_TIMEFRAMES];
   // Forward-declared so the onStale callback can cross-check the Helius REST feed (§10).
   let monitor: FeedMonitor;
@@ -93,10 +97,19 @@ async function main(): Promise<void> {
     log: (level, msg) => (level === 'warn' ? console.warn : console.log)(`[bybit-poll] ${msg}`),
   });
 
-  adapter.start();
-  poller.start();
   const monitorTimer = setInterval(() => monitor.check(), 5_000);
-  console.log(`[worker] bybit ingestion live for ${symbols.join(', ')}`);
+  // Dynamic-watchlist controller: derives the live perp symbol set from active trading agents,
+  // starts the adapter only when >= 1 exists, resubscribes on every trading_agent.upserted.
+  const ingestionController = new IngestionController({
+    db, bus, adapter, poller,
+    log: (m, meta) => console.log(`[watchlist-ctl] ${m}`, meta ?? ''),
+  });
+  const initialWl = await ingestionController.start();
+  if (initialWl.perp.length === 0) {
+    console.log('[worker] bybit ingestion IDLE — zero perp agents (create one to start)');
+  } else {
+    console.log(`[worker] bybit ingestion live for ${initialWl.perp.join(', ')}`);
+  }
 
   // ── Analysis tier (M4–M7): kline → agents → signals → risk → judge → prediction → paper ──
   const perpAnalysis = new PerpAnalysisTier({ db, bus, log: (m, meta) => console.log(`[analysis] ${m}`, meta ?? '') });

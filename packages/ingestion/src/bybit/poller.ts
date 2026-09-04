@@ -25,11 +25,13 @@ export class AccountRatioPoller {
   private readonly intervalMs: number;
   private readonly period: string;
   private readonly log: (level: 'info' | 'warn', msg: string) => void;
+  private symbols: MarketSymbol[];
 
   constructor(private readonly opts: AccountRatioPollerOptions) {
     this.intervalMs = opts.intervalMs ?? 5 * 60_000;
     this.period = opts.period ?? '5min';
     this.log = opts.log ?? (() => {});
+    this.symbols = [...opts.symbols];
   }
 
   start(): void {
@@ -43,8 +45,13 @@ export class AccountRatioPoller {
     this.timer = undefined;
   }
 
+  /** Live watchlist control — swap the polled symbol set. Next tick picks up the change. */
+  setSymbols(next: readonly MarketSymbol[]): void {
+    this.symbols = [...next];
+  }
+
   private async pollAll(): Promise<void> {
-    for (const symbol of this.opts.symbols) {
+    for (const symbol of this.symbols) {
       try {
         const ratio = await this.opts.rest.getAccountRatio(symbol, this.period);
         await this.opts.bus.publish(QUEUE_NAMES.MARKET_INGESTION, {

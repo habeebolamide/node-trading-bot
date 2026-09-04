@@ -15,6 +15,8 @@ export const QUEUE_NAMES = {
   PREDICTION_EVALUATION: 'prediction-evaluation',
   PAPER_PORTFOLIO: 'paper-portfolio',
   ANALYTICS: 'analytics',
+  /** Control-plane: dynamic watchlist events (trading_agent upserted). Low volume. */
+  CONTROL: 'control',
 } as const;
 
 export type QueueName = (typeof QUEUE_NAMES)[keyof typeof QUEUE_NAMES];

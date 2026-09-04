@@ -63,9 +63,23 @@ export class BybitWsClient {
   /** Register topics to subscribe. Sends now only if the socket is OPEN; otherwise the `open`
    *  handler subscribes the full set (so calling subscribe() right after start() is safe). */
   subscribe(topics: string[]): void {
+    if (topics.length === 0) return;
     for (const t of topics) this.topics.add(t);
     if (this.open) this.send({ op: 'subscribe', args: topics });
   }
+
+  /** Remove topics from the tracked set + tell Bybit to stop delivering them. No-op when
+   *  called with an empty list or before the socket is open (the topic is dropped from the set
+   *  either way, so a later reconnect won't resubscribe it). */
+  unsubscribe(topics: string[]): void {
+    if (topics.length === 0) return;
+    for (const t of topics) this.topics.delete(t);
+    if (this.open) this.send({ op: 'unsubscribe', args: topics });
+  }
+
+  /** True when the socket is up + at least one subscribed message has been ack'd. Useful for
+   *  the controller to know whether to call subscribe() again after subs are ready. */
+  isOpen(): boolean { return this.open; }
 
   start(): void {
     this.stopped = false;

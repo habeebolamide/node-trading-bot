@@ -49,7 +49,7 @@ export function createApp(deps: ApiDeps): Express {
   // Seeding routes mount FIRST: '/seeding/status' must not be swallowed by the CRUD '/:id'.
   app.use('/trading-agents', seedingRouter(deps.db));
   app.use('/trading-agents', autopsyRouter(deps.db, { ...(deps.deepseekApiKey ? { deepseekApiKey: deps.deepseekApiKey } : {}) }));
-  app.use('/trading-agents', tradingAgentsRouter(deps.db));
+  app.use('/trading-agents', tradingAgentsRouter(deps.db, deps.bus));
   app.use('/api', dashboardRouter(deps.db));
   app.use('/api/backfill', backfillRouter(deps.db, { testnet: deps.bybitTestnet ?? false }));
 

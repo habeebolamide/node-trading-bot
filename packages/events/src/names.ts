@@ -66,6 +66,13 @@ export const EVENT_NAMES = {
   //    wallet/token events above. Kept distinct so the un-normalized payload
   //    never masquerades as a normalized domain event (§12).
   HELIUS_WEBHOOK_RECEIVED: 'helius.webhook.received',
+
+  // ── Dynamic watchlist control (build-time addition). API publishes this when a
+  //    TradingAgent is created, deleted, or has its status/universe changed. The
+  //    worker's IngestionController listens and adjusts adapter subscriptions
+  //    live — zero perp agents = Bybit adapter stopped, zero memecoin agents =
+  //    Helius idle. No polling, no restart required.
+  TRADING_AGENT_UPSERTED: 'trading_agent.upserted',
 } as const;
 
 export type EventName = (typeof EVENT_NAMES)[keyof typeof EVENT_NAMES];

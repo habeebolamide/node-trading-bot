@@ -3,17 +3,39 @@ import { and, desc, eq, inArray } from 'drizzle-orm';
 import { ValidationError } from '@tip/domain';
 import { paperPosition, scoringConfig, tradingAgent, type Db } from '@tip/database';
 import { createPortfolio } from '@tip/paper-engine';
+import { EVENT_NAMES, QUEUE_NAMES, type EventBus } from '@tip/events';
 import {
   createTradingAgent, getTradingAgent, listTradingAgents, updateTradingAgentConfig,
-  type CreateTradingAgentInput,
+  type CreateTradingAgentInput, type TradingAgentRow,
 } from '@tip/trading-agents';
 
 /**
  * TradingAgent CRUD (§8, §14, §16). All routes take/return JSON. Validation errors → 400;
  * not-found → 404; anything else bubbles to Express default (500).
+ *
+ * On identity-affecting writes (create, config change that keeps identity, status flip) the
+ * router publishes `trading_agent.upserted` to the CONTROL queue so the worker's
+ * IngestionController resubscribes the live Bybit/Helius watchlist. Published fire-and-forget
+ * — a failed publish must NOT block the API response (the operator can retry manually), but is
+ * logged so it's not silent (the worker will re-derive on its next natural refresh anyway).
  */
-export function tradingAgentsRouter(db: Db): Router {
+export function tradingAgentsRouter(db: Db, bus?: EventBus): Router {
   const r = Router();
+
+  const publishUpsert = (row: TradingAgentRow): void => {
+    if (!bus) return;
+    void bus
+      .publish(QUEUE_NAMES.CONTROL, {
+        type: EVENT_NAMES.TRADING_AGENT_UPSERTED,
+        eventTime: new Date().toISOString(),
+        source: 'api',
+        payload: { id: row.id, domain: row.domain, universe: [...row.universe], status: row.status },
+      })
+      .catch((e) => {
+        // eslint-disable-next-line no-console
+        console.warn('[trading-agents] failed to publish upsert event:', e instanceof Error ? e.message : e);
+      });
+  };
 
   r.post('/', async (req, res) => {
     const body = (req.body ?? {}) as Partial<CreateTradingAgentInput>;
@@ -46,6 +68,7 @@ export function tradingAgentsRouter(db: Db): Router {
       // @tip/trading-agents keeps its no-paper-engine dependency direction.
       const startingCash = (body.config as { startingBalance?: number })?.startingBalance ?? 10_000;
       await createPortfolio(db, { tradingAgentId: row.id, startingCash });
+      publishUpsert(row);
       res.status(201).json(row);
     } catch (err) {
       if (err instanceof ValidationError) {
@@ -156,6 +179,12 @@ export function tradingAgentsRouter(db: Db): Router {
     }
     try {
       const row = await updateTradingAgentConfig(db, id, (req.body ?? {}));
+      // Config changes never touch identity (domain/universe/style — those need a new agent).
+      // But scoringConfig CAN change tradeable-universe implicitly through operator intent,
+      // and pausing/resuming a config revision doesn't run through here (identity's status
+      // stays 'active'). Publish anyway so the controller re-derives conservatively — no-op
+      // when nothing changed.
+      publishUpsert(row);
       res.json(row);
     } catch (err) {
       if (err instanceof ValidationError) {

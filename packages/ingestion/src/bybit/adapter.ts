@@ -37,6 +37,8 @@ export class BybitAdapter {
   private readonly lastFunding = new Map<string, string>();
   private readonly lastOiBucket = new Map<string, number>();
   private readonly log: (level: 'info' | 'warn', msg: string) => void;
+  private readonly currentSymbols = new Set<string>();
+  private started = false;
 
   constructor(private readonly opts: BybitAdapterOptions) {
     this.log = opts.log ?? (() => {});
@@ -50,24 +52,65 @@ export class BybitAdapter {
 
   /** Register feeds with the monitor and open the subscriptions. */
   start(): void {
+    if (this.started) return;
     const { monitor, symbols, timeframes } = this.opts;
     for (const tf of timeframes) monitor.register(klineFeedId(tf), klineThresholdMs(tf));
     monitor.register(TICKERS_FEED, FIXED_THRESHOLDS_MS[TICKERS_FEED]!);
     monitor.register(LIQUIDATION_FEED, FIXED_THRESHOLDS_MS[LIQUIDATION_FEED]!);
 
-    const topics: string[] = [];
-    for (const s of symbols) {
-      topics.push(tickerTopic(s), liquidationTopic(s));
-      for (const tf of timeframes) topics.push(klineTopic(tf, s));
-    }
     this.ws.start();
-    this.ws.subscribe(topics);
-    this.log('info', `bybit adapter started: ${symbols.length} symbols × ${timeframes.length} TFs`);
+    this.started = true;
+    if (symbols.length > 0) this.setSymbols(symbols);
+    else this.log('info', `bybit adapter started with 0 symbols — awaiting first agent`);
   }
 
   stop(): void {
+    this.started = false;
+    this.currentSymbols.clear();
     this.ws.stop();
   }
+
+  /**
+   * Live watchlist control — swap the subscribed symbol set to `next` without tearing down the
+   * socket. Diffs against the current set: added symbols → subscribe all their topics
+   * (ticker + allLiquidation + N × kline), removed symbols → unsubscribe theirs. Called by the
+   * worker's IngestionController when a `trading_agent.upserted` event changes the universe.
+   */
+  setSymbols(next: readonly MarketSymbol[]): void {
+    const nextSet = new Set<string>(next);
+    const added: MarketSymbol[] = [];
+    const removed: MarketSymbol[] = [];
+    for (const s of next) if (!this.currentSymbols.has(s)) added.push(s);
+    // Cast back on the way out — the internal set is `Set<string>` so branded values
+    // interoperate cleanly with Set semantics.
+    for (const s of this.currentSymbols) if (!nextSet.has(s)) removed.push(s as unknown as MarketSymbol);
+
+    if (added.length === 0 && removed.length === 0) return;
+
+    const { timeframes } = this.opts;
+    if (removed.length > 0) {
+      const topics: string[] = [];
+      for (const s of removed) {
+        topics.push(tickerTopic(s), liquidationTopic(s));
+        for (const tf of timeframes) topics.push(klineTopic(tf, s));
+      }
+      this.ws.unsubscribe(topics);
+      for (const s of removed) this.currentSymbols.delete(s);
+    }
+    if (added.length > 0) {
+      const topics: string[] = [];
+      for (const s of added) {
+        topics.push(tickerTopic(s), liquidationTopic(s));
+        for (const tf of timeframes) topics.push(klineTopic(tf, s));
+      }
+      this.ws.subscribe(topics);
+      for (const s of added) this.currentSymbols.add(s);
+    }
+    this.log('info', `bybit watchlist now ${this.currentSymbols.size} symbols (+${added.length} -${removed.length})`);
+  }
+
+  /** For the controller / tests: what symbols are currently subscribed. */
+  getSymbols(): readonly string[] { return [...this.currentSymbols].sort(); }
 
   /**
    * Route one raw WS message → normalize → persist + publish. Public so tests can drive the
