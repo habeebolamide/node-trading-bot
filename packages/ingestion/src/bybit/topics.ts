@@ -47,7 +47,14 @@ export function fromBybitInterval(iv: string): Timeframe {
 export const klineTopic = (tf: Timeframe, symbol: MarketSymbol): string =>
   `kline.${toBybitInterval(tf)}.${symbol}`;
 export const tickerTopic = (symbol: MarketSymbol): string => `tickers.${symbol}`;
-export const liquidationTopic = (symbol: MarketSymbol): string => `liquidation.${symbol}`;
+/**
+ * Bybit v5 renamed `liquidation.{symbol}` → `allLiquidation.{symbol}` at some point in 2024/2025
+ * and made the payload aggregated (array of `{T,s,S,v,p}` per message, ~1s coalesce window
+ * instead of one message per liquidation). The rename went un-noticed here because the WS
+ * client silently dropped the subscribe rejection — a single bad topic in the batch nuked ALL
+ * subscriptions atomically, so nothing else ingested either. Bug found 2026-09-04.
+ */
+export const liquidationTopic = (symbol: MarketSymbol): string => `allLiquidation.${symbol}`;
 // Present for completeness; not subscribed until the tick monitor lands (later milestone).
 export const publicTradeTopic = (symbol: MarketSymbol): string => `publicTrade.${symbol}`;
 export const orderbookTopic = (depth: number, symbol: MarketSymbol): string =>

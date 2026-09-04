@@ -114,8 +114,20 @@ export class BybitWsClient {
       this.log('warn', 'bybit ws: unparseable message dropped');
       return;
     }
-    const m = parsed as { topic?: string; type?: string; ts?: number; data?: unknown; op?: string };
-    if (m.op) return; // subscribe ack / pong — not data
+    const m = parsed as {
+      topic?: string; type?: string; ts?: number; data?: unknown;
+      op?: string; success?: boolean; ret_msg?: string;
+    };
+    if (m.op) {
+      // Subscribe rejections used to be silently dropped ("subscribe ack / pong — not data").
+      // Bybit atomically rejects the WHOLE batch on any bad topic (e.g. the v5 liquidation→
+      // allLiquidation rename), so this made a broken subscription look identical to a healthy
+      // one — no data ever arrived, no error was logged. Now: log failed op replies loudly.
+      if (m.success === false) {
+        this.log('warn', `bybit ws op "${m.op}" REJECTED: ${m.ret_msg ?? 'no message'}`);
+      }
+      return;
+    }
     if (typeof m.topic === 'string') {
       this.opts.onMessage({ topic: m.topic, type: m.type ?? 'snapshot', ts: m.ts ?? Date.now(), data: m.data });
     }

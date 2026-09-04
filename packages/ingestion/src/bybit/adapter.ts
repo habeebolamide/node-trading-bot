@@ -79,7 +79,8 @@ export class BybitAdapter {
         return this.handleKline(m.topic, m.data);
       case 'tickers':
         return this.handleTicker(m.topic, m.data, m.ts);
-      case 'liquidation':
+      // Bybit v5 rename (see topics.ts): the wire topic is `allLiquidation`, not `liquidation`.
+      case 'allLiquidation':
         return this.handleLiquidation(m.data, m.ts);
       default:
         return; // orderbook/publicTrade not subscribed this milestone
@@ -160,14 +161,19 @@ export class BybitAdapter {
   }
 
   private async handleLiquidation(data: unknown, ts: number): Promise<void> {
-    if (!data) return;
-    const liq = normalizeLiquidation(data as RawLiquidation, ts, new Date().toISOString());
+    if (!Array.isArray(data)) return;
     this.opts.monitor.heartbeat(LIQUIDATION_FEED);
-    await this.opts.bus.publish(QUEUE_NAMES.MARKET_INGESTION, {
-      type: EVENT_NAMES.PERP_LIQUIDATION_DETECTED,
-      eventTime: liq.eventTime,
-      source: 'bybit-adapter',
-      payload: liq,
-    });
+    const now = new Date().toISOString();
+    // allLiquidation delivers an array of aggregated liquidations per message (~1s window).
+    // Publish one event per row so downstream 30-bar imbalance windowing works unchanged.
+    for (const raw of data as RawLiquidation[]) {
+      const liq = normalizeLiquidation(raw, ts, now);
+      await this.opts.bus.publish(QUEUE_NAMES.MARKET_INGESTION, {
+        type: EVENT_NAMES.PERP_LIQUIDATION_DETECTED,
+        eventTime: liq.eventTime,
+        source: 'bybit-adapter',
+        payload: liq,
+      });
+    }
   }
 }

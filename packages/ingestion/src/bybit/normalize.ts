@@ -41,12 +41,18 @@ export interface RawTicker {
   openInterest?: string;
 }
 
+/**
+ * `allLiquidation.{symbol}` payload record (Bybit v5, condensed field names).
+ * The topic delivers an ARRAY of these per message — each row is one aggregated liquidation.
+ * The legacy `liquidation.{symbol}` topic used verbose fields (symbol/side/size/price/updatedTime)
+ * and was removed by Bybit; the old shape is gone from the wire.
+ */
 export interface RawLiquidation {
-  symbol: string;
-  side: string; // "Buy" | "Sell"
-  size: string;
-  price: string;
-  updatedTime?: number;
+  T: number;   // timestamp ms
+  s: string;   // symbol
+  S: string;   // side, "Buy" | "Sell"
+  v: string;   // size
+  p: string;   // price
 }
 
 export interface RawAccountRatio {
@@ -116,12 +122,12 @@ export function normalizeLiquidation(
   tsMs: number,
   processingTime: string,
 ): NormalizedLiquidation {
-  const time = new Date(raw.updatedTime ?? tsMs);
+  const time = new Date(raw.T ?? tsMs);
   return {
-    symbol: raw.symbol as MarketSymbol,
-    side: raw.side.toUpperCase() === 'BUY' ? 'BUY' : 'SELL',
-    size: raw.size,
-    price: raw.price,
+    symbol: raw.s as MarketSymbol,
+    side: raw.S.toUpperCase() === 'BUY' ? 'BUY' : 'SELL',
+    size: raw.v,
+    price: raw.p,
     time,
     eventTime: time.toISOString(),
     processingTime,

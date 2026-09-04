@@ -70,11 +70,18 @@ describe('normalizeTicker delta-merge', () => {
 });
 
 describe('normalizeLiquidation', () => {
-  it('normalizes side to BUY/SELL and uses updatedTime', () => {
-    const l = normalizeLiquidation({ symbol: 'BTCUSDT', side: 'Sell', size: '0.1', price: '99', updatedTime: 1_700_000_000_000 }, 5, PT);
+  it('normalizes the condensed Bybit v5 allLiquidation payload (T/s/S/v/p)', () => {
+    const l = normalizeLiquidation({ T: 1_700_000_000_000, s: 'BTCUSDT', S: 'Sell', v: '0.1', p: '99' }, 5, PT);
     expect(l.side).toBe('SELL');
     expect(l.time.getTime()).toBe(1_700_000_000_000);
     expect(l.price).toBe('99');
+    expect(l.size).toBe('0.1');
+    expect(l.symbol).toBe('BTCUSDT');
+  });
+  it('falls back to the connection ts when T is missing', () => {
+    const l = normalizeLiquidation({ s: 'BTCUSDT', S: 'Buy', v: '1', p: '100' } as never, 1_699_000_000_000, PT);
+    expect(l.side).toBe('BUY');
+    expect(l.time.getTime()).toBe(1_699_000_000_000);
   });
 });
 

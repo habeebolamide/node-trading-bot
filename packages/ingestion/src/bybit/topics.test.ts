@@ -40,8 +40,10 @@ describe('topic builders', () => {
   });
   it('ticker/liquidation topics + kind', () => {
     expect(tickerTopic(SYM)).toBe('tickers.ETHUSDT');
-    expect(liquidationTopic(SYM)).toBe('liquidation.ETHUSDT');
+    // Bybit v5 rename: `liquidation.*` → `allLiquidation.*`. topicKind stays parsing-based.
+    expect(liquidationTopic(SYM)).toBe('allLiquidation.ETHUSDT');
     expect(topicKind('kline.15.ETHUSDT')).toBe('kline');
     expect(topicKind('tickers.ETHUSDT')).toBe('tickers');
+    expect(topicKind('allLiquidation.ETHUSDT')).toBe('allLiquidation');
   });
 });
