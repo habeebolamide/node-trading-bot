@@ -64,10 +64,6 @@ export const marketCandle = pgTable(
     close: numeric('close').notNull(),
     volume: numeric('volume').notNull(),
     turnover: numeric('turnover'),
-    // Ingestion-time stamp: when the row was written locally, not when the bar closed.
-    // openTime/closeTime are the bar's market time; createdAt is our clock. Useful for
-    // spotting backfill gaps (createdAt >> closeTime) vs live inserts (~seconds after).
-    // Not part of the PK, not read by agents — do not use for point-in-time filtering.
     createdAt: timestamp('created_at', { withTimezone: true, mode: 'date' }).notNull().defaultNow(),
   },
   (t) => [primaryKey({ columns: [t.symbol, t.timeframe, t.openTime] })],
