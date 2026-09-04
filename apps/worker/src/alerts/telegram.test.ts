@@ -8,7 +8,7 @@ function event(type: string, payload: unknown): DomainEvent {
 }
 
 describe('telegram alerts (§11 — audit #12)', () => {
-  it('formats SL / TP / wallet-exit; everything else is null (clean-feed rule)', () => {
+  it('formats SL / TP / OPEN / wallet-exit; everything else is null (clean-feed rule)', () => {
     expect(formatAlert(event(EVENT_NAMES.PAPER_TRADE_SL_HIT, { positionId: 'p1', price: 99 }))).toContain('STOP LOSS');
     expect(formatAlert(event(EVENT_NAMES.PAPER_TRADE_TP_HIT, { positionId: 'p1', price: 120 }))).toContain('TAKE PROFIT');
     expect(formatAlert(event(EVENT_NAMES.MEMECOIN_WALLET_EXIT_DETECTED, {
@@ -17,6 +17,37 @@ describe('telegram alerts (§11 — audit #12)', () => {
     // Signals, observations, judge chatter never reach Telegram (§11 clean feed).
     expect(formatAlert(event(EVENT_NAMES.SIGNAL_CREATED, {}))).toBeNull();
     expect(formatAlert(event(EVENT_NAMES.JUDGE_EVALUATION_COMPLETED, {}))).toBeNull();
+  });
+
+  it('OPENED alert: perp LONG (green) shows the full symbol', () => {
+    const msg = formatAlert(event(EVENT_NAMES.PAPER_TRADE_OPENED, {
+      positionId: 'pos-1', predictionId: 'pred-1', symbol: 'BTCUSDT',
+      direction: 'LONG', price: 100_000, size: 0.01,
+    }))!;
+    expect(msg).toContain('LONG OPENED');
+    expect(msg).toContain('🟢');
+    expect(msg).toContain('BTCUSDT');
+    expect(msg).toContain('100000');
+    expect(msg).toContain('pos-1');
+  });
+
+  it('OPENED alert: perp SHORT is red', () => {
+    const msg = formatAlert(event(EVENT_NAMES.PAPER_TRADE_OPENED, {
+      positionId: 'pos-2', predictionId: 'pred-2', symbol: 'ETHUSDT',
+      direction: 'SHORT', price: 3500, size: 0.1,
+    }))!;
+    expect(msg).toContain('SHORT OPENED');
+    expect(msg).toContain('🔴');
+  });
+
+  it('OPENED alert: memecoin mints get truncated as first4…last4', () => {
+    const msg = formatAlert(event(EVENT_NAMES.PAPER_TRADE_OPENED, {
+      positionId: 'pos-3', predictionId: 'pred-3',
+      symbol: 'So11111111111111111111111111111111111111112', // Wrapped SOL mint
+      direction: 'LONG', price: 0.00005, size: 1_000_000,
+    }))!;
+    expect(msg).toContain('So11…1112');
+    expect(msg).not.toContain('So1111111111111111');
   });
 
   it('sendTelegram never throws — §11 fire-and-forget: outage returns false', async () => {
