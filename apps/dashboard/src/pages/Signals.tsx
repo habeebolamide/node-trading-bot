@@ -6,6 +6,7 @@ import { Skeleton } from '@/components/ui/Skeleton';
 import { Table, Thead, Th, Tbody, Tr, Td } from '@/components/ui/Table';
 import { useSignals } from '@/hooks/useSignals';
 import { useSignalDetail } from '@/hooks/useSignalDetail';
+import { fmtWhen } from '@/lib/format';
 
 export function Signals() {
   const { id } = useParams();
@@ -44,7 +45,7 @@ function SignalsList() {
                   <Td className="tabular-nums">{Number(s.compositeScore).toFixed(2)}</Td>
                   <Td className="tabular-nums">{Number(s.confidence).toFixed(2)}</Td>
                   <Td><Badge tone={s.state === 'ACTIVE' ? 'success' : s.state === 'CONSUMED' ? 'info' : s.state === 'INVALIDATED' ? 'danger' : 'neutral'}>{s.state}</Badge></Td>
-                  <Td className="text-neutral-400 text-xs">{new Date(s.createdAt).toISOString()}</Td>
+                  <Td className="text-neutral-400 text-xs tabular-nums">{fmtWhen(s.createdAt)}</Td>
                 </Tr>
               ))}
               {(q.data?.rows ?? []).length === 0 && <Tr><Td colSpan={6} className="text-neutral-500">No signals.</Td></Tr>}

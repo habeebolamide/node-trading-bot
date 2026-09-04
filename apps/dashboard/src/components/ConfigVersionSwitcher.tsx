@@ -5,6 +5,7 @@ import { Badge } from '@/components/ui/Badge';
 import { Skeleton } from '@/components/ui/Skeleton';
 import { Table, Thead, Th, Tbody, Tr, Td } from '@/components/ui/Table';
 import { apiGet, apiPost, type ApiError } from '@/lib/api';
+import { fmtDate, fmtDateTime } from '@/lib/format';
 
 interface VersionRow {
   version: number;
@@ -62,7 +63,7 @@ export function ConfigVersionSwitcher({ agentId }: { agentId: string }) {
               return (
                 <Tr key={v.version}>
                   <Td className="tabular-nums">v{v.version}</Td>
-                  <Td className="text-xs text-neutral-400">{new Date(v.createdAt).toISOString().slice(0, 19).replace('T', ' ')}</Td>
+                  <Td className="text-xs text-neutral-400 tabular-nums">{fmtDateTime(v.createdAt)}</Td>
                   <Td className="text-xs">{weights || <span className="text-neutral-500">—</span>}</Td>
                   <Td>
                     {v.active
@@ -90,12 +91,12 @@ export function ConfigVersionSwitcher({ agentId }: { agentId: string }) {
               <div>
                 <div className="text-neutral-500">Currently active</div>
                 <div className="mt-1 font-mono">v{activeConfig.version}</div>
-                <div className="mt-1 text-neutral-400">{new Date(activeConfig.createdAt).toISOString().slice(0, 10)}</div>
+                <div className="mt-1 text-neutral-400">{fmtDate(activeConfig.createdAt)}</div>
               </div>
               <div>
                 <div className="text-neutral-500">Switching to</div>
                 <div className="mt-1 font-mono text-accent">v{target.version}</div>
-                <div className="mt-1 text-neutral-400">{new Date(target.createdAt).toISOString().slice(0, 10)}</div>
+                <div className="mt-1 text-neutral-400">{fmtDate(target.createdAt)}</div>
               </div>
             </div>
             <div className="mb-3 rounded-md border border-neutral-800 bg-neutral-900 p-2 text-xs">

@@ -10,6 +10,7 @@ import { useAutopsies } from '@/hooks/useAutopsies';
 import { useHypotheses } from '@/hooks/useHypotheses';
 import { useShadowVsBaseline, useShadowVsReal, type ShadowGroupStats } from '@/hooks/useShadow';
 import { apiGet } from '@/lib/api';
+import { fmtDate, fmtWhen } from '@/lib/format';
 
 /** M7 payoff pages. Read-only — every row is what an operator would use to DECIDE to promote
  *  or tighten a gate; the decision itself stays a CLI action (rule 16 + rule 20). */
@@ -59,7 +60,7 @@ function Autopsies() {
                   <Td className="text-xs">{a.rootCause ?? <span className="text-neutral-500">(failed LLM)</span>}</Td>
                   <Td className="font-mono text-xs">{a.setupId.slice(0, 12)}…</Td>
                   <Td><Badge tone={a.status === 'SUCCESS' ? 'success' : 'warn'}>{a.status}</Badge></Td>
-                  <Td className="text-neutral-400 text-xs">{new Date(a.createdAt).toISOString()}</Td>
+                  <Td className="text-neutral-400 text-xs tabular-nums">{fmtWhen(a.createdAt)}</Td>
                 </Tr>
               ))}
               {(q.data?.rows ?? []).length === 0 && (
@@ -82,12 +83,14 @@ function Hypotheses() {
         <label>Status:
           <select value={status} onChange={(e) => setStatus(e.target.value)} className="ml-1 rounded-md border border-neutral-800 bg-neutral-950 px-2 py-1">
             <option value="">any</option>
-            {['PROPOSED', 'BACKTEST_PASSED', 'OOS_PENDING', 'PROMOTED', 'REJECTED', 'DEFERRED_BOOTSTRAP'].map((s) => (
+            {['PROPOSED', 'BACKTEST_PASSED', 'OOS_PENDING', 'OOS_PASSED', 'PROMOTED', 'REJECTED', 'DEFERRED_BOOTSTRAP'].map((s) => (
               <option key={s} value={s}>{s}</option>
             ))}
           </select>
         </label>
-        <span className="text-neutral-500">Promotion is a CLI action — this queue displays candidates + evidence, never a promote button.</span>
+        <span className="text-neutral-500">
+          Promoted by the Agent → Predictions → <em>Run Autopsy + Auto-Tune</em> button; this page is the audit trail. Old versions stay switchable on each agent's Configuration tab.
+        </span>
       </div>
       {q.isLoading ? <Skeleton className="h-40" /> : (
         <Card>
@@ -107,7 +110,7 @@ function Hypotheses() {
                       : '—'}
                   </Td>
                   <Td className="text-xs">{h.fromConfigVersion !== null ? `v${h.fromConfigVersion} → v${h.toConfigVersion ?? '?'}` : '—'}</Td>
-                  <Td className="text-neutral-400 text-xs">{new Date(h.createdAt).toISOString()}</Td>
+                  <Td className="text-neutral-400 text-xs tabular-nums">{fmtWhen(h.createdAt)}</Td>
                 </Tr>
               ))}
               {(q.data?.rows ?? []).length === 0 && (
@@ -264,7 +267,7 @@ function CostsPanel() {
             <Tbody>
               {d.byDay.map((r) => (
                 <Tr key={r.day}>
-                  <Td className="text-xs">{new Date(r.day).toISOString().slice(0, 10)}</Td>
+                  <Td className="text-xs">{fmtDate(r.day)}</Td>
                   <Td className="tabular-nums">{r.calls}</Td>
                   <Td className="tabular-nums">{usd(r.cost)}</Td>
                 </Tr>

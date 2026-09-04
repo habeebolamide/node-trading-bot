@@ -14,6 +14,7 @@ import { PredictionOutcome } from '@/components/PredictionOutcome';
 import { AutopsyPanel } from '@/components/AutopsyPanel';
 import { ConfigVersionSwitcher } from '@/components/ConfigVersionSwitcher';
 import { RiskTuner } from '@/components/RiskTuner';
+import { fmtDateTime, fmtWhen } from '@/lib/format';
 
 const PREDICTIONS_PAGE_SIZE = 50;
 
@@ -57,7 +58,7 @@ function AgentSignals({ agentId }: { agentId: string }) {
               <Td className="tabular-nums">{Number(s.compositeScore).toFixed(2)}</Td>
               <Td className="tabular-nums">{Number(s.confidence).toFixed(2)}</Td>
               <Td><StateBadge state={s.state} /></Td>
-              <Td className="text-neutral-400">{new Date(s.createdAt).toISOString()}</Td>
+              <Td className="text-neutral-400 text-xs tabular-nums">{fmtWhen(s.createdAt)}</Td>
             </Tr>
           ))}
           {(q.data?.rows ?? []).length === 0 && <Tr><Td colSpan={6} className="text-neutral-500">No signals yet.</Td></Tr>}
@@ -105,7 +106,7 @@ function AgentPredictionsTable({ agentId, domain }: { agentId: string; domain: s
               <Td className="tabular-nums">{Number(p.riskReward).toFixed(2)}</Td>
               <Td><PredictionOutcome p={p} /></Td>
               <Td>{p.isShadow ? <Badge tone="warn">shadow</Badge> : <Badge tone="success">real</Badge>}</Td>
-              <Td className="text-neutral-400 text-xs">{new Date(p.createdAt).toISOString().slice(0, 19).replace('T', ' ')}</Td>
+              <Td className="text-neutral-400 text-xs tabular-nums">{fmtWhen(p.createdAt)}</Td>
             </Tr>
           ))}
           {shown === 0 && !q.isLoading && (

@@ -1,6 +1,7 @@
 import { Card, CardBody, CardHeader } from '@/components/ui/Card';
 import { Badge } from '@/components/ui/Badge';
 import { useAgentRoom, type RoomEvent } from '@/hooks/useAgentRoom';
+import { fmtTime } from '@/lib/format';
 
 /** §27 live activity feed. Each row IS a real event (§27 verbatim: "every displayed claim
  *  should map to real system events/data"). No synthesized narrative — the LLM's job is
@@ -32,7 +33,7 @@ function RoomRow({ ev }: { ev: RoomEvent }) {
     ev.type.includes('created')     ? 'info'    : 'neutral';
   return (
     <div className="grid grid-cols-[10rem_1fr_10rem] items-center gap-2 text-xs">
-      <div className="text-neutral-500 tabular-nums">{new Date(ev.eventTime).toISOString().split('T')[1]?.slice(0, 8)}</div>
+      <div className="text-neutral-500 tabular-nums">{fmtTime(ev.eventTime)}</div>
       <div className="flex items-center gap-2">
         <Badge tone={tone}>{ev.type}</Badge>
         <span className="text-neutral-300">{summarize(ev)}</span>

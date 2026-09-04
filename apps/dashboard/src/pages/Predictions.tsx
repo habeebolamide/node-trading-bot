@@ -8,6 +8,7 @@ import { usePrediction, usePredictions } from '@/hooks/usePredictions';
 import { usePredictionAttribution, usePredictionAutopsy } from '@/hooks/usePredictionExtras';
 import { PredictionOutcome } from '@/components/PredictionOutcome';
 import { useAgents } from '@/hooks/useAgents';
+import { fmtDateTime, fmtWhen } from '@/lib/format';
 
 const PAGE_SIZE = 50;
 
@@ -66,7 +67,7 @@ function PredictionList() {
                   <Td className="tabular-nums">{Number(p.riskReward).toFixed(2)}</Td>
                   <Td><PredictionOutcome p={p} /></Td>
                   <Td>{p.isShadow ? <Badge tone="warn">shadow</Badge> : <Badge tone="success">real</Badge>}</Td>
-                  <Td className="text-neutral-400 text-xs">{new Date(p.createdAt).toISOString().slice(0, 19).replace('T', ' ')}</Td>
+                  <Td className="text-neutral-400 text-xs tabular-nums">{fmtWhen(p.createdAt)}</Td>
                 </Tr>
               ))}
               {shown === 0 && !q.isLoading && (
@@ -155,10 +156,10 @@ function PredictionDetail({ id }: { id: string }) {
                 {Number(pos.realizedPnl).toFixed(4)}
               </div>
               <div className="text-neutral-400">MFE / MAE</div><div className="tabular-nums text-right">{Number(pos.mfe).toFixed(4)} / {Number(pos.mae).toFixed(4)}</div>
-              <div className="text-neutral-400">Opened</div><div className="text-right text-xs">{new Date(pos.openedAtProcessing).toISOString().slice(0, 19).replace('T', ' ')}</div>
+              <div className="text-neutral-400">Opened</div><div className="text-right text-xs tabular-nums">{fmtDateTime(pos.openedAtProcessing)}</div>
               {pos.closedAt && (<>
                 <div className="text-neutral-400">Closed</div>
-                <div className="text-right text-xs">{new Date(pos.closedAt).toISOString().slice(0, 19).replace('T', ' ')}</div>
+                <div className="text-right text-xs tabular-nums">{fmtDateTime(pos.closedAt)}</div>
               </>)}
             </CardBody>
           </Card>
