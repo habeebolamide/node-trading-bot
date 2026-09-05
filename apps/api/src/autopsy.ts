@@ -20,7 +20,7 @@ import type { Db } from '@tip/database';
 import {
   paperPosition, prediction, tradeAutopsy, tradingAgent, type Db as DbType,
 } from '@tip/database';
-import { createDeepSeekClient } from '@tip/llm';
+import { createDeepSeekClient, estimateCost as estimateLlmCost, DEEPSEEK_V4_FLASH } from '@tip/llm';
 import { autopsyBulk, type BulkAutopsyProgress } from '@tip/agents';
 import { runAutoTune, type AutoTuneResult } from '@tip/evaluation';
 import { getTradingAgent, type TradingStyle } from '@tip/trading-agents';
@@ -78,11 +78,20 @@ async function eligiblePredictionIds(db: DbType, agentId: string): Promise<strin
   void isNull; void notInArray;
 }
 
-/** Rough cost estimate — 400 in-tokens + 200 out-tokens per prediction × published $/M. */
+/**
+ * Cost estimate from OBSERVED batch usage (2026-09-05 live logs), not guesses. deepseek-v4-flash
+ * is a reasoning model: an 8-prediction batch runs ~9500 input + ~9000 output tokens (the output
+ * is mostly reasoning_content, which bills as completion). Per prediction ≈ 1200 in / 1125 out.
+ * Routes through the shared MODEL_PRICES table so a price change updates this too. This is an
+ * off-peak estimate; a run during DeepSeek peak hours costs ~2× (see cost.ts).
+ */
+const AUTOPSY_TOKENS_PER_PREDICTION = { in: 1200, out: 1125 };
 function estimateCost(n: number): number {
-  const inCost = n * 400 * (0.14 / 1_000_000);
-  const outCost = n * 200 * (0.28 / 1_000_000);
-  return inCost + outCost;
+  return estimateLlmCost({
+    model: DEEPSEEK_V4_FLASH,
+    promptTokens: n * AUTOPSY_TOKENS_PER_PREDICTION.in,
+    completionTokens: n * AUTOPSY_TOKENS_PER_PREDICTION.out,
+  });
 }
 
 export function autopsyRouter(db: Db, opts: { deepseekApiKey?: string } = {}): Router {
