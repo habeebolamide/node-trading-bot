@@ -86,8 +86,8 @@ describe.skipIf(!DATABASE_URL)('hypothesis pipeline (integration)', () => {
     }
   });
 
-  it('below effective-n floor → NO proposal (§24 ≥ 20 gate)', async () => {
-    // Only 5 losses of FLOOR_CAT — well below 20. Distinct category from the above-floor test.
+  it('below effective-n floor → NO proposal (§24 gate)', async () => {
+    // Only 5 losses of FLOOR_CAT — below the floor (10). Distinct category from the above-floor test.
     for (let i = 0; i < 5; i++) await seedAutopsy({ outcome: 'LOSS', category: FLOOR_CAT });
     const r = await openHypotheses({ db, asOf: AS_OF });
     const mine = r.proposals.filter((p) => p.category === FLOOR_CAT);
@@ -196,7 +196,7 @@ describe.skipIf(!DATABASE_URL)('hypothesis pipeline (integration)', () => {
     expect(code).not.toMatch(/callWithLog|createDeepSeekClient/);
   });
 
-  it('floor sanity check — HYPOTHESIS_ELIGIBILITY_FLOOR is 20 (§24, higher than Setup Memory\'s 10)', () => {
-    expect(HYPOTHESIS_ELIGIBILITY_FLOOR).toBe(20);
+  it('floor sanity check — HYPOTHESIS_ELIGIBILITY_FLOOR lowered to 10 (matches Setup Memory trust floor; plan D10)', () => {
+    expect(HYPOTHESIS_ELIGIBILITY_FLOOR).toBe(10);
   });
 });

@@ -5107,7 +5107,26 @@ justification is the clustered autopsy evidence (already gated at effective-n �
 `openHypotheses`) plus the change being bounded/clamped/reversible, so it passes on the density
 gate alone. Commits `d920c2c`, `c28c686`.
 
+## D10 — §24 hypothesis eligibility floor lowered 20 → 10
+
+**Plan (§24):** hypothesis eligibility requires effective-n ≥ 20 — deliberately 2× the Setup
+Memory trust floor (10), because a config change is higher-stakes than reading a stat.
+
+**Shipped:** `HYPOTHESIS_ELIGIBILITY_FLOOR = 10`.
+
+**Why:** at seed-time volumes (a 76-prediction seed produced a peak category cluster of 16,
+spread across 7 categories) 20-per-category is effectively unreachable, so the learning loop could
+never open a hypothesis — the whole autopsy→tune chain was inert. 10 matches the evidence bar the
+Brain already trusts for Setup Memory, letting the loop run end-to-end. It trades hypothesis
+quantity for evidence strength; raise back toward 20 for production once live volume supports it.
+The `openHypotheses({ minEvidenceN })` override already exists for per-run tuning. Commit `<pending>`.
+
 ## D-notes 2 — additive (no plan conflict)
+
+- **API graceful-shutdown hardening** (`<pending>`): the shutdown handler now `closeAllConnections()`
+  after `server.close()` and has a 3s hard-exit deadline. WebSocket (Agent Room) + keep-alive
+  sockets kept `server.close()` from ever completing, so the port stayed bound and every
+  `tsx watch` reload hit `EADDRINUSE`. Now the port frees promptly on reload.
 
 - **DeepSeek pricing corrected** (`ec39a85`): `MODEL_PRICES` updated to the current V4-Flash rate
   (retired flat $0.14/$0.28 → off-peak $0.22/$0.66, peak 2×, per 2026-08-16 change). The autopsy

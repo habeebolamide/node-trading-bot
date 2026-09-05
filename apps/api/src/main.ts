@@ -68,14 +68,31 @@ async function main(): Promise<void> {
   // eslint-disable-next-line no-console
   console.log(`[api] listening on :${config.API_PORT}`);
 
+  let shuttingDown = false;
   const shutdown = async (signal: string): Promise<void> => {
+    if (shuttingDown) return; // a second signal (tsx watch can send SIGTERM then SIGKILL) is a no-op
+    shuttingDown = true;
     // eslint-disable-next-line no-console
     console.log(`[api] ${signal} — shutting down`);
+    // Hard deadline: if graceful cleanup stalls, exit anyway so the port frees for a `tsx watch`
+    // restart. Without this, a hung server.close() (below) left :PORT bound → EADDRINUSE on the
+    // next reload. 3s is ample for a clean drain; the unref() keeps the timer from holding the loop.
+    const deadline = setTimeout(() => {
+      // eslint-disable-next-line no-console
+      console.warn('[api] shutdown deadline hit — forcing exit');
+      process.exit(0);
+    }, 3_000);
+    deadline.unref();
     await agentRoom.close();
-    await new Promise<void>((resolve) => server.close(() => resolve()));
-    await bus.close();
-    await redis.quit();
-    await closeDb(db);
+    // Stop accepting new connections, THEN force-drop lingering ones (WebSocket upgrades +
+    // keep-alive sockets keep server.close() from ever completing otherwise — the real cause of
+    // the EADDRINUSE-on-restart loop). closeAllConnections is Node 18.2+.
+    server.close();
+    server.closeAllConnections?.();
+    await bus.close().catch(() => undefined);
+    await redis.quit().catch(() => undefined);
+    await closeDb(db).catch(() => undefined);
+    clearTimeout(deadline);
     process.exit(0);
   };
 

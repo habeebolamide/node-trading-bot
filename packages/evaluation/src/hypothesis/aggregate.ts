@@ -21,7 +21,14 @@ import { HALFLIFE_DAYS, recencyWeight } from '@tip/brain';
 import type { Pattern } from './propose.js';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
-export const HYPOTHESIS_ELIGIBILITY_FLOOR = 20;
+// §24 set this at 20 (2× Setup Memory's trust floor) because a config change is higher-stakes
+// than reading a stat. Lowered to 10 (2026-09-06) to match the Setup Memory trust floor: at
+// seed-time data volumes (dozens of predictions across several categories) 20-per-category is
+// effectively unreachable, so the learning loop could never open a hypothesis. 10 lets it run
+// while staying at the same evidence bar the Brain already trusts. Raise back toward 20 for
+// production once live volume supports it (it's the one dial that trades hypothesis quantity for
+// evidence strength). See plan Addendum 2 D10.
+export const HYPOTHESIS_ELIGIBILITY_FLOOR = 10;
 /** Sentinel setupId for a category-level (cross-fingerprint) hypothesis. */
 export const ALL_SETUPS = 'ALL';
 
