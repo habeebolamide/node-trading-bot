@@ -14,6 +14,7 @@ export function CreateAgentForm({ onClose }: { onClose: () => void }) {
   const [style, setStyle] = useState<'scalp' | 'day' | 'swing'>('day');
   const [universeInput, setUniverseInput] = useState('BTCUSDT');
   const [configText, setConfigText] = useState(() => JSON.stringify(DEFAULT_CONFIG_PERP, null, 2));
+  const [useJudge, setUseJudge] = useState(true);
 
   const onDomainChange = (d: 'perp' | 'memecoin') => {
     setDomain(d);
@@ -46,6 +47,8 @@ export function CreateAgentForm({ onClose }: { onClose: () => void }) {
     }
     const universe = universeInput.split(',').map((s) => s.trim()).filter(Boolean);
     if (universe.length === 0) { alert('Universe is empty — add at least one symbol/mint.'); return; }
+    // Merge the useJudge toggle for perp agents; memecoin ignores it. Checkbox wins over JSON.
+    if (domain === 'perp') config.useJudge = useJudge;
     const body: CreateAgentBody = { name: name.trim(), domain, tradingStyle: style, universe, config };
     create.mutate(body, { onSuccess: () => onClose() });
   };
@@ -105,6 +108,24 @@ export function CreateAgentForm({ onClose }: { onClose: () => void }) {
               <p className="mt-1 text-neutral-500">
                 To adjust either later: <code>PATCH /trading-agents/:id</code>.
               </p>
+            </div>
+          )}
+          {domain === 'perp' && (
+            <div className="md:col-span-2">
+              <label className="flex items-start gap-3 rounded-md border border-neutral-800 bg-neutral-900/40 p-3">
+                <input type="checkbox" checked={useJudge}
+                  onChange={(e) => setUseJudge(e.target.checked)}
+                  className="mt-1 h-4 w-4 accent-accent" />
+                <span className="flex flex-col gap-0.5">
+                  <span className="text-sm text-neutral-100">Use LLM Judge (§18)</span>
+                  <span className="text-[11px] leading-snug text-neutral-500">
+                    When on, each perp signal is reviewed by DeepSeek Judge — it can FLIP direction,
+                    DEFER, or STAND_ASIDE within the §18 override gate. When off, this agent uses the
+                    deterministic composite direction (faster, no LLM cost). Change later on the
+                    Configuration tab.
+                  </span>
+                </span>
+              </label>
             </div>
           )}
           <div className="md:col-span-2">

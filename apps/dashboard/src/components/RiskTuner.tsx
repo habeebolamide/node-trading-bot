@@ -16,10 +16,11 @@ import type { AgentRow } from '@/hooks/useAgents';
  */
 export function RiskTuner({ agent }: { agent: AgentRow }) {
   const qc = useQueryClient();
-  const cfg = agent.config as { minRR?: number; riskPercent?: number; leverageMax?: number };
+  const cfg = agent.config as { minRR?: number; riskPercent?: number; leverageMax?: number; useJudge?: boolean };
   const [minRR, setMinRR] = useState<string>(String(cfg.minRR ?? 1.5));
   const [riskPercent, setRiskPercent] = useState<string>(String(cfg.riskPercent ?? 0.01));
   const [leverageMax, setLeverageMax] = useState<string>(String(cfg.leverageMax ?? 10));
+  const [useJudge, setUseJudge] = useState<boolean>(cfg.useJudge ?? true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [savedAt, setSavedAt] = useState<number | null>(null);
@@ -27,7 +28,8 @@ export function RiskTuner({ agent }: { agent: AgentRow }) {
   const dirty =
     Number(minRR) !== (cfg.minRR ?? 1.5) ||
     Number(riskPercent) !== (cfg.riskPercent ?? 0.01) ||
-    (agent.domain === 'perp' && Number(leverageMax) !== (cfg.leverageMax ?? 10));
+    (agent.domain === 'perp' && Number(leverageMax) !== (cfg.leverageMax ?? 10)) ||
+    (agent.domain === 'perp' && useJudge !== (cfg.useJudge ?? true));
 
   async function save(): Promise<void> {
     setBusy(true); setError(null); setSavedAt(null);
@@ -38,7 +40,9 @@ export function RiskTuner({ agent }: { agent: AgentRow }) {
         ...(fresh.config as Record<string, unknown>),
         minRR: Number(minRR),
         riskPercent: Number(riskPercent),
-        ...(agent.domain === 'perp' ? { leverageMax: Number(leverageMax) } : {}),
+        ...(agent.domain === 'perp'
+          ? { leverageMax: Number(leverageMax), useJudge }
+          : {}),
       };
       await apiPatch(`/../trading-agents/${agent.id}/config`, nextConfig);
       await Promise.all([
@@ -85,6 +89,24 @@ export function RiskTuner({ agent }: { agent: AgentRow }) {
             />
           )}
         </div>
+        {agent.domain === 'perp' && (
+          <label className="flex items-start gap-3 rounded-md border border-neutral-800 bg-neutral-900/40 p-3">
+            <input
+              type="checkbox" checked={useJudge}
+              onChange={(e) => setUseJudge(e.target.checked)}
+              className="mt-1 h-4 w-4 accent-accent"
+            />
+            <span className="flex flex-col gap-0.5">
+              <span className="text-sm text-neutral-100">Use LLM Judge (§18)</span>
+              <span className="text-[11px] leading-snug text-neutral-500">
+                When on, each perp signal is reviewed by DeepSeek Judge — it can FLIP direction,
+                DEFER, or STAND_ASIDE within the §18 override gate. When off, this agent skips
+                the Judge entirely and uses the deterministic composite direction (faster, no
+                LLM cost). Global DEEPSEEK_API_KEY still required to enable it anywhere.
+              </span>
+            </span>
+          </label>
+        )}
         {error && <p className="text-xs text-red-300">{error}</p>}
         <div className="flex items-center justify-end gap-2">
           {dirty && !busy && (

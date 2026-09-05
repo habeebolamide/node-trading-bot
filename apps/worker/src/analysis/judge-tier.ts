@@ -62,6 +62,13 @@ export function createJudgeTierHandlers(deps: JudgeTierDeps): {
     const cfg = (await deps.db.select().from(scoringConfig)
       .where(and(eq(scoringConfig.tradingAgentId, p.tradingAgentId), eq(scoringConfig.active, true))).limit(1))[0];
     if (!cfg) return;
+    // Per-agent opt-out: agent's config.useJudge=false → skip the LLM call entirely. Entry
+    // orchestrator sees no judge_decision and short-circuits to deterministic (same code path
+    // as LLM failure). Saves the DeepSeek call + latency for agents where Judge adds no value.
+    if ((cfg.config as { useJudge?: boolean })?.useJudge === false) {
+      log('judge skipped: agent opted out (useJudge=false)', { signalId: p.signalId });
+      return;
+    }
     const ctx: AgentContext = {
       db: deps.db, now: new Date(), tradingAgentId: p.tradingAgentId, configVersion: p.configVersion,
       domain: 'perp', primaryTf: '1h', walletScoreAsOf: async () => null, activeClusterMap: async () => new Map(),

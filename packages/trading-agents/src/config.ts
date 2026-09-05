@@ -95,6 +95,12 @@ export const ScoringConfigInputSchema = z.object({
   startingBalance: z.number().positive().optional(),
   entryType: z.enum(['MARKET', 'LIMIT']).default('MARKET'),
   limitPullbackAtr: z.number().gt(0).default(0.3),
+  // Per-agent LLM Judge switch (perp only in MVP — memecoin has no Judge). When false, this
+  // agent's signals skip the Judge wait entirely and go straight to the deterministic prediction
+  // path (§18 "LLM down" branch), even if the API key is configured. Useful for agents where
+  // narrative override adds no value, or during experiments comparing judge-on vs judge-off
+  // versions. Default true — Judge tier still respects the global DEEPSEEK_API_KEY presence.
+  useJudge: z.boolean().default(true),
   // Memecoin-only:
   stopPct: z.number().gt(0).lt(1).optional(),
   takeProfitPct: z.number().gt(0).optional(),

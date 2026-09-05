@@ -236,6 +236,15 @@ export function createEntryOrchestrator(deps: EntryOrchestratorDeps): (event: Do
         await proceed(p.signalId, null);
         return;
       }
+      // Per-agent opt-out: agent's config.useJudge=false → skip the judge wait entirely and
+      // go deterministic immediately. Same fast path as !judgeEnabled but per-agent.
+      const cfgRow = (await deps.db.select({ config: scoringConfig.config }).from(scoringConfig)
+        .where(and(eq(scoringConfig.tradingAgentId, p.tradingAgentId), eq(scoringConfig.active, true)))
+        .limit(1))[0];
+      if ((cfgRow?.config as { useJudge?: boolean } | undefined)?.useJudge === false) {
+        await proceed(p.signalId, null);
+        return;
+      }
       // Judge enabled: the gate acts on judge.evaluation.completed. Arm the §18
       // DEFER-by-absence fallback for the LLM-down case.
       setTimer(() => {

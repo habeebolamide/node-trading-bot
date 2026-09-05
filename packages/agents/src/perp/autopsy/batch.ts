@@ -29,14 +29,21 @@ import { AutopsyOutput, validateOutcomeFields } from './schema.js';
 
 const log = createLogger('autopsy.batch');
 /**
- * Batch size was 25 — every batch truncated ("Unexpected end of JSON input"). Each autopsy
- * item is ~450–550 output tokens (predictionId + rootCause + explanation + arrays); 25 items
- * blows past the 6000-token maxTokens cap consistently. 12 items × ~500 = ~6000 with margin
- * from the schema being smaller than worst-case, keeping headroom for the closing `]`. Raising
- * maxTokens instead would leave the failure mode hidden until the next agent adds a field.
+ * Sizing dance (2026-09-05 probe):
+ *
+ *   deepseek-v4-flash burns ~1500–2000 tokens on internal reasoning BEFORE emitting a single
+ *   content byte. The 6000-token cap left ~4000 for actual content, which sounded fine for
+ *   12 items × ~450 tokens, but real evidence (agentFailures, contributingFactors, thesis
+ *   excerpts) is 3–4× bigger than my sanity-check probe assumed. Every batch consumed 6000
+ *   tokens on reasoning + partial output and returned an EMPTY content string (contentLen=0).
+ *
+ * Fix: raise maxTokens to 12000 (still ~$0.003/batch) and shrink batches to 8. Together this
+ * leaves ~10000 tokens for actual output — 5× headroom over the biggest realistic response.
+ * The autopsy runner (batchMaxTokens override in runOneBatch) uses the same number.
  */
-const DEFAULT_BATCH_SIZE = 12;
+const DEFAULT_BATCH_SIZE = 8;
 const DEFAULT_CONCURRENCY = 5;
+const BATCH_MAX_TOKENS = 12_000;
 
 /** Response element — echoes back prediction_id so the caller can join. */
 const BatchAutopsyItem = AutopsyOutput.extend({
@@ -162,7 +169,7 @@ async function runOneBatch(deps: BulkAutopsyDeps, batch: BatchEvidence[]): Promi
     system: BATCH_SYSTEM,
     user: userMessage,
     schema: BatchAutopsyOutput,
-    maxTokens: 6000,
+    maxTokens: BATCH_MAX_TOKENS,
   }, { agent: 'autopsy', agentVersion: AUTOPSY_VERSION_CURRENT });
 
   const tokensIn = call.promptTokens;
