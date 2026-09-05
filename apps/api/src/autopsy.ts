@@ -38,10 +38,12 @@ interface AutopsyJob {
 const jobs = new Map<string, AutopsyJob>();
 
 /** Eligible = closed real predictions (has a resolved paper_position or a prediction_outcome
- *  at the planning horizon) with no existing `trade_autopsy` row. */
+ *  at the planning horizon) with no SUCCESSFUL `trade_autopsy` row yet. FAILED_LLM rows are
+ *  retryable — the batch runner will delete + re-insert them (see runBulkAutopsy). */
 async function eligiblePredictionIds(db: DbType, agentId: string): Promise<string[]> {
-  // Already-autopsied set (any status — a FAILED_LLM row is a persistent skip until retried).
-  const doneIds = (await db.select({ id: tradeAutopsy.predictionId }).from(tradeAutopsy)).map((r) => r.id);
+  // Only SUCCESS rows are terminal — FAILED_LLM rows are treated as "unfinished, retry".
+  const doneIds = (await db.select({ id: tradeAutopsy.predictionId })
+    .from(tradeAutopsy).where(eq(tradeAutopsy.status, 'SUCCESS'))).map((r) => r.id);
   const doneSet = new Set(doneIds);
   // Closed real predictions from a resolved paper_position (fastest live signal), joined by
   // predictionId. Shadows excluded (§24 memecoin note applies to shadow autopsy too — no

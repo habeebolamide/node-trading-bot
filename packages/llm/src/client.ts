@@ -167,6 +167,16 @@ export function createDeepSeekClient(opts: ClientOptions): DeepSeekClient {
     try {
       parsed = JSON.parse(content);
     } catch (e) {
+      // Log the raw response on parse failure — the most common cause is truncation
+      // (max_tokens hit mid-JSON). Length + head + tail is enough to diagnose without
+      // dumping thousands of tokens into the log.
+      log.warn('llm invalid JSON — raw response head/tail', {
+        model,
+        completionTokens: usage.completionTokens,
+        contentLength: content.length,
+        contentHead: content.slice(0, 300),
+        contentTail: content.slice(-300),
+      });
       return {
         ok: false, errorKind: 'INVALID_JSON', message: `JSON parse failed: ${String(e).slice(0, 200)}`,
         usage, latencyMs: Date.now() - startedAt, model,
@@ -174,6 +184,11 @@ export function createDeepSeekClient(opts: ClientOptions): DeepSeekClient {
     }
     const check = input.schema.safeParse(parsed);
     if (!check.success) {
+      log.warn('llm schema mismatch — parsed but wrong shape', {
+        model,
+        issues: check.error.issues.slice(0, 5).map((i) => `${i.path.join('.')}: ${i.message}`),
+        parsedHead: JSON.stringify(parsed).slice(0, 400),
+      });
       return {
         ok: false, errorKind: 'INVALID_JSON',
         message: `schema: ${check.error.issues.map((i) => i.message).join('; ').slice(0, 200)}`,

@@ -18,7 +18,7 @@ import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import type { Db } from '@tip/database';
 import { prediction, tradeAutopsy } from '@tip/database';
-import { eq } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import { createLogger } from '@tip/domain';
 import { featureTupleFor } from '@tip/evaluation';
 import type { DeepSeekClient } from '@tip/llm';
@@ -28,7 +28,14 @@ import { AUTOPSY_VERSION_CURRENT } from './prompts.js';
 import { AutopsyOutput, validateOutcomeFields } from './schema.js';
 
 const log = createLogger('autopsy.batch');
-const DEFAULT_BATCH_SIZE = 25;
+/**
+ * Batch size was 25 — every batch truncated ("Unexpected end of JSON input"). Each autopsy
+ * item is ~450–550 output tokens (predictionId + rootCause + explanation + arrays); 25 items
+ * blows past the 6000-token maxTokens cap consistently. 12 items × ~500 = ~6000 with margin
+ * from the schema being smaller than worst-case, keeping headroom for the closing `]`. Raising
+ * maxTokens instead would leave the failure mode hidden until the next agent adds a field.
+ */
+const DEFAULT_BATCH_SIZE = 12;
 const DEFAULT_CONCURRENCY = 5;
 
 /** Response element — echoes back prediction_id so the caller can join. */
@@ -229,6 +236,9 @@ async function writeSuccessRow(
 }
 
 async function writeFailedRow(db: Db, item: BatchEvidence, llmCallLogId: string): Promise<void> {
+  // Update-on-conflict so a re-run refreshes the llmCallLogId + called_at (indirectly, via the
+  // fresh row) — otherwise the "why did this fail" trail is stuck on the very first failure.
+  // A row already SUCCESS is preserved by the WHERE clause (never downgrade to FAILED_LLM).
   await db.insert(tradeAutopsy).values({
     id: randomUUID(), predictionId: item.predictionId, setupId: item.setupId,
     outcome: item.outcome,
@@ -237,5 +247,9 @@ async function writeFailedRow(db: Db, item: BatchEvidence, llmCallLogId: string)
     contributingFactors: null, agentFailures: null,
     lesson: null, recommendation: null,
     autopsyVersion: AUTOPSY_VERSION_CURRENT, llmCallLogId, status: 'FAILED_LLM',
-  }).onConflictDoNothing();
+  }).onConflictDoUpdate({
+    target: tradeAutopsy.predictionId,
+    set: { llmCallLogId, status: 'FAILED_LLM' },
+    where: sql`${tradeAutopsy.status} <> 'SUCCESS'`,
+  });
 }
