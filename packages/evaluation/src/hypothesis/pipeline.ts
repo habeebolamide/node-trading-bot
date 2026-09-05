@@ -12,7 +12,7 @@
  * LLM's role ended at autopsy narrative). Asserted by a structural test.
  */
 import { randomUUID } from 'node:crypto';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, inArray } from 'drizzle-orm';
 import { learningHypothesis, type Db } from '@tip/database';
 import { aggregatePatterns } from './aggregate.js';
 import { proposeFromPattern, type ProposedHypothesis } from './propose.js';
@@ -31,20 +31,31 @@ export interface OpenHypothesesResult {
   readonly proposals: readonly ProposedHypothesis[];
 }
 
+/**
+ * Statuses that block re-opening the same (setupId, category, kind):
+ *   - in-flight (PROPOSED / BACKTEST_PASSED / OOS_PENDING / OOS_PASSED) — already being processed
+ *   - PROMOTED — the change is APPLIED; re-opening would double the delta on the next run
+ * REJECTED and DEFERRED_BOOTSTRAP are intentionally NOT blocking — they mean "not now, retry when
+ * evidence changes" (more autopsies clustered, or the domain matured past bootstrap). A re-run
+ * legitimately reconsiders them.
+ */
+const BLOCKING_STATUSES = ['PROPOSED', 'BACKTEST_PASSED', 'OOS_PENDING', 'OOS_PASSED', 'PROMOTED'];
+
 async function findExistingOpen(db: Db, p: ProposedHypothesis): Promise<boolean> {
   const rows = await db.select({ id: learningHypothesis.id }).from(learningHypothesis).where(and(
     eq(learningHypothesis.setupId, p.setupId),
     eq(learningHypothesis.category, p.category),
     eq(learningHypothesis.categoryKind, p.categoryKind),
-    eq(learningHypothesis.status, 'PROPOSED'),
+    inArray(learningHypothesis.status, BLOCKING_STATUSES),
   )).limit(1);
   return rows.length > 0;
 }
 
 /**
  * Run one sweep: find eligible patterns, propose against the known category table, insert new
- * PROPOSED rows. Skips a pattern that already has an open PROPOSED row for the same
- * (setupId, category, kind) — that's the idempotent guard.
+ * PROPOSED rows. Skips a pattern that already has an in-flight or PROMOTED row for the same
+ * (setupId, category, kind) — the idempotent guard. REJECTED / DEFERRED_BOOTSTRAP rows are
+ * reconsidered (a re-run may now have the evidence to pass).
  */
 export async function openHypotheses(input: OpenHypothesesInput): Promise<OpenHypothesesResult> {
   let opened = 0; let noMapping = 0; let already = 0;

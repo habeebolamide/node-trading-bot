@@ -65,6 +65,11 @@ export async function promoteHypothesis(db: Db, input: PromoteInput): Promise<Pr
     configVersion: active.version,
     horizon: planningH,
     asOf: new Date(),
+    // Domain-level maturity: the autopsy evidence spans every version the agent has run (and an
+    // operator's minRR/risk edits bump the active version without adding evidence). Counting only
+    // the active version's resolved predictions would falsely defer every tune made after a config
+    // edit — exactly the bug seen live (223 resolved under v1, active=v3 → 0 → wrongly deferred).
+    anyVersion: true,
     ...(input.minPredictionsForBootstrap !== undefined ? { minN: input.minPredictionsForBootstrap } : {}),
   });
   if (boot.bootstrapping) {

@@ -152,7 +152,18 @@ const DOMAIN_MIN_N: Record<Domain, number> = { perp: 30, memecoin: 15 };
 
 export async function isBootstrapping(
   db: Db,
-  input: { domain: Domain; configVersion: number; horizon: string; asOf: Date; minN?: number },
+  input: {
+    domain: Domain; configVersion: number; horizon: string; asOf: Date; minN?: number;
+    /**
+     * When true, count resolved predictions across ALL config versions in the domain, not just
+     * `configVersion`. The maturity gate ("is this domain ripe enough to tune at all?") is a
+     * domain-level question — it must NOT reset every time an operator edits an unrelated config
+     * field (minRR, risk%) and bumps the active version. Version-isolation (Rule 16) governs
+     * TRACK-RECORD attribution ("did v3 beat v2?"), a different question. promoteHypothesis passes
+     * this. Default false preserves the version-isolated behavior for any track-record caller.
+     */
+    anyVersion?: boolean;
+  },
 ): Promise<{ n: number; bootstrapping: boolean; message: string }> {
   const rows = await db
     .select({ n: count() })
@@ -160,7 +171,7 @@ export async function isBootstrapping(
     .innerJoin(predictionOutcome, eq(prediction.id, predictionOutcome.predictionId))
     .where(and(
       eq(prediction.domain, input.domain),
-      eq(prediction.configVersion, input.configVersion),
+      ...(input.anyVersion ? [] : [eq(prediction.configVersion, input.configVersion)]),
       eq(predictionOutcome.horizon, input.horizon),
       lte(prediction.createdAt, input.asOf),
     ));
