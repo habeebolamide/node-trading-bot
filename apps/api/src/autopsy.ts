@@ -20,7 +20,7 @@ import type { Db } from '@tip/database';
 import {
   paperPosition, prediction, tradeAutopsy, tradingAgent, type Db as DbType,
 } from '@tip/database';
-import { createDeepSeekClient, estimateCost as estimateLlmCost, DEEPSEEK_V4_FLASH } from '@tip/llm';
+import { createDeepSeekClient, estimateCost as estimateLlmCost, isDeepSeekPeak, DEEPSEEK_V4_FLASH } from '@tip/llm';
 import { autopsyBulk, type BulkAutopsyProgress } from '@tip/agents';
 import { runAutoTune, type AutoTuneResult } from '@tip/evaluation';
 import { getTradingAgent, type TradingStyle } from '@tip/trading-agents';
@@ -101,7 +101,11 @@ export function autopsyRouter(db: Db, opts: { deepseekApiKey?: string } = {}): R
   /** Preview — how many are eligible + est. cost, without kicking anything off. */
   r.get('/:id/autopsy/eligible', async (req, res) => {
     const ids = await eligiblePredictionIds(db, req.params.id!);
-    res.json({ eligible: ids.length, estimatedCost: estimateCost(ids.length) });
+    res.json({
+      eligible: ids.length,
+      estimatedCost: estimateCost(ids.length),
+      peak: isDeepSeekPeak(), // true = the estimate reflects the 2× peak rate right now
+    });
   });
 
   /** Current job state (or null when nothing has ever run). */

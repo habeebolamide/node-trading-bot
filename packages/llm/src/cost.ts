@@ -23,15 +23,38 @@ export interface ModelPrice {
   completionPerMTok: number;
 }
 
+/** MODEL_PRICES holds the OFF-PEAK rate; peak is PEAK_MULTIPLIER × these (see header). */
 export const MODEL_PRICES: Record<string, ModelPrice> = {
   'deepseek-v4-flash': { promptPerMTok: 0.22, completionPerMTok: 0.66 },
 };
 
 export const DEEPSEEK_V4_FLASH = 'deepseek-v4-flash';
 
-export function estimateCost(input: { model: string; promptTokens: number; completionTokens: number }): number {
+/**
+ * DeepSeek peak/off-peak billing (effective 2026-08-16). Peak hours are 01:00-04:00 and
+ * 06:00-10:00 UTC; peak rate is 2× off-peak. MODEL_PRICES stores off-peak; a call made during
+ * a peak window costs double. estimateCost applies this from the call time so both the live
+ * `llm_call_log.cost` and the pre-run UI estimate reflect the actual rate.
+ */
+export const PEAK_MULTIPLIER = 2;
+
+/** True when `at` (default now) falls in a DeepSeek peak window (UTC 01-04 or 06-10). */
+export function isDeepSeekPeak(at: Date = new Date()): boolean {
+  const h = at.getUTCHours();
+  return (h >= 1 && h < 4) || (h >= 6 && h < 10);
+}
+
+/**
+ * Cost in USD. `at` (default now) decides peak vs off-peak — a call/estimate during a peak window
+ * is billed at 2× the off-peak MODEL_PRICES rate. Callers recording historical cost pass no `at`
+ * (they compute at call time); the UI estimate also uses now, matching when the run will execute.
+ */
+export function estimateCost(input: {
+  model: string; promptTokens: number; completionTokens: number; at?: Date;
+}): number {
   const p = MODEL_PRICES[input.model];
   if (!p) throw new Error(`unknown model "${input.model}" — add it to MODEL_PRICES before use`);
-  return (input.promptTokens / 1_000_000) * p.promptPerMTok
-       + (input.completionTokens / 1_000_000) * p.completionPerMTok;
+  const mult = isDeepSeekPeak(input.at ?? new Date()) ? PEAK_MULTIPLIER : 1;
+  return ((input.promptTokens / 1_000_000) * p.promptPerMTok
+        + (input.completionTokens / 1_000_000) * p.completionPerMTok) * mult;
 }

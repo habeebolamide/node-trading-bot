@@ -51,9 +51,11 @@ const log = createLogger('autopsy.batch');
  *   plenty of content room. Also: the prompt MUST contain the literal word "json" (DeepSeek rejects
  *   json_object mode otherwise — "Return ONLY this JSON object" in BATCH_SYSTEM satisfies it).
  */
-const DEFAULT_BATCH_SIZE = 8;
+const DEFAULT_BATCH_SIZE = 10;
 const DEFAULT_CONCURRENCY = 5;
 const BATCH_MAX_TOKENS = 16_000;
+// Headroom check for batch=10: compact output is ~60 tokens/item (~600 total); v4-flash reasons
+// ~7-10k before emitting. ~10.6k << 16k cap, so 10 stays safely clear of truncation.
 
 /**
  * COMPACT response schema (2026-09-05 rewrite). The old schema demanded 8 heavy fields per item

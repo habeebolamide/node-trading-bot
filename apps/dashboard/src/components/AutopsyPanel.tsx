@@ -5,7 +5,7 @@ import { Badge } from '@/components/ui/Badge';
 import { Skeleton } from '@/components/ui/Skeleton';
 import { apiGet, apiPost, type ApiError } from '@/lib/api';
 
-interface Eligible { eligible: number; estimatedCost: number }
+interface Eligible { eligible: number; estimatedCost: number; peak?: boolean }
 interface AutoTune {
   hypothesesOpened: number; hypothesesSkipped: number;
   backtested: number; backtestPassed: number; backtestRejected: number;
@@ -86,7 +86,10 @@ export function AutopsyPanel({ agentId, domain }: { agentId: string; domain: str
               <p className="mb-3 text-sm text-neutral-300">
                 <strong className="tabular-nums">{eligibleN}</strong> closed real predictions
                 ready for autopsy · estimated cost{' '}
-                <strong className="tabular-nums">${estCost.toFixed(4)}</strong> (DeepSeek V4-Flash)
+                <strong className="tabular-nums">${estCost.toFixed(4)}</strong>{' '}
+                <span className="text-neutral-500">
+                  (DeepSeek V4-Flash · {eligible.data?.peak ? 'peak rate' : 'off-peak rate'})
+                </span>
               </p>
               {!running && (
                 <button
