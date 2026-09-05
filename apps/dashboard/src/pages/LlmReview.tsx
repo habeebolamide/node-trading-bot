@@ -30,30 +30,47 @@ export function LlmReview() {
   );
 }
 
+const AUTOPSY_PAGE_SIZE = 50;
+
 function Autopsies() {
   const [status, setStatus] = useState<string>('SUCCESS');
   const [outcome, setOutcome] = useState<string>('');
-  const q = useAutopsies({ ...(status ? { status } : {}), ...(outcome ? { outcome } : {}), limit: 200 });
+  const [page, setPage] = useState(0);
+  const q = useAutopsies({
+    ...(status ? { status } : {}), ...(outcome ? { outcome } : {}),
+    limit: AUTOPSY_PAGE_SIZE, offset: page * AUTOPSY_PAGE_SIZE,
+  });
+  // Reset to page 0 whenever a filter changes.
+  const onFilter = (fn: () => void) => { fn(); setPage(0); };
+  const total = q.data?.total ?? 0;
+  const pageCount = Math.max(1, Math.ceil(total / AUTOPSY_PAGE_SIZE));
+  const rows = q.data?.rows ?? [];
+
   return (
     <div>
-      <div className="mb-3 flex gap-2 text-xs">
+      <div className="mb-3 flex items-center gap-2 text-xs">
         <label>Status:
-          <select value={status} onChange={(e) => setStatus(e.target.value)} className="ml-1 rounded-md border border-neutral-800 bg-neutral-950 px-2 py-1">
+          <select value={status} onChange={(e) => onFilter(() => setStatus(e.target.value))} className="ml-1 rounded-md border border-neutral-800 bg-neutral-950 px-2 py-1">
             <option value="">any</option><option value="SUCCESS">SUCCESS</option><option value="FAILED_LLM">FAILED_LLM</option>
           </select>
         </label>
         <label>Outcome:
-          <select value={outcome} onChange={(e) => setOutcome(e.target.value)} className="ml-1 rounded-md border border-neutral-800 bg-neutral-950 px-2 py-1">
+          <select value={outcome} onChange={(e) => onFilter(() => setOutcome(e.target.value))} className="ml-1 rounded-md border border-neutral-800 bg-neutral-950 px-2 py-1">
             <option value="">any</option><option value="WIN">WIN</option><option value="LOSS">LOSS</option>
           </select>
         </label>
+        {total > 0 && (
+          <span className="ml-auto text-neutral-400 tabular-nums">
+            {page * AUTOPSY_PAGE_SIZE + 1}–{Math.min((page + 1) * AUTOPSY_PAGE_SIZE, total)} of {total}
+          </span>
+        )}
       </div>
       {q.isLoading ? <Skeleton className="h-40" /> : (
         <Card>
           <Table>
             <Thead><Tr><Th>Outcome</Th><Th>Category</Th><Th>Root cause</Th><Th>Setup</Th><Th>Status</Th><Th>When</Th></Tr></Thead>
             <Tbody>
-              {(q.data?.rows ?? []).map((a) => (
+              {rows.map((a) => (
                 <Tr key={a.id}>
                   <Td><Badge tone={a.outcome === 'WIN' ? 'success' : 'danger'}>{a.outcome}</Badge></Td>
                   <Td className="text-xs">{a.failureCategory ?? a.successFactor ?? '—'}</Td>
@@ -63,11 +80,24 @@ function Autopsies() {
                   <Td className="text-neutral-400 text-xs tabular-nums">{fmtWhen(a.createdAt)}</Td>
                 </Tr>
               ))}
-              {(q.data?.rows ?? []).length === 0 && (
+              {rows.length === 0 && (
                 <Tr><Td colSpan={6} className="text-neutral-500">No autopsies yet — the M6 outcome sweep hasn't resolved anything, or memecoin (autopsy-deferred).</Td></Tr>
               )}
             </Tbody>
           </Table>
+          {pageCount > 1 && (
+            <div className="flex items-center justify-between border-t border-neutral-800 px-3 py-2 text-xs">
+              <button disabled={page === 0} onClick={() => setPage((p) => Math.max(0, p - 1))}
+                className="rounded-md border border-neutral-800 px-3 py-1 hover:border-neutral-600 disabled:opacity-40">
+                ← Prev
+              </button>
+              <span className="text-neutral-400 tabular-nums">Page {page + 1} of {pageCount}</span>
+              <button disabled={page >= pageCount - 1} onClick={() => setPage((p) => Math.min(pageCount - 1, p + 1))}
+                className="rounded-md border border-neutral-800 px-3 py-1 hover:border-neutral-600 disabled:opacity-40">
+                Next →
+              </button>
+            </div>
+          )}
         </Card>
       )}
     </div>

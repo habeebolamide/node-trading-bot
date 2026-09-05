@@ -249,16 +249,19 @@ export function dashboardRouter(db: Db): Router {
     const setupId = asString(req.query.setupId);
     const status = asString(req.query.status);
     const outcome = asString(req.query.outcome);
-    const limit = asNumber(req.query.limit, 200)!;
+    const limit = asNumber(req.query.limit, 50)!;
+    const offset = asNumber(req.query.offset, 0)!;
     const conds = [] as ReturnType<typeof eq>[];
     if (setupId) conds.push(eq(tradeAutopsy.setupId, setupId));
     if (status) conds.push(eq(tradeAutopsy.status, status));
     if (outcome) conds.push(eq(tradeAutopsy.outcome, outcome));
-    const rows = await db.select().from(tradeAutopsy)
-      .where(conds.length ? and(...conds) : undefined)
-      .orderBy(desc(tradeAutopsy.createdAt))
-      .limit(limit);
-    res.json({ rows });
+    const where = conds.length ? and(...conds) : undefined;
+    const [rows, totalRow] = await Promise.all([
+      db.select().from(tradeAutopsy).where(where)
+        .orderBy(desc(tradeAutopsy.createdAt)).limit(limit).offset(offset),
+      db.select({ n: count() }).from(tradeAutopsy).where(where),
+    ]);
+    res.json({ rows, total: Number(totalRow[0]?.n ?? 0), limit, offset });
   });
 
   // ── BRAIN ──────────────────────────────────────────────────────────

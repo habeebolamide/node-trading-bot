@@ -11,9 +11,9 @@ export interface AutopsyRow {
   autopsyVersion: number; llmCallLogId: string | null; status: 'SUCCESS' | 'FAILED_LLM';
   createdAt: string;
 }
-export function useAutopsies(params: { setupId?: string; status?: string; outcome?: string; limit?: number } = {}) {
+export function useAutopsies(params: { setupId?: string; status?: string; outcome?: string; limit?: number; offset?: number } = {}) {
   return useQuery({
     queryKey: ['autopsies', params],
-    queryFn: () => apiGet<{ rows: AutopsyRow[] }>('/autopsies', params),
+    queryFn: () => apiGet<{ rows: AutopsyRow[]; total: number; limit: number; offset: number }>('/autopsies', params),
   });
 }
