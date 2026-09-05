@@ -1,5 +1,5 @@
 import { createServer } from 'node:http';
-import { getConfig, loadEnv } from '@tip/domain';
+import { getConfig, loadEnv, configureLogger, logFilePathFor } from '@tip/domain';
 import { getDb, closeDb } from '@tip/database';
 import { createRedis, EventBus } from '@tip/events';
 import { HeliusRestClient, HeliusWebhookAdmin } from '@tip/ingestion';
@@ -11,6 +11,9 @@ import { attachAgentRoom } from './agent-room.js';
 async function main(): Promise<void> {
   loadEnv(); // hydrate process.env from repo-root .env (no-op in production)
   const config = getConfig(); // validates env; throws FatalError if bad
+  // One unified log folder at <repo>/logs/. Every log.* call from anywhere in this process
+  // appends to logs/api.log — no more scattered app.log copies under apps/api/logs/.
+  configureLogger({ level: 'debug', file: logFilePathFor('api', import.meta.url) });
   const db = getDb();
   const redis = createRedis(config.REDIS_URL);
   const bus = new EventBus(createRedis(config.REDIS_URL)); // bus owns its own connection

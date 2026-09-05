@@ -1,4 +1,4 @@
-import { getConfig, loadEnv } from '@tip/domain';
+import { getConfig, loadEnv, configureLogger, logFilePathFor } from '@tip/domain';
 import { getDb, closeDb, tradingAgent } from '@tip/database';
 import { eq } from 'drizzle-orm';
 import { createRedis, EventBus } from '@tip/events';
@@ -44,6 +44,8 @@ import type { DomainEvent } from '@tip/domain';
 async function main(): Promise<void> {
   loadEnv(); // hydrate process.env from repo-root .env (no-op in production)
   const config = getConfig(); // validates env; throws FatalError if bad
+  // Unified log folder at <repo>/logs/. Worker's own file: logs/worker.log.
+  configureLogger({ level: 'debug', file: logFilePathFor('worker', import.meta.url) });
   const db = getDb();
   const bus = new EventBus(createRedis(config.REDIS_URL));
 
