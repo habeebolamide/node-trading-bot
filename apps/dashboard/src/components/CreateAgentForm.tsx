@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { Card, CardBody, CardHeader } from '@/components/ui/Card';
 import { Badge } from '@/components/ui/Badge';
 import { useCreateAgent, type CreateAgentBody } from '@/hooks/useCreateAgent';
-import { DEFAULT_CONFIG_MEMECOIN, DEFAULT_CONFIG_PERP } from '@/lib/agentDefaults';
+import { DEFAULT_CONFIG_MEMECOIN, DEFAULT_CONFIG_PERP, DEFAULT_CONFIG_PERP_SEED } from '@/lib/agentDefaults';
 
 /** Inline Create-Agent form on the Agents page. POSTs to /trading-agents (M4). Config is
  *  prefilled from the plan defaults; the operator can edit the JSON before submit. On success
@@ -13,17 +13,33 @@ export function CreateAgentForm({ onClose }: { onClose: () => void }) {
   const [domain, setDomain] = useState<'perp' | 'memecoin'>('perp');
   const [style, setStyle] = useState<'scalp' | 'day' | 'swing'>('day');
   const [universeInput, setUniverseInput] = useState('BTCUSDT');
+  const [profile, setProfile] = useState<'live' | 'seed'>('live');
   const [configText, setConfigText] = useState(() => JSON.stringify(DEFAULT_CONFIG_PERP, null, 2));
   const [useJudge, setUseJudge] = useState(true);
+
+  // Swap the prefilled perp config between the full live roster and the seed profile
+  // (positioning + liquidation zeroed). Only overwrites if the user hasn't hand-edited.
+  const onProfileChange = (p: 'live' | 'seed') => {
+    setProfile(p);
+    if (domain !== 'perp') return;
+    const current = configText.trim();
+    const liveJson = JSON.stringify(DEFAULT_CONFIG_PERP, null, 2);
+    const seedJson = JSON.stringify(DEFAULT_CONFIG_PERP_SEED, null, 2);
+    if (current === liveJson || current === seedJson || current === '') {
+      setConfigText(p === 'seed' ? seedJson : liveJson);
+    }
+  };
 
   const onDomainChange = (d: 'perp' | 'memecoin') => {
     setDomain(d);
     // Swap the prefilled config to match the domain. If the user has already edited, warn them.
     const current = configText.trim();
     const perpJson = JSON.stringify(DEFAULT_CONFIG_PERP, null, 2);
+    const seedJson = JSON.stringify(DEFAULT_CONFIG_PERP_SEED, null, 2);
     const memeJson = JSON.stringify(DEFAULT_CONFIG_MEMECOIN, null, 2);
-    if (current === perpJson || current === memeJson || current === '') {
-      setConfigText(JSON.stringify(d === 'perp' ? DEFAULT_CONFIG_PERP : DEFAULT_CONFIG_MEMECOIN, null, 2));
+    if (current === perpJson || current === seedJson || current === memeJson || current === '') {
+      const perpCfg = profile === 'seed' ? DEFAULT_CONFIG_PERP_SEED : DEFAULT_CONFIG_PERP;
+      setConfigText(JSON.stringify(d === 'perp' ? perpCfg : DEFAULT_CONFIG_MEMECOIN, null, 2));
     }
     if (d === 'memecoin') {
       // Memecoin agents don't pre-declare a token list — they REACT to watched-wallet buys via
@@ -97,6 +113,26 @@ export function CreateAgentForm({ onClose }: { onClose: () => void }) {
                   <option value="ETHUSDT">ETHUSDT</option>
                   <option value="SOLUSDT">SOLUSDT</option>
                 </select>
+              </div>
+              <div className="md:col-span-2">
+                <label className="text-xs text-neutral-400">Weight profile</label>
+                <div className="mt-1 flex gap-1">
+                  {([
+                    ['live', 'Live roster', 'All 8 agents. Use when trading live from day one.'],
+                    ['seed', 'Seed profile', 'positioning + liquidation zeroed — they can\'t be seeded (no Bybit history). Use when you\'ll backfill + seed this agent.'],
+                  ] as const).map(([key, label, hint]) => (
+                    <button key={key} type="button" onClick={() => onProfileChange(key)}
+                      title={hint}
+                      className={`flex-1 rounded-md border px-3 py-2 text-left text-sm ${key === profile ? 'border-accent bg-accent/10 text-accent' : 'border-neutral-800 text-neutral-400 hover:text-neutral-100'}`}>
+                      {label}
+                    </button>
+                  ))}
+                </div>
+                <p className="mt-1 text-[11px] leading-snug text-neutral-500">
+                  {profile === 'seed'
+                    ? 'positioning + liquidation set to 0 (no historical data to seed them). They fire once live — bump their weights on the Configuration tab after they build a track record.'
+                    : 'Full 8-agent roster per Part III §3.'}
+                </p>
               </div>
             </>
           )}
