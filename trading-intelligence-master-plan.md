@@ -5039,3 +5039,79 @@ killed ALL market-data ingestion — no candles landed at all. The WS client now
   normally live.
 - **`market_candle.created_at`** (`5683534`): ingestion-clock column (distinct from the bar's
   `open_time`/`close_time`); not read by agents, not for point-in-time filtering.
+
+---
+
+# Addendum 2 — Build-Time Deviations (2026-09-06)
+
+Continues the addendum above. Same rule: this is the current truth where it conflicts with a
+section; fold in on the next substantial edit of that section.
+
+## D6 — Part III §4 planner: ATR-based minimum stop buffer (`minStopAtrMult`)
+
+**Plan (Part III §4):** the perp stop is the opposing-side swing pivot, falling back to
+`1.5 × ATR` only when no pivot exists.
+
+**Shipped:** new config field `minStopAtrMult` (default 1.0). After the pivot/fallback stop is
+derived, the stop is floored to at least `minStopAtrMult × ATR` from entry — a pivot closer than
+that is overridden (widened, never tightened). 0 disables (legacy pivot-only).
+
+**Why:** data autopsy 2026-09-05 — 46% of seeded stops were < 0.2%, ≈ one 5m SOL candle range, so
+nearly half the trades were stopped by routine noise before the thesis could play out (the likely
+#1 driver of the 9/20/29% accuracy curve). On a 5m scalp TF, swing pivots are packed ~1
+candle-range apart, so "nearest support" is often inside the noise band. ATR-scaling makes the
+floor self-adjust to volatility. Commit `414ecd1`.
+
+## D7 — Part III §4 planner: ATR-based take-profit cap (`takeProfitAtrMult`)
+
+**Plan (Part III §4):** the perp take-profit is the same-direction structural level, falling back
+to `ATR × minRR`.
+
+**Shipped:** optional config field `takeProfitAtrMult`. When set, the TP sits no further than
+`takeProfitAtrMult × ATR` from entry — a structural target further than that is pulled in (only
+tightens). Applied before the R:R gate, so a pulled-in TP that drops R:R below `minRR` filters the
+setup (intended). Unset = structure-only (no cap), preserving plan behavior.
+
+**Why:** data autopsy 2026-09-06 — 11% of trades reached >60% of the way to TP but expired flat
+because the target was too far to close within the horizon. Commit `c28c686`.
+
+## D8 — §24 autopsy failure taxonomy extended (data-derived categories)
+
+**Plan (§24 / §40.14):** the autopsy classifies failures into a small set of mechanism tags
+(positioning misread, regime shift, funding/momentum/liquidation mis-weighting).
+
+**Shipped:** four situational tags added, from a personal autopsy over 223 seeded outcomes
+(`hit_target`/`hit_invalidation`/`mfe`/`mae`): `STOP_TOO_TIGHT` (16%), `NO_FOLLOW_THROUGH` (35% —
+chop/expired-flat, the largest bucket), `TARGET_TOO_FAR` (11%), `WRONG_FROM_ENTRY` (17%). The
+first three map to config changes (below); `WRONG_FROM_ENTRY` is intentionally UNMAPPED — it has
+no unambiguous single-agent remedy, so it's tagged for human review only (surfaces on the LLM
+Review page, never auto-changes config). Commits `d920c2c`, `c28c686`.
+
+## D9 — §24 learning loop can tune scalar params, not just agent weights (`paramDelta`)
+
+**Plan (§24):** `CATEGORY_TO_ADJUSTMENT_V1` maps a failure category to an agent weight delta; the
+hypothesis pipeline promotes weight changes.
+
+**Shipped:** `ProposedChange` gains a second kind, `{kind:'paramDelta', param, delta}`, alongside
+`weightDelta`. Tunable params (`minStopAtrMult`, `takeProfitAtrMult`) are clamped to `PARAM_BOUNDS`
+on apply. New mappings: `STOP_TOO_TIGHT → +0.25 minStopAtrMult`, `NO_FOLLOW_THROUGH → +0.02
+perp.market_regime` (weight), `TARGET_TOO_FAR → −0.25 takeProfitAtrMult`. The LLM still only NAMES
+the category (rule 13); every number lives in the code table.
+
+**Backtest nuance:** a `weightDelta` is validated by the per-agent Wilson-CI directional check
+(is the adjusted agent measurably a winner/loser?). A `paramDelta` has no agent to score — its
+justification is the clustered autopsy evidence (already gated at effective-n ≥ 20 by
+`openHypotheses`) plus the change being bounded/clamped/reversible, so it passes on the density
+gate alone. Commits `d920c2c`, `c28c686`.
+
+## D-notes 2 — additive (no plan conflict)
+
+- **DeepSeek pricing corrected** (`ec39a85`): `MODEL_PRICES` updated to the current V4-Flash rate
+  (retired flat $0.14/$0.28 → off-peak $0.22/$0.66, peak 2×, per 2026-08-16 change). The autopsy
+  cost estimate now uses observed batch token counts (~1200 in / 1125 out per prediction, reasoning
+  included). Historical `llm_call_log.cost` rows keep their as-written price.
+- **Attribution page** (`25fde95`): split the combined agent+version selector into two filters
+  (agent, then config version) so seeded-under-v1 data is viewable after config edits bump the
+  active version.
+- **Hypothesis re-open idempotency** (`f626efb`, listed in Addendum 1 D3): also blocks re-opening a
+  `PROMOTED` hypothesis (was `PROPOSED`-only) so a promoted delta can't re-apply on the next run.
