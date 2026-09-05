@@ -25,54 +25,80 @@ import type { DeepSeekClient } from '@tip/llm';
 import { callWithLog } from '@tip/llm';
 import { buildAutopsyEvidence, type AutopsyEvidence } from './evidence.js';
 import { AUTOPSY_VERSION_CURRENT } from './prompts.js';
-import { AutopsyOutput, validateOutcomeFields } from './schema.js';
+// Compact batch schema is defined inline below — the heavy AutopsyOutput schema (rootCause +
+// explanation + arrays + lesson + recommendation) is only used by the single-prediction autopsy
+// runner (runner.ts), not this bulk path.
 
 const log = createLogger('autopsy.batch');
 /**
- * Sizing dance (2026-09-05 probe):
+ * Sizing (2026-09-05, two rounds):
  *
- *   deepseek-v4-flash burns ~1500–2000 tokens on internal reasoning BEFORE emitting a single
- *   content byte. The 6000-token cap left ~4000 for actual content, which sounded fine for
- *   12 items × ~450 tokens, but real evidence (agentFailures, contributingFactors, thesis
- *   excerpts) is 3–4× bigger than my sanity-check probe assumed. Every batch consumed 6000
- *   tokens on reasoning + partial output and returned an EMPTY content string (contentLen=0).
+ *   Round 1 diagnosed via the raw-response log: deepseek-v4-flash burns ~1500-2000 tokens on
+ *   internal reasoning before emitting content, and the OLD 8-field schema (rootCause +
+ *   explanation ≤2000 + contributingFactors[] + agentFailures[] + lesson + recommendation) made
+ *   each item ~1000+ output tokens. 8 items × that + reasoning = >12000 → truncation on every
+ *   batch (contentLength 0 or "Unterminated string").
  *
- * Fix: raise maxTokens to 12000 (still ~$0.003/batch) and shrink batches to 8. Together this
- * leaves ~10000 tokens for actual output — 5× headroom over the biggest realistic response.
- * The autopsy runner (batchMaxTokens override in runOneBatch) uses the same number.
+ *   Round 2 (the real fix): the hypothesis pipeline only reads failureCategory/successFactor, so
+ *   the schema was slimmed to {predictionId, failureCategory|successFactor, reason} — ~60 tokens
+ *   per item instead of 1000+. 8 items now emit ~300-1700 chars of content.
+ *
+ *   Round 3 (the actual root cause): deepseek-v4-flash is a REASONING model. Its raw response has
+ *   a separate `reasoning_content` field, and `reasoning_tokens` count against max_tokens. Live
+ *   probe: an 8-item batch reasons 6700-8700 tokens BEFORE emitting content. At the old 12000 cap
+ *   reasoning left only ~3300 for content — fine for the compact schema, but the OLD heavy schema
+ *   needed ~10000 output → truncated every time. Set max to 16000 so even a reasoning spike leaves
+ *   plenty of content room. Also: the prompt MUST contain the literal word "json" (DeepSeek rejects
+ *   json_object mode otherwise — "Return ONLY this JSON object" in BATCH_SYSTEM satisfies it).
  */
 const DEFAULT_BATCH_SIZE = 8;
 const DEFAULT_CONCURRENCY = 5;
-const BATCH_MAX_TOKENS = 12_000;
+const BATCH_MAX_TOKENS = 16_000;
 
-/** Response element — echoes back prediction_id so the caller can join. */
-const BatchAutopsyItem = AutopsyOutput.extend({
+/**
+ * COMPACT response schema (2026-09-05 rewrite). The old schema demanded 8 heavy fields per item
+ * — rootCause, explanation (≤2000 chars!), contributingFactors[], agentFailures[], lesson,
+ * recommendation — which for 8 items exploded past the token cap and truncated EVERY batch
+ * (see the logs: contentLength 0 or "Unterminated string"). But the hypothesis pipeline only
+ * reads `failureCategory` / `successFactor` (aggregate.ts:46) — the rest was write-only decoration.
+ *
+ * New shape is exactly what the model naturally emits: `{predictionId, failureCategory|
+ * successFactor, reason}`. `reason` maps to the DB `rootCause` (+ `explanation` mirror); the
+ * heavy columns are nulled. Wrapped in `{results:[...]}` because `response_format:json_object`
+ * requires a top-level OBJECT — a bare array is technically out-of-spec and was part of the
+ * flakiness.
+ */
+const BatchAutopsyItem = z.object({
   predictionId: z.string().min(1),
+  failureCategory: z.string().max(80).optional(),
+  successFactor: z.string().max(80).optional(),
+  reason: z.string().min(1).max(400),
 });
-const BatchAutopsyOutput = z.array(BatchAutopsyItem).max(50);
-type BatchAutopsyOutput = z.infer<typeof BatchAutopsyOutput>;
+const BatchAutopsyOutput = z.object({
+  results: z.array(BatchAutopsyItem).max(50),
+});
+type BatchAutopsyItemT = z.infer<typeof BatchAutopsyItem>;
 
 const BATCH_SYSTEM =
 `You are the Autopsy analyst — a post-outcome reviewer of trading predictions.
 
 The system already knows WIN vs LOSS as a hard fact (from the Outcome Engine, §21). Your job
-is NOT to re-decide. For EACH prediction you receive, explain WHY, precisely and specifically,
-from the evidence provided.
+is NOT to re-decide. For EACH prediction, classify WHY in ONE short sentence from the evidence.
 
-For a LOSS: classify the mechanism with a tag like POSITIONING_MISREAD, REGIME_SHIFTED_MID_TRADE,
-FUNDING_UNDERWEIGHTED, MOMENTUM_OVERWEIGHTED, LIQUIDATION_SIGNAL_MISSED (populate failureCategory).
+For a LOSS: set failureCategory to a SHORT_UPPERCASE_TAG like POSITIONING_MISREAD,
+REGIME_SHIFTED_MID_TRADE, FUNDING_UNDERWEIGHTED, MOMENTUM_OVERWEIGHTED, LIQUIDATION_SIGNAL_MISSED.
 
-For a WIN: identify what drove it with a tag like MOMENTUM_CONFIRMED_EARLY, REGIME_ALIGNED
-(populate successFactor).
+For a WIN: set successFactor to a tag like MOMENTUM_CONFIRMED_EARLY, REGIME_ALIGNED.
+
+Return ONLY this JSON object (no prose, no markdown):
+{"results": [{"predictionId": "<echo>", "failureCategory": "<TAG>" | "successFactor": "<TAG>", "reason": "<one sentence, <=400 chars>"}]}
 
 RULES:
-1. Reason ONLY over the structured evidence. Do NOT invent prices/funding not in the evidence.
-2. Return ONLY a JSON array. Each element has \`predictionId\` echoing the input plus the
-   autopsy fields. EVERY input prediction MUST appear exactly once in your output.
-3. If you cannot confidently tag a prediction, still return an element with predictionId +
-   failureCategory or successFactor = "UNCLEAR" and a short reason. Do NOT drop rows.
-4. Element cap: at most 50 items per response. If more are given, respond only for as many as
-   you can handle and the caller will retry the rest.`;
+1. Reason ONLY over the evidence given. Do NOT invent prices/funding not present.
+2. EVERY input prediction appears exactly ONCE. A LOSS gets failureCategory (no successFactor);
+   a WIN gets successFactor (no failureCategory).
+3. Unsure? Use failureCategory/successFactor = "UNCLEAR" with a short reason. Never drop a row.
+4. Keep every reason to ONE sentence. Brevity matters — long reasons get truncated.`;
 
 interface BatchEvidence {
   predictionId: string;
@@ -202,18 +228,18 @@ async function runOneBatch(deps: BulkAutopsyDeps, batch: BatchEvidence[]): Promi
 
   // Join returned items back to inputs by predictionId. Missing / UNCLEAR / invariant-violating
   // → FAILED_LLM per row so the batch is never all-or-nothing.
-  const byId = new Map<string, BatchAutopsyOutput[number]>();
-  for (const it of call.value) byId.set(it.predictionId, it);
+  const byId = new Map<string, BatchAutopsyItemT>();
+  for (const it of call.value.results) byId.set(it.predictionId, it);
 
   let autopsied = 0;
   let failed = 0;
   for (const item of batch) {
     const resp = byId.get(item.predictionId);
     const unclear = resp && (resp.failureCategory === 'UNCLEAR' || resp.successFactor === 'UNCLEAR');
-    let invariantOk = false;
-    if (resp && !unclear) {
-      try { validateOutcomeFields(resp, item.outcome); invariantOk = true; } catch { invariantOk = false; }
-    }
+    // Invariant: LOSS must carry failureCategory (not successFactor), WIN vice-versa.
+    const invariantOk = resp && !unclear && (item.outcome === 'LOSS'
+      ? Boolean(resp.failureCategory) && !resp.successFactor
+      : Boolean(resp.successFactor) && !resp.failureCategory);
     if (!resp || unclear || !invariantOk) {
       await writeFailedRow(deps.db, item, call.id);
       failed++;
@@ -231,27 +257,32 @@ function buildBatchUserMessage(batch: readonly BatchEvidence[]): string {
     outcome: b.outcome,
     evidence: b.evidence,
   }));
-  return `Autopsy ${batch.length} predictions. Return a JSON array with one element per prediction, echoing predictionId.\n\n${JSON.stringify(payload, null, 2)}`;
+  return `Autopsy these ${batch.length} predictions. Return {"results":[...]} with exactly one element per prediction, echoing predictionId.\n\n${JSON.stringify(payload, null, 2)}`;
 }
 
 async function writeSuccessRow(
-  db: Db, item: BatchEvidence, j: BatchAutopsyOutput[number], llmCallLogId: string,
+  db: Db, item: BatchEvidence, j: BatchAutopsyItemT, llmCallLogId: string,
 ): Promise<void> {
+  // Compact schema → DB row. `reason` is the one free-text field; it maps to rootCause (the
+  // ≤200-char summary the LLM Review page shows) and mirrors into explanation. The heavy
+  // columns (contributingFactors, agentFailures, lesson, recommendation) are nulled — nothing
+  // reads them, and demanding them is what exploded the token budget (2026-09-05).
+  const rootCause = j.reason.slice(0, 200);
   await db.insert(tradeAutopsy).values({
     id: randomUUID(), predictionId: item.predictionId, setupId: item.setupId,
     outcome: item.outcome,
-    rootCause: j.rootCause, failureCategory: j.failureCategory ?? null, successFactor: j.successFactor ?? null,
-    explanation: j.explanation,
-    contributingFactors: j.contributingFactors, agentFailures: j.agentFailures,
-    lesson: j.lesson, recommendation: j.recommendation,
+    rootCause, failureCategory: j.failureCategory ?? null, successFactor: j.successFactor ?? null,
+    explanation: j.reason,
+    contributingFactors: null, agentFailures: null,
+    lesson: null, recommendation: null,
     autopsyVersion: AUTOPSY_VERSION_CURRENT, llmCallLogId, status: 'SUCCESS',
   }).onConflictDoUpdate({
     target: tradeAutopsy.predictionId,
     set: {
-      rootCause: j.rootCause, failureCategory: j.failureCategory ?? null, successFactor: j.successFactor ?? null,
-      explanation: j.explanation,
-      contributingFactors: j.contributingFactors, agentFailures: j.agentFailures,
-      lesson: j.lesson, recommendation: j.recommendation,
+      rootCause, failureCategory: j.failureCategory ?? null, successFactor: j.successFactor ?? null,
+      explanation: j.reason,
+      contributingFactors: null, agentFailures: null,
+      lesson: null, recommendation: null,
       llmCallLogId, status: 'SUCCESS',
     },
   });
