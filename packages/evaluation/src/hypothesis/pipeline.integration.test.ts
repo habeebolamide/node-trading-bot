@@ -50,8 +50,24 @@ describe.skipIf(!DATABASE_URL)('hypothesis pipeline (integration)', () => {
     });
   }
 
+  // Grouping is now by CATEGORY across setups (2026-09-05), so isolation is per-category, not
+  // per-setup. below-floor and above-floor use DISTINCT known categories to avoid accumulating
+  // into the same bucket. beforeAll clears any prior-run residue for these categories (safe on a
+  // dedicated test DB — the only place DATABASE_URL should point for integration tests).
+  const FLOOR_CAT = 'LIQUIDATION_SIGNAL_MISSED'; // below-floor test
+  const PROP_CAT = 'POSITIONING_MISREAD';        // above-floor + promotion test
+
   beforeAll(async () => {
     db = createDb(DATABASE_URL!);
+    // Clean slate for the categories this suite asserts on.
+    await db.delete(learningHypothesis).where(and(
+      eq(learningHypothesis.setupId, 'ALL'),
+      inArray(learningHypothesis.category, [FLOOR_CAT, PROP_CAT]),
+    ));
+    await db.delete(tradeAutopsy).where(and(
+      eq(tradeAutopsy.status, 'SUCCESS'),
+      inArray(tradeAutopsy.failureCategory, [FLOOR_CAT, PROP_CAT]),
+    ));
     const a = await createTradingAgent(db, {
       name: `HP-${randomUUID().slice(0, 6)}`, domain: 'perp', universe: ['BTCUSDT'], tradingStyle: 'day', config: CFG,
     });
@@ -71,28 +87,27 @@ describe.skipIf(!DATABASE_URL)('hypothesis pipeline (integration)', () => {
   });
 
   it('below effective-n floor → NO proposal (§24 ≥ 20 gate)', async () => {
-    // Only 5 losses of the same category — well below 20.
-    for (let i = 0; i < 5; i++) await seedAutopsy({ outcome: 'LOSS', category: 'POSITIONING_MISREAD' });
+    // Only 5 losses of FLOOR_CAT — well below 20. Distinct category from the above-floor test.
+    for (let i = 0; i < 5; i++) await seedAutopsy({ outcome: 'LOSS', category: FLOOR_CAT });
     const r = await openHypotheses({ db, asOf: AS_OF });
-    // Filter to only THIS test's setupId — there may be prior test runs' data too.
-    const mine = r.proposals.filter((p) => p.setupId === uniqueSetup);
+    const mine = r.proposals.filter((p) => p.category === FLOOR_CAT);
     expect(mine).toHaveLength(0);
-    // No hypothesis row for this setup either.
     const rows = await db.select({ id: learningHypothesis.id }).from(learningHypothesis)
-      .where(eq(learningHypothesis.setupId, uniqueSetup));
+      .where(and(eq(learningHypothesis.setupId, 'ALL'), eq(learningHypothesis.category, FLOOR_CAT)));
     expect(rows).toHaveLength(0);
   });
 
   it('above the floor → proposal + PROPOSED row for a known FAILURE category', async () => {
-    // Add 20 more (total 25 for this setup) so effective-n well clears 20 even after decay.
-    for (let i = 0; i < 20; i++) await seedAutopsy({ outcome: 'LOSS', category: 'POSITIONING_MISREAD' });
+    // 25 losses of PROP_CAT (across arbitrary setups) clears 20 even after decay.
+    for (let i = 0; i < 25; i++) await seedAutopsy({ outcome: 'LOSS', category: PROP_CAT, setupId: `hyp-${randomUUID().slice(0, 8)}` });
     const r = await openHypotheses({ db, asOf: AS_OF });
-    const mine = r.proposals.filter((p) => p.setupId === uniqueSetup);
+    const mine = r.proposals.filter((p) => p.category === PROP_CAT);
     expect(mine.length).toBeGreaterThanOrEqual(1);
+    expect(mine[0]!.setupId).toBe('ALL'); // category-level sentinel
     expect(mine[0]!.proposedChange).toEqual({ kind: 'weightDelta', agentKey: 'perp.positioning', delta: 0.03 });
 
     const rows = await db.select().from(learningHypothesis)
-      .where(and(eq(learningHypothesis.setupId, uniqueSetup), eq(learningHypothesis.category, 'POSITIONING_MISREAD')));
+      .where(and(eq(learningHypothesis.setupId, 'ALL'), eq(learningHypothesis.category, PROP_CAT)));
     expect(rows).toHaveLength(1);
     expect(rows[0]!.status).toBe('PROPOSED');
     created.hypotheses.push(rows[0]!.id);
@@ -100,24 +115,23 @@ describe.skipIf(!DATABASE_URL)('hypothesis pipeline (integration)', () => {
 
   it('a second sweep with the same evidence does NOT open a duplicate (idempotent per PROPOSED)', async () => {
     const r = await openHypotheses({ db, asOf: AS_OF });
-    const mine = r.proposals.filter((p) => p.setupId === uniqueSetup);
+    const mine = r.proposals.filter((p) => p.category === PROP_CAT);
     // The proposal is still emitted (aggregation surfaces it), but no NEW row gets inserted
     // because the previous test's row is still PROPOSED.
     if (mine.length > 0) expect(r.alreadyOpen).toBeGreaterThanOrEqual(1);
     const rows = await db.select().from(learningHypothesis)
-      .where(and(eq(learningHypothesis.setupId, uniqueSetup), eq(learningHypothesis.category, 'POSITIONING_MISREAD')));
+      .where(and(eq(learningHypothesis.setupId, 'ALL'), eq(learningHypothesis.category, PROP_CAT)));
     expect(rows).toHaveLength(1); // still one
   });
 
   it('unknown categories are skipped (skippedNoMapping counts them)', async () => {
     // Seed enough of an unknown category to clear the floor.
-    const unknownSetup = `hyp-unk-${randomUUID().slice(0, 6)}`;
-    for (let i = 0; i < 22; i++) await seedAutopsy({ outcome: 'LOSS', category: 'INVENTED_CATEGORY_XYZ', setupId: unknownSetup });
+    for (let i = 0; i < 22; i++) await seedAutopsy({ outcome: 'LOSS', category: 'INVENTED_CATEGORY_XYZ', setupId: `hyp-unk-${randomUUID().slice(0, 8)}` });
     const r = await openHypotheses({ db, asOf: AS_OF });
     // At least one unknown pattern skipped this sweep.
     expect(r.skippedNoMapping).toBeGreaterThanOrEqual(1);
     const rows = await db.select({ id: learningHypothesis.id })
-      .from(learningHypothesis).where(eq(learningHypothesis.setupId, unknownSetup));
+      .from(learningHypothesis).where(eq(learningHypothesis.category, 'INVENTED_CATEGORY_XYZ'));
     expect(rows).toHaveLength(0);
   });
 
@@ -125,7 +139,7 @@ describe.skipIf(!DATABASE_URL)('hypothesis pipeline (integration)', () => {
     // Move the earlier PROPOSED row to OOS_PASSED (audit-3 fix: BACKTEST_PASSED alone no
     // longer promotes — OOS must confirm). mimicking a passing backtest + OOS confirmation.
     const rows = await db.select().from(learningHypothesis)
-      .where(and(eq(learningHypothesis.setupId, uniqueSetup), eq(learningHypothesis.category, 'POSITIONING_MISREAD')));
+      .where(and(eq(learningHypothesis.setupId, 'ALL'), eq(learningHypothesis.category, 'POSITIONING_MISREAD')));
     const h = rows[0]!;
     await db.update(learningHypothesis).set({ status: 'OOS_PASSED' }).where(eq(learningHypothesis.id, h.id));
 
@@ -164,7 +178,7 @@ describe.skipIf(!DATABASE_URL)('hypothesis pipeline (integration)', () => {
 
   it('a hypothesis in a non-promotable status is refused', async () => {
     const proposedRow = (await db.select().from(learningHypothesis)
-      .where(and(eq(learningHypothesis.setupId, uniqueSetup), eq(learningHypothesis.status, 'PROMOTED'))))[0];
+      .where(and(eq(learningHypothesis.setupId, 'ALL'), eq(learningHypothesis.status, 'PROMOTED'))))[0];
     // A PROMOTED row cannot be re-promoted.
     if (proposedRow) {
       const r = await promoteHypothesis(db, { hypothesisId: proposedRow.id, tradingAgentId: agentId, style: 'day' });
