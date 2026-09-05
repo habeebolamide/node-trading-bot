@@ -9,11 +9,14 @@
 export type CategoryKind = 'FAILURE' | 'SUCCESS';
 
 /** Tunable scalar config params the learning loop may adjust (beyond agent weights). */
-export type TunableParam = 'minStopAtrMult';
+export type TunableParam = 'minStopAtrMult' | 'takeProfitAtrMult';
 
 /** Bounds for each tunable param — the loop can never push it outside these (clamped on apply). */
 export const PARAM_BOUNDS: Readonly<Record<TunableParam, { min: number; max: number }>> = {
   minStopAtrMult: { min: 0, max: 3 },
+  // TP distance cap in ATRs. Lower = nearer target (closes within the horizon more often), but a
+  // TP pulled below minRR × stop makes the setup fail the R:R gate — that filtering is intended.
+  takeProfitAtrMult: { min: 1, max: 6 },
 };
 
 export type ProposedChange =
@@ -42,7 +45,15 @@ export const CATEGORY_TO_ADJUSTMENT_V1: Readonly<Record<string, CategoryEntry>> 
   // predicted way → widen the ATR-based stop buffer. The LLM only TAGS the pattern; this
   // +0.25 step lives in code (rule 13). Clamped to PARAM_BOUNDS on apply; a re-run re-opens
   // it only if STOP_TOO_TIGHT still clusters, so it steps up gradually, never runs away.
-  STOP_TOO_TIGHT:            { kind: 'FAILURE', change: { kind: 'paramDelta', param: 'minStopAtrMult', delta: +0.25 } },
+  STOP_TOO_TIGHT:            { kind: 'FAILURE', change: { kind: 'paramDelta', param: 'minStopAtrMult',    delta: +0.25 } },
+  // Chop / over-trading (data autopsy 2026-09-06: 35% of trades expired flat in a rangebound
+  // market). The regime agent should have vetoed a no-move entry → raise its weight so the
+  // composite leans harder on the regime read and stops firing in chop.
+  NO_FOLLOW_THROUGH:         { kind: 'FAILURE', change: { kind: 'weightDelta', agentKey: 'perp.market_regime', delta: +0.02 } },
+  // Target too ambitious (11%): trade reached >60% of the way to TP but the target was too far
+  // to close within the horizon → pull the TP cap in. Mirror of STOP_TOO_TIGHT. If pulling it in
+  // drops R:R below minRR the setup gets filtered — intended.
+  TARGET_TOO_FAR:            { kind: 'FAILURE', change: { kind: 'paramDelta', param: 'takeProfitAtrMult', delta: -0.25 } },
 };
 
 export interface Pattern {
@@ -117,6 +128,7 @@ export function applyChange(
 /** Sensible starting value for a tunable param when the config doesn't carry one yet. */
 function boundsDefault(param: TunableParam): number {
   switch (param) {
-    case 'minStopAtrMult': return 1.0; // matches the config.ts default
+    case 'minStopAtrMult': return 1.0;    // matches the config.ts default
+    case 'takeProfitAtrMult': return 3.0; // starts loose (~median TP); TARGET_TOO_FAR pulls it in
   }
 }

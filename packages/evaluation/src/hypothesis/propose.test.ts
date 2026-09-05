@@ -66,6 +66,27 @@ describe('applyChange — paramDelta (STOP_TOO_TIGHT tuning)', () => {
     });
   });
 
+  it('NO_FOLLOW_THROUGH raises the regime weight (anti-chop)', () => {
+    expect(CATEGORY_TO_ADJUSTMENT_V1.NO_FOLLOW_THROUGH).toEqual({
+      kind: 'FAILURE',
+      change: { kind: 'weightDelta', agentKey: 'perp.market_regime', delta: 0.02 },
+    });
+  });
+
+  it('TARGET_TOO_FAR pulls the TP cap in (−takeProfitAtrMult)', () => {
+    expect(CATEGORY_TO_ADJUSTMENT_V1.TARGET_TOO_FAR).toEqual({
+      kind: 'FAILURE',
+      change: { kind: 'paramDelta', param: 'takeProfitAtrMult', delta: -0.25 },
+    });
+  });
+
+  it('takeProfitAtrMult starts at its default (3.0) and steps down, clamped at min', () => {
+    const first = applyChange({}, { kind: 'paramDelta', param: 'takeProfitAtrMult', delta: -0.25 });
+    expect(first).toEqual({ takeProfitAtrMult: 2.75 });
+    const floored = applyChange({ takeProfitAtrMult: PARAM_BOUNDS.takeProfitAtrMult.min }, { kind: 'paramDelta', param: 'takeProfitAtrMult', delta: -0.25 });
+    expect(floored.takeProfitAtrMult).toBe(PARAM_BOUNDS.takeProfitAtrMult.min);
+  });
+
   it('bumps the scalar param from the config value', () => {
     const patch = applyChange({ minStopAtrMult: 1.0 }, { kind: 'paramDelta', param: 'minStopAtrMult', delta: 0.25 });
     expect(patch).toEqual({ minStopAtrMult: 1.25 });

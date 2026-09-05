@@ -106,6 +106,23 @@ describe('planPerp (Part III §4)', () => {
     expect(flooredDist).toBeGreaterThan(2.5);               // widened to 10×ATR (~3)
   });
 
+  it('takeProfitAtrMult caps an over-far structural TP', async () => {
+    // trendingBars puts resistance ~4 above entry (~100), ATR ≈ 0.3. A tight TP cap of 2×ATR
+    // (~0.6) pulls the target in well below the 4-wide pivot. Uncapped keeps the far pivot.
+    const view = fakeView(trendingBars());
+    const args = { symbol: marketSymbol('BTCUSDT'), direction: 'LONG' as const, style: 'day' as const, configVersion: 1, balance: 100_000, view };
+    const capped = await planPerp({ ...args, config: { ...perpConfig, takeProfitAtrMult: 2, minRR: 0.1, minStopAtrMult: 0 } });
+    const uncapped = await planPerp({ ...args, config: { ...perpConfig, minRR: 0.1, minStopAtrMult: 0 } });
+    expect(capped.kind).toBe('TRADE');
+    expect(uncapped.kind).toBe('TRADE');
+    if (capped.kind !== 'TRADE' || uncapped.kind !== 'TRADE') return;
+    const cappedDist = capped.setup.takeProfit! - capped.setup.entry;
+    const uncappedDist = uncapped.setup.takeProfit! - uncapped.setup.entry;
+    expect(cappedDist).toBeLessThan(uncappedDist);   // cap pulled TP in
+    expect(uncappedDist).toBeCloseTo(4, 0);          // raw pivot ≈ 4 above entry
+    expect(cappedDist).toBeLessThan(1);              // capped to 2×ATR (~0.6)
+  });
+
   it('NO_TRADE(STALE_OR_MISSING_DATA) when history is too thin for ATR(14)', async () => {
     const view = fakeView(makeBars([{ high: 1, low: 1, close: 1 }]));
     const r = await planPerp({ symbol: marketSymbol('BTCUSDT'), direction: 'LONG', style: 'day', config: perpConfig, configVersion: 1, balance: 100_000, view });

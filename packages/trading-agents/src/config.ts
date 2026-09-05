@@ -101,6 +101,12 @@ export const ScoringConfigInputSchema = z.object({
   // Default 1.0 = one full normal wiggle. 0 disables the floor (legacy pivot-only behavior).
   // Diagnosed 2026-09-05: 46% of seeded stops were < 0.2% ≈ one 5m SOL candle range → noise-stopped.
   minStopAtrMult: z.number().nonnegative().default(1.0),
+  // ATR-based take-profit distance CAP (perp). When set, the TP sits no further than
+  // `takeProfitAtrMult × ATR` from entry — a structural target further than that is pulled in so
+  // the trade can actually close within the horizon. Optional: unset = structure-only (no cap).
+  // The auto-tune loop lowers it on a TARGET_TOO_FAR cluster (data autopsy 2026-09-06: 11% of
+  // trades reached >60% of TP but expired flat because the target was too far).
+  takeProfitAtrMult: z.number().positive().optional(),
   // Per-agent LLM Judge switch (perp only in MVP — memecoin has no Judge). When false, this
   // agent's signals skip the Judge wait entirely and go straight to the deterministic prediction
   // path (§18 "LLM down" branch), even if the API key is configured. Useful for agents where

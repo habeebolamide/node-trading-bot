@@ -103,6 +103,22 @@ export async function planPerp(i: PerpPlanInputs): Promise<PlanResult> {
     }
   }
 
+  // ATR-based take-profit CAP: pull an over-far structural target in to `takeProfitAtrMult × ATR`
+  // so the trade can close within the horizon (data autopsy: 11% of trades reached most of the way
+  // to TP but expired flat because the target was too far). Only tightens, never extends. If the
+  // pulled-in TP drops R:R below minRR, the RR gate below filters the setup — that's intended.
+  const tpCapMult = i.config.takeProfitAtrMult;
+  if (tpCapMult && tpCapMult > 0) {
+    const cap = tpCapMult * a;
+    if (i.direction === 'LONG') {
+      const capped = entry + cap;
+      if (takeProfit > capped) takeProfit = capped;
+    } else {
+      const capped = entry - cap;
+      if (takeProfit < capped) takeProfit = capped;
+    }
+  }
+
   if (stopLoss <= 0 || takeProfit <= 0) {
     return { kind: 'NO_TRADE', reason: 'NO_STOP_DERIVABLE', detail: 'derived non-positive level' };
   }

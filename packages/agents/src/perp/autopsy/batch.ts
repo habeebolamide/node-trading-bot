@@ -87,9 +87,15 @@ is NOT to re-decide. For EACH prediction, classify WHY in ONE short sentence fro
 
 For a LOSS: set failureCategory to a SHORT_UPPERCASE_TAG like POSITIONING_MISREAD,
 REGIME_SHIFTED_MID_TRADE, FUNDING_UNDERWEIGHTED, MOMENTUM_OVERWEIGHTED, LIQUIDATION_SIGNAL_MISSED.
-Use STOP_TOO_TIGHT when the price hit the stop and THEN moved the predicted direction — i.e. the
-call looked right but the stop was inside the noise and got knocked out early (a stop-sizing
-failure, not a direction failure).
+Also use these specific tags when they fit:
+- STOP_TOO_TIGHT: price hit the stop and THEN moved the predicted way — the call looked right but
+  the stop was inside the noise (a stop-sizing failure, not a direction failure).
+- NO_FOLLOW_THROUGH: the market went sideways / rangebound — price never made a real move either
+  way and the trade expired flat. The entry fired in chop where there was no move to catch.
+- TARGET_TOO_FAR: price moved the predicted way and got MOST of the way to the target, but the
+  target was too far to reach in time, so it expired without closing (a target-sizing failure).
+- WRONG_FROM_ENTRY: price went adverse immediately with essentially no favorable move — the
+  direction was simply wrong from the start.
 
 For a WIN: set successFactor to a tag like MOMENTUM_CONFIRMED_EARLY, REGIME_ALIGNED.
 
