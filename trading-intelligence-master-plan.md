@@ -4936,3 +4936,106 @@ function weightedMedian(
   reproducible — a backtest replaying the same outcomes in the same order produces
   bit-identical Wilson intervals. Using wall-clock `now` would introduce drift between
   live and replay.
+
+---
+
+# Addendum — Build-Time Deviations (2026-09-05)
+
+These are decisions made during implementation that DEPART from or REFINE the resolved
+architecture above. Per CLAUDE.md, the plan and code must stay in sync: each entry names the
+section it touches, what the plan said, what shipped instead, why, and the commit. When a
+section above conflicts with an entry here, **this addendum is the current truth** — fold the
+change into the section proper on the next substantial edit of that section.
+
+## D1 — §24 Hypothesis aggregation is CATEGORY-level, not (setupId, category)
+
+**Plan (§24):** autopsy failure/success patterns aggregate per Setup-Memory fingerprint —
+"(setupId, category)" — before proposing a config change.
+
+**Shipped:** `aggregatePatterns` buckets by **(category, kind) across all setups**; the emitted
+pattern carries the sentinel `setupId = 'ALL'`.
+
+**Why:** the remediation a pattern triggers is a **global** weight delta —
+`CATEGORY_TO_ADJUSTMENT_V1` is keyed by category alone and `applyWeightDelta` renormalizes the
+whole agent config; `setupId` never scopes the change. With ~6,500 perp fingerprints, per-setup
+buckets fragment a global signal into permanent ineligibility — observed live: 179 autopsies,
+`POSITIONING_MISREAD`=60 spread across 29 setups, biggest single-setup bucket=11, floor=20 → zero
+hypotheses could ever open. Rule 24 governs how `setupId` is *computed* (full feature set), not
+that hypotheses must group by it. If a future per-fingerprint weight-override mechanism lands,
+per-setup grouping returns alongside it. Commit `3a0580e`.
+
+## D2 — §24 Autopsy output schema slimmed to what the pipeline reads
+
+**Plan (§24):** the autopsy LLM emits a rich object per prediction — `rootCause`, `explanation`,
+`contributingFactors[]`, `agentFailures[]`, `lesson`, `recommendation`, plus the category tag.
+
+**Shipped (bulk "Run Autopsy" path only):** the batch schema is `{predictionId,
+failureCategory|successFactor, reason}`. `reason` maps to the DB `rootCause` (+ `explanation`
+mirror); the four heavy columns are written `null`.
+
+**Why:** `deepseek-v4-flash` is a reasoning model — it spends ~1500-8700 completion tokens on
+internal `reasoning_content` before emitting output. The heavy 8-field schema over an 8-item
+batch needed ~10,000 output tokens on top of that and truncated EVERY batch (empty or
+`Unterminated string`). The hypothesis aggregator only reads `failureCategory`/`successFactor`;
+the heavy fields were write-only decoration. Slimming the schema cut output ~15× and made batches
+parse reliably. The single-prediction autopsy runner (`runner.ts`) still uses the full
+`AutopsyOutput` schema. Commits `3bdcdcf`, `0616703`.
+
+## D3 — §24/§32 Bootstrap maturity gate is DOMAIN-level, not per-active-version
+
+**Plan (§32/§24):** the "is the domain mature enough to tune?" gate reads resolved-prediction
+count; the surrounding discipline is version-isolation (Rule 16 — never blend track records
+across `scoring_config` versions).
+
+**Shipped:** `promoteHypothesis` calls `isBootstrapping({ anyVersion: true })` — the maturity
+count spans ALL config versions in the domain, not just the active one.
+
+**Why:** the maturity question ("enough live evidence to tune at all?") is domain-level.
+Version-isolation (Rule 16) governs **track-record attribution** ("did v3 beat v2?") — a different
+question. Counting only the active version falsely defers every tune made after any config edit:
+observed live, 223 resolved predictions under v1, operator's minRR edit bumped active to v3 → the
+gate saw 0 and deferred a valid momentum-reduction. Commit `f626efb`.
+
+Also in `f626efb`: hypothesis re-open idempotency now blocks on
+`PROPOSED/BACKTEST_PASSED/OOS_PENDING/OOS_PASSED/PROMOTED` (was `PROPOSED` only) so a PROMOTED
+hypothesis can't re-open and re-apply its delta; `REJECTED`/`DEFERRED_BOOTSTRAP` still re-open
+(retry when evidence changes).
+
+## D4 — §18 Per-agent `useJudge` opt-out
+
+**Plan (§18):** the Judge tier runs for every perp signal when `DEEPSEEK_API_KEY` is set; "LLM
+down" degrades to the deterministic path.
+
+**Shipped:** new `ScoringConfig.useJudge` boolean (default `true`). When `false`, the agent's
+signals skip the Judge ENTIRELY — no LLM call, no `judge.evaluation.completed` event, no gate
+consult, no wait. Same deterministic fast-path as "key absent", but per-agent.
+
+**Why:** lets an operator run a purely-deterministic agent (no LLM cost/latency, no override) and
+A/B judge-on vs judge-off versions. The opt-out bypasses the WHOLE path — a stale `judge_decision`
+row can never veto an opted-out agent. Commit `190d6f1`.
+
+## D5 — §10 Bybit liquidation topic renamed `liquidation` → `allLiquidation`
+
+**Plan (§10 / Part III §5):** the perp liquidation feed subscribes to Bybit's `liquidation.{symbol}`.
+
+**Shipped:** `allLiquidation.{symbol}`, with the aggregated payload shape (`{T,s,S,v,p}` array).
+
+**Why:** Bybit v5 renamed the topic and changed the payload; the old topic is gone from the wire.
+Because Bybit rejects the WHOLE subscribe batch on any one bad topic, the stale name silently
+killed ALL market-data ingestion — no candles landed at all. The WS client now also logs
+`op`-reply rejections instead of swallowing them. Commit `d8dcd54`.
+
+## D-notes — additive build-time features (no plan conflict)
+
+- **Dynamic per-agent watchlist** (`5b311d9`): ingestion universe is derived from active
+  TradingAgents (zero agents = no WS subscription); the API publishes `trading_agent.upserted` to
+  a new `control` queue and the worker's `IngestionController` resubscribes live.
+- **Feed-block domain gating** (`0e52665`): a stale `helius.*` feed blocks only memecoin agents; a
+  stale `bybit.*` feed blocks only perp agents (was: any symbol-less feed blocked all perp).
+- **Seed weight profile** (`f1ac8d6`): `DEFAULT_CONFIG_PERP_SEED` zeros `perp.positioning` +
+  `perp.liquidation` for seed-trained agents — Bybit exposes no historical account-ratio or
+  liquidation data, so those two agents cannot be seeded and would silently renormalize 25% of the
+  composite away. The live default (`DEFAULT_AGENT_WEIGHTS`, Part III §3) is unchanged; they fire
+  normally live.
+- **`market_candle.created_at`** (`5683534`): ingestion-clock column (distinct from the bar's
+  `open_time`/`close_time`); not read by agents, not for point-in-time filtering.
