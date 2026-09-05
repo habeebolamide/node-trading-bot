@@ -23,7 +23,7 @@ import { and, eq } from 'drizzle-orm';
 import { learningHypothesis, scoringConfig, type Db } from '@tip/database';
 import type { ScoringConfig, TradingStyle } from '@tip/trading-agents';
 import { updateTradingAgentConfig } from '@tip/trading-agents';
-import { applyWeightDelta, type ProposedChange } from './propose.js';
+import { applyChange, type ProposedChange } from './propose.js';
 import { isBootstrapping } from '../metrics/metrics.js';
 import { planningHorizonFor } from '../outcome/horizons.js';
 
@@ -84,8 +84,10 @@ export async function promoteHypothesis(db: Db, input: PromoteInput): Promise<Pr
 
   const current = active.config as ScoringConfig;
   const proposed = h.proposedChange as ProposedChange;
-  const newAgentWeights = applyWeightDelta(current.agentWeights ?? {}, proposed);
-  const nextConfig: ScoringConfig = { ...current, agentWeights: newAgentWeights };
+  // applyChange handles both weightDelta (renormalized agentWeights) and paramDelta (a clamped
+  // scalar like minStopAtrMult). Merge its output onto the current config.
+  const patch = applyChange(current as unknown as Record<string, unknown>, proposed);
+  const nextConfig = { ...current, ...patch } as ScoringConfig;
 
   const updated = await updateTradingAgentConfig(db, input.tradingAgentId, nextConfig);
 
@@ -99,7 +101,10 @@ export async function promoteHypothesis(db: Db, input: PromoteInput): Promise<Pr
     .where(eq(learningHypothesis.id, input.hypothesisId));
 
   return {
-    promoted: true, reason: 'promoted with weight delta applied',
+    promoted: true,
+    reason: proposed.kind === 'weightDelta'
+      ? 'promoted with weight delta applied'
+      : `promoted with ${proposed.param} delta applied`,
     fromConfigVersion: active.version, toConfigVersion: updated.activeConfigVersion,
   };
 }

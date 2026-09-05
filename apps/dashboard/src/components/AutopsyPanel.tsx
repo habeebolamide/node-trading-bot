@@ -184,15 +184,22 @@ function AutoTuneSummary({ tune }: { tune: AutoTune }) {
         </div>
         {tune.changes.length > 0 && (
           <div className="mt-3 border-t border-neutral-800 pt-2">
-            <div className="mb-1 text-xs uppercase tracking-wider text-neutral-500">Weight changes applied</div>
+            <div className="mb-1 text-xs uppercase tracking-wider text-neutral-500">Changes applied</div>
             <ul className="space-y-1 text-xs">
-              {tune.changes.map((c, i) => (
-                <li key={i} className="font-mono">
-                  <span className="text-neutral-400">{c.agentKey}</span>{' '}
-                  <span className={c.delta > 0 ? 'text-emerald-300' : 'text-red-300'}>{c.delta > 0 ? '+' : ''}{(c.delta * 100).toFixed(1)}%</span>{' '}
-                  <span className="text-neutral-500">— {c.reason}</span>
-                </li>
-              ))}
+              {tune.changes.map((c, i) => {
+                // Agent-weight changes are keyed by a dotted agent name (perp.*) and shown as %.
+                // Param changes (e.g. minStopAtrMult) are raw scalar deltas — show them as-is.
+                const isWeight = c.agentKey.includes('.');
+                return (
+                  <li key={i} className="font-mono">
+                    <span className="text-neutral-400">{c.agentKey}</span>{' '}
+                    <span className={c.delta > 0 ? 'text-emerald-300' : 'text-red-300'}>
+                      {c.delta > 0 ? '+' : ''}{isWeight ? `${(c.delta * 100).toFixed(1)}%` : c.delta}
+                    </span>{' '}
+                    <span className="text-neutral-500">— {c.reason}</span>
+                  </li>
+                );
+              })}
             </ul>
           </div>
         )}

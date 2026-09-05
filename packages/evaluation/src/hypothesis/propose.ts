@@ -8,8 +8,17 @@
  */
 export type CategoryKind = 'FAILURE' | 'SUCCESS';
 
+/** Tunable scalar config params the learning loop may adjust (beyond agent weights). */
+export type TunableParam = 'minStopAtrMult';
+
+/** Bounds for each tunable param — the loop can never push it outside these (clamped on apply). */
+export const PARAM_BOUNDS: Readonly<Record<TunableParam, { min: number; max: number }>> = {
+  minStopAtrMult: { min: 0, max: 3 },
+};
+
 export type ProposedChange =
-  | { readonly kind: 'weightDelta'; readonly agentKey: string; readonly delta: number };
+  | { readonly kind: 'weightDelta'; readonly agentKey: string; readonly delta: number }
+  | { readonly kind: 'paramDelta'; readonly param: TunableParam; readonly delta: number };
 
 export interface CategoryEntry {
   readonly kind: CategoryKind;
@@ -29,6 +38,11 @@ export const CATEGORY_TO_ADJUSTMENT_V1: Readonly<Record<string, CategoryEntry>> 
   LIQUIDATION_SIGNAL_MISSED: { kind: 'FAILURE', change: { kind: 'weightDelta', agentKey: 'perp.liquidation',   delta: +0.02 } },
   MOMENTUM_CONFIRMED_EARLY:  { kind: 'SUCCESS', change: { kind: 'weightDelta', agentKey: 'perp.momentum',      delta: +0.02 } },
   REGIME_ALIGNED:            { kind: 'SUCCESS', change: { kind: 'weightDelta', agentKey: 'perp.market_regime', delta: +0.02 } },
+  // Stop-sizing (not an agent weight): a cluster of trades stopped by noise then moving the
+  // predicted way → widen the ATR-based stop buffer. The LLM only TAGS the pattern; this
+  // +0.25 step lives in code (rule 13). Clamped to PARAM_BOUNDS on apply; a re-run re-opens
+  // it only if STOP_TOO_TIGHT still clusters, so it steps up gradually, never runs away.
+  STOP_TOO_TIGHT:            { kind: 'FAILURE', change: { kind: 'paramDelta', param: 'minStopAtrMult', delta: +0.25 } },
 };
 
 export interface Pattern {
@@ -77,4 +91,32 @@ export function applyWeightDelta(
   const out: Record<string, number> = {};
   for (const [k, v] of Object.entries(raw)) out[k] = v / total;
   return out;
+}
+
+/**
+ * Apply ANY proposed change to a config object, returning the fields to merge. `weightDelta`
+ * returns a renormalized `agentWeights`; `paramDelta` returns the single scalar param, clamped to
+ * PARAM_BOUNDS. Kept generic (`Record<string, unknown>` in) so promote.ts stays the only place
+ * that knows the full ScoringConfig shape.
+ */
+export function applyChange(
+  config: Readonly<Record<string, unknown>>,
+  change: ProposedChange,
+): Record<string, unknown> {
+  if (change.kind === 'weightDelta') {
+    const weights = (config.agentWeights as Record<string, number> | undefined) ?? {};
+    return { agentWeights: applyWeightDelta(weights, change) };
+  }
+  // paramDelta — bump the scalar, clamp to bounds.
+  const bounds = PARAM_BOUNDS[change.param];
+  const cur = typeof config[change.param] === 'number' ? (config[change.param] as number) : boundsDefault(change.param);
+  const next = Math.max(bounds.min, Math.min(bounds.max, cur + change.delta));
+  return { [change.param]: next };
+}
+
+/** Sensible starting value for a tunable param when the config doesn't carry one yet. */
+function boundsDefault(param: TunableParam): number {
+  switch (param) {
+    case 'minStopAtrMult': return 1.0; // matches the config.ts default
+  }
 }

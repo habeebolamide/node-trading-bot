@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { CATEGORY_TO_ADJUSTMENT_V1, applyWeightDelta, proposeFromPattern, type Pattern } from './propose.js';
+import { CATEGORY_TO_ADJUSTMENT_V1, applyWeightDelta, applyChange, PARAM_BOUNDS, proposeFromPattern, type Pattern } from './propose.js';
 
 const pattern = (over: Partial<Pattern> = {}): Pattern => ({
   setupId: 'abc', domain: 'perp', category: 'POSITIONING_MISREAD', categoryKind: 'FAILURE',
@@ -55,5 +55,36 @@ describe('applyWeightDelta', () => {
     // Both nonzero → renormalized to sum 1.
     expect(after.a! + after.b!).toBeCloseTo(1, 10);
     expect(after.b!).toBeGreaterThan(0);
+  });
+});
+
+describe('applyChange — paramDelta (STOP_TOO_TIGHT tuning)', () => {
+  it('STOP_TOO_TIGHT maps to a +minStopAtrMult paramDelta', () => {
+    expect(CATEGORY_TO_ADJUSTMENT_V1.STOP_TOO_TIGHT).toEqual({
+      kind: 'FAILURE',
+      change: { kind: 'paramDelta', param: 'minStopAtrMult', delta: 0.25 },
+    });
+  });
+
+  it('bumps the scalar param from the config value', () => {
+    const patch = applyChange({ minStopAtrMult: 1.0 }, { kind: 'paramDelta', param: 'minStopAtrMult', delta: 0.25 });
+    expect(patch).toEqual({ minStopAtrMult: 1.25 });
+  });
+
+  it('uses the sensible default (1.0) when the config has no value yet', () => {
+    const patch = applyChange({}, { kind: 'paramDelta', param: 'minStopAtrMult', delta: 0.25 });
+    expect(patch).toEqual({ minStopAtrMult: 1.25 });
+  });
+
+  it('clamps to PARAM_BOUNDS.max — never runs away', () => {
+    const patch = applyChange({ minStopAtrMult: PARAM_BOUNDS.minStopAtrMult.max }, { kind: 'paramDelta', param: 'minStopAtrMult', delta: 0.25 });
+    expect(patch.minStopAtrMult).toBe(PARAM_BOUNDS.minStopAtrMult.max);
+  });
+
+  it('weightDelta through applyChange still renormalizes agentWeights', () => {
+    const patch = applyChange({ agentWeights: { a: 0.5, b: 0.5 } }, { kind: 'weightDelta', agentKey: 'a', delta: 0.1 });
+    const w = patch.agentWeights as Record<string, number>;
+    expect(w.a! + w.b!).toBeCloseTo(1, 10);
+    expect(w.a!).toBeGreaterThan(w.b!);
   });
 });

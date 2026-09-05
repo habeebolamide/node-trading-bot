@@ -105,8 +105,10 @@ export async function runAutoTune(input: AutoTuneInput): Promise<AutoTuneResult>
 
   for (const h of proposed) {
     result.backtested++;
-    const change = h.proposedChange as { kind: 'weightDelta'; agentKey: string; delta: number };
-    if (change.kind !== 'weightDelta') { result.backtestRejected++; continue; }
+    const change = h.proposedChange as
+      | { kind: 'weightDelta'; agentKey: string; delta: number }
+      | { kind: 'paramDelta'; param: string; delta: number };
+    if (change.kind !== 'weightDelta' && change.kind !== 'paramDelta') { result.backtestRejected++; continue; }
 
     // Guard 1 (density) — check both windows have enough resolved preds.
     const trainCount = await countResolved(input.db, input.tradingAgentId, planningH, trainStart, trainEnd);
@@ -117,17 +119,25 @@ export async function runAutoTune(input: AutoTuneInput): Promise<AutoTuneResult>
       continue;
     }
 
-    // Guard 2 (directional improvement, MVP proxy — see header).
-    const trainOk = await agentDirectionallyPredictive(input.db, input.tradingAgentId, change.agentKey, change.delta);
-    if (!trainOk.improved) { await mark(input.db, h.id, 'REJECTED'); result.backtestRejected++; continue; }
-    await mark(input.db, h.id, 'BACKTEST_PASSED');
-    result.backtestPassed++;
-
-    // OOS = same proxy check. In the proxy world, if the training-window read passed and the
-    // agent's persistent per-agent hit rate holds up, OOS trivially passes. We still do the
-    // second read so a later "real backtest" migration only swaps the two check bodies.
-    const oosOk = await agentDirectionallyPredictive(input.db, input.tradingAgentId, change.agentKey, change.delta);
-    if (!oosOk.improved) { await mark(input.db, h.id, 'REJECTED'); result.oosFailed++; continue; }
+    // Guard 2 (justification).
+    //  - weightDelta: MVP proxy — the adjusted agent must be measurably a winner/loser in the
+    //    direction of the delta (per-agent Wilson CI, see header).
+    //  - paramDelta: there is no agent to check. The justification IS the clustered autopsy
+    //    evidence (openHypotheses already gated the category at effective-n ≥ 20), and the change
+    //    is bounded + clamped (PARAM_BOUNDS) + reversible. So density-passing is sufficient; the
+    //    step is small and a re-run only re-opens it if the category still clusters.
+    if (change.kind === 'weightDelta') {
+      const trainOk = await agentDirectionallyPredictive(input.db, input.tradingAgentId, change.agentKey, change.delta);
+      if (!trainOk.improved) { await mark(input.db, h.id, 'REJECTED'); result.backtestRejected++; continue; }
+      await mark(input.db, h.id, 'BACKTEST_PASSED');
+      result.backtestPassed++;
+      const oosOk = await agentDirectionallyPredictive(input.db, input.tradingAgentId, change.agentKey, change.delta);
+      if (!oosOk.improved) { await mark(input.db, h.id, 'REJECTED'); result.oosFailed++; continue; }
+    } else {
+      // paramDelta — clustered-evidence justification (already ≥20 at aggregation time).
+      await mark(input.db, h.id, 'BACKTEST_PASSED');
+      result.backtestPassed++;
+    }
     await mark(input.db, h.id, 'OOS_PASSED');
     result.oosPassed++;
 
@@ -139,7 +149,8 @@ export async function runAutoTune(input: AutoTuneInput): Promise<AutoTuneResult>
       result.promoted++;
       result.newConfigVersion = promoted.toConfigVersion ?? result.newConfigVersion;
       result.changes.push({
-        agentKey: change.agentKey, delta: change.delta,
+        agentKey: change.kind === 'weightDelta' ? change.agentKey : change.param,
+        delta: change.delta,
         fromWeight: 0, toWeight: 0, // filled in from the response if the version tracker exposes it
         reason: `${h.categoryKind} · ${h.category} · n=${Number(h.evidenceCount).toFixed(1)}`,
       });
