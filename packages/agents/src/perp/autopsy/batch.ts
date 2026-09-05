@@ -95,7 +95,7 @@ Also use these specific tags when they fit:
 - TARGET_TOO_FAR: price moved the predicted way and got MOST of the way to the target, but the
   target was too far to reach in time, so it expired without closing (a target-sizing failure).
 - WRONG_FROM_ENTRY: price went adverse immediately with essentially no favorable move — the
-  direction was simply wrong from the start.
+  direction was simply wrong from the start (typically a weak/low-conviction signal).
 
 For a WIN: set successFactor to a tag like MOMENTUM_CONFIRMED_EARLY, REGIME_ALIGNED.
 

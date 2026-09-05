@@ -5082,21 +5082,24 @@ because the target was too far to close within the horizon. Commit `c28c686`.
 
 **Shipped:** four situational tags added, from a personal autopsy over 223 seeded outcomes
 (`hit_target`/`hit_invalidation`/`mfe`/`mae`): `STOP_TOO_TIGHT` (16%), `NO_FOLLOW_THROUGH` (35% —
-chop/expired-flat, the largest bucket), `TARGET_TOO_FAR` (11%), `WRONG_FROM_ENTRY` (17%). The
-first three map to config changes (below); `WRONG_FROM_ENTRY` is intentionally UNMAPPED — it has
-no unambiguous single-agent remedy, so it's tagged for human review only (surfaces on the LLM
-Review page, never auto-changes config). Commits `d920c2c`, `c28c686`.
+chop/expired-flat, the largest bucket), `TARGET_TOO_FAR` (11%), `WRONG_FROM_ENTRY` (17%). All four
+map to config changes (below). `WRONG_FROM_ENTRY` was initially left unmapped, but a follow-up
+autopsy showed 79% of those trades are WEAK-band signals (median |score| 0.31) with 0% STRONG and
+diffuse agent blame — a conviction problem, not an agent problem — so it maps to a threshold widen
+(D9). Commits `d920c2c`, `c28c686`, `<pending>`.
 
 ## D9 — §24 learning loop can tune scalar params, not just agent weights (`paramDelta`)
 
 **Plan (§24):** `CATEGORY_TO_ADJUSTMENT_V1` maps a failure category to an agent weight delta; the
 hypothesis pipeline promotes weight changes.
 
-**Shipped:** `ProposedChange` gains a second kind, `{kind:'paramDelta', param, delta}`, alongside
-`weightDelta`. Tunable params (`minStopAtrMult`, `takeProfitAtrMult`) are clamped to `PARAM_BOUNDS`
-on apply. New mappings: `STOP_TOO_TIGHT → +0.25 minStopAtrMult`, `NO_FOLLOW_THROUGH → +0.02
-perp.market_regime` (weight), `TARGET_TOO_FAR → −0.25 takeProfitAtrMult`. The LLM still only NAMES
-the category (rule 13); every number lives in the code table.
+**Shipped:** `ProposedChange` gains two more kinds alongside `weightDelta`: `{kind:'paramDelta',
+param, delta}` (clamped scalar, e.g. `minStopAtrMult`, `takeProfitAtrMult`) and
+`{kind:'thresholdWiden', delta}` (widens the NEUTRAL dead-zone symmetrically, clamped so weak
+thresholds never cross long/short). New mappings: `STOP_TOO_TIGHT → +0.25 minStopAtrMult`,
+`NO_FOLLOW_THROUGH → +0.02 perp.market_regime` (weight), `TARGET_TOO_FAR → −0.25
+takeProfitAtrMult`, `WRONG_FROM_ENTRY → +0.05 thresholdWiden`. The LLM still only NAMES the
+category (rule 13); every number lives in the code table.
 
 **Backtest nuance:** a `weightDelta` is validated by the per-agent Wilson-CI directional check
 (is the adjusted agent measurably a winner/loser?). A `paramDelta` has no agent to score — its

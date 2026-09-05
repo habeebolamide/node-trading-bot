@@ -21,7 +21,11 @@ export const PARAM_BOUNDS: Readonly<Record<TunableParam, { min: number; max: num
 
 export type ProposedChange =
   | { readonly kind: 'weightDelta'; readonly agentKey: string; readonly delta: number }
-  | { readonly kind: 'paramDelta'; readonly param: TunableParam; readonly delta: number };
+  | { readonly kind: 'paramDelta'; readonly param: TunableParam; readonly delta: number }
+  // Widen the NEUTRAL dead-zone by `delta` on each side (weakLong += delta, weakShort -= delta),
+  // clamped so the weak thresholds never cross the long/short thresholds. Filters marginal
+  // low-conviction signals — they become NEUTRAL and don't trade.
+  | { readonly kind: 'thresholdWiden'; readonly delta: number };
 
 export interface CategoryEntry {
   readonly kind: CategoryKind;
@@ -54,6 +58,11 @@ export const CATEGORY_TO_ADJUSTMENT_V1: Readonly<Record<string, CategoryEntry>> 
   // to close within the horizon → pull the TP cap in. Mirror of STOP_TOO_TIGHT. If pulling it in
   // drops R:R below minRR the setup gets filtered — intended.
   TARGET_TOO_FAR:            { kind: 'FAILURE', change: { kind: 'paramDelta', param: 'takeProfitAtrMult', delta: -0.25 } },
+  // Wrong from entry (17%): immediate adverse move, no favorable excursion. Data autopsy
+  // 2026-09-06 — 79% of these are WEAK-band signals (|score| < 0.45, median 0.31) and 0% are
+  // STRONG, with blame spread diffusely across agents. So it's a CONVICTION problem, not an
+  // agent problem: widen the NEUTRAL dead-zone so marginal signals stop trading.
+  WRONG_FROM_ENTRY:          { kind: 'FAILURE', change: { kind: 'thresholdWiden', delta: +0.05 } },
 };
 
 export interface Pattern {
@@ -117,6 +126,15 @@ export function applyChange(
   if (change.kind === 'weightDelta') {
     const weights = (config.agentWeights as Record<string, number> | undefined) ?? {};
     return { agentWeights: applyWeightDelta(weights, change) };
+  }
+  if (change.kind === 'thresholdWiden') {
+    // Widen the NEUTRAL dead-zone symmetrically; never let a weak threshold cross its long/short.
+    const t = { ...((config.signalThresholds as Record<string, number> | undefined) ?? {}) };
+    const longCap = t.long ?? 0.45;
+    const shortCap = t.short ?? -0.45;
+    if (t.weakLong !== undefined) t.weakLong = Math.min(longCap, t.weakLong + change.delta);
+    if (t.weakShort !== undefined) t.weakShort = Math.max(shortCap, t.weakShort - change.delta);
+    return { signalThresholds: t };
   }
   // paramDelta — bump the scalar, clamp to bounds.
   const bounds = PARAM_BOUNDS[change.param];

@@ -107,8 +107,11 @@ export async function runAutoTune(input: AutoTuneInput): Promise<AutoTuneResult>
     result.backtested++;
     const change = h.proposedChange as
       | { kind: 'weightDelta'; agentKey: string; delta: number }
-      | { kind: 'paramDelta'; param: string; delta: number };
-    if (change.kind !== 'weightDelta' && change.kind !== 'paramDelta') { result.backtestRejected++; continue; }
+      | { kind: 'paramDelta'; param: string; delta: number }
+      | { kind: 'thresholdWiden'; delta: number };
+    if (change.kind !== 'weightDelta' && change.kind !== 'paramDelta' && change.kind !== 'thresholdWiden') {
+      result.backtestRejected++; continue;
+    }
 
     // Guard 1 (density) — check both windows have enough resolved preds.
     const trainCount = await countResolved(input.db, input.tradingAgentId, planningH, trainStart, trainEnd);
@@ -148,8 +151,11 @@ export async function runAutoTune(input: AutoTuneInput): Promise<AutoTuneResult>
     if (promoted.promoted) {
       result.promoted++;
       result.newConfigVersion = promoted.toConfigVersion ?? result.newConfigVersion;
+      const label = change.kind === 'weightDelta' ? change.agentKey
+        : change.kind === 'paramDelta' ? change.param
+        : 'signalThreshold';
       result.changes.push({
-        agentKey: change.kind === 'weightDelta' ? change.agentKey : change.param,
+        agentKey: label,
         delta: change.delta,
         fromWeight: 0, toWeight: 0, // filled in from the response if the version tracker exposes it
         reason: `${h.categoryKind} · ${h.category} · n=${Number(h.evidenceCount).toFixed(1)}`,

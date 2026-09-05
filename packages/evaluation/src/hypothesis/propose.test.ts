@@ -80,6 +80,31 @@ describe('applyChange — paramDelta (STOP_TOO_TIGHT tuning)', () => {
     });
   });
 
+  it('WRONG_FROM_ENTRY widens the NEUTRAL dead-zone (conviction filter)', () => {
+    expect(CATEGORY_TO_ADJUSTMENT_V1.WRONG_FROM_ENTRY).toEqual({
+      kind: 'FAILURE',
+      change: { kind: 'thresholdWiden', delta: 0.05 },
+    });
+  });
+
+  it('thresholdWiden pushes weak thresholds toward NEUTRAL, clamped at long/short', () => {
+    const patch = applyChange(
+      { signalThresholds: { long: 0.45, short: -0.45, weakLong: 0.2, weakShort: -0.2 } },
+      { kind: 'thresholdWiden', delta: 0.05 },
+    );
+    const t = patch.signalThresholds as Record<string, number>;
+    expect(t.weakLong).toBeCloseTo(0.25, 10);   // raised
+    expect(t.weakShort).toBeCloseTo(-0.25, 10);  // lowered
+    // Clamp: a huge widen can't cross the long/short bounds.
+    const clamped = applyChange(
+      { signalThresholds: { long: 0.45, short: -0.45, weakLong: 0.2, weakShort: -0.2 } },
+      { kind: 'thresholdWiden', delta: 5 },
+    );
+    const c = clamped.signalThresholds as Record<string, number>;
+    expect(c.weakLong).toBe(0.45);
+    expect(c.weakShort).toBe(-0.45);
+  });
+
   it('takeProfitAtrMult starts at its default (3.0) and steps down, clamped at min', () => {
     const first = applyChange({}, { kind: 'paramDelta', param: 'takeProfitAtrMult', delta: -0.25 });
     expect(first).toEqual({ takeProfitAtrMult: 2.75 });

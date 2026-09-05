@@ -100,11 +100,12 @@ export async function promoteHypothesis(db: Db, input: PromoteInput): Promise<Pr
     })
     .where(eq(learningHypothesis.id, input.hypothesisId));
 
+  const changeLabel = proposed.kind === 'weightDelta' ? 'weight delta'
+    : proposed.kind === 'paramDelta' ? `${proposed.param} delta`
+    : 'threshold widen';
   return {
     promoted: true,
-    reason: proposed.kind === 'weightDelta'
-      ? 'promoted with weight delta applied'
-      : `promoted with ${proposed.param} delta applied`,
+    reason: `promoted with ${changeLabel} applied`,
     fromConfigVersion: active.version, toConfigVersion: updated.activeConfigVersion,
   };
 }
