@@ -51,11 +51,17 @@ const log = createLogger('autopsy.batch');
  *   plenty of content room. Also: the prompt MUST contain the literal word "json" (DeepSeek rejects
  *   json_object mode otherwise — "Return ONLY this JSON object" in BATCH_SYSTEM satisfies it).
  */
-const DEFAULT_BATCH_SIZE = 10;
+// 8, not 10: live logs showed batch=10 truncating ~50% of the time (reasoning ate the 16k cap),
+// vs ~40% at 8. The adaptive split-retry below recovers any truncation for correctness, so this
+// is purely a cost dial — a smaller batch wastes fewer full-cap calls before splitting. 8 is the
+// sweet spot; go lower if truncation waste is still high.
+const DEFAULT_BATCH_SIZE = 8;
 const DEFAULT_CONCURRENCY = 5;
 const BATCH_MAX_TOKENS = 16_000;
-// Headroom check for batch=10: compact output is ~60 tokens/item (~600 total); v4-flash reasons
-// ~7-10k before emitting. ~10.6k << 16k cap, so 10 stays safely clear of truncation.
+// A batch that truncates (reasoning ate the whole cap) is split and retried; MIN_RETRY_BATCH is
+// where we stop splitting and accept FAILED_LLM. At 1, splitting continues all the way to
+// singletons — a single prediction's ~1.5k-token prompt reliably fits under the cap.
+const MIN_RETRY_BATCH = 1;
 
 /**
  * COMPACT response schema (2026-09-05 rewrite). The old schema demanded 8 heavy fields per item
@@ -229,8 +235,29 @@ async function runOneBatch(deps: BulkAutopsyDeps, batch: BatchEvidence[]): Promi
   });
 
   if (!call.ok) {
-    // Whole batch failed — write FAILED_LLM for each prediction in this batch.
-    log.warn('bulk autopsy batch failed', { size: batch.length, errorKind: call.errorKind, message: call.message });
+    // TRUNCATION vs malformed. deepseek-v4-flash is a reasoning model whose reasoning length
+    // grows with prompt size and can consume the ENTIRE max_tokens budget before emitting any
+    // content (contentLength 0, completionTokens == cap). Bigger batches → bigger prompts → more
+    // reasoning → more truncation. The fix isn't a bigger cap (reasoning scales past any fixed
+    // ceiling) — it's a SMALLER prompt: split the batch and retry each half. Recurse down to
+    // MIN_RETRY_BATCH; only a genuinely-stuck small batch (or a non-truncation error like a
+    // malformed-but-present body) writes FAILED_LLM.
+    const truncated = call.rawContent.length === 0;
+    if (truncated && batch.length > MIN_RETRY_BATCH) {
+      const mid = Math.ceil(batch.length / 2);
+      log.warn('autopsy batch truncated — splitting and retrying', { size: batch.length, into: [mid, batch.length - mid] });
+      const left = await runOneBatch(deps, batch.slice(0, mid));
+      const right = await runOneBatch(deps, batch.slice(mid));
+      return {
+        autopsied: left.autopsied + right.autopsied,
+        failed: left.failed + right.failed,
+        tokensIn: tokensIn + left.tokensIn + right.tokensIn,
+        tokensOut: tokensOut + left.tokensOut + right.tokensOut,
+        cost: cost + left.cost + right.cost,
+      };
+    }
+    // Not retryable (already minimal, or a malformed-but-present body) → FAILED_LLM per row.
+    log.warn('bulk autopsy batch failed', { size: batch.length, errorKind: call.errorKind, message: call.message, truncated });
     for (const item of batch) {
       await writeFailedRow(deps.db, item, call.id);
     }
