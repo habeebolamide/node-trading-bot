@@ -95,6 +95,12 @@ export const ScoringConfigInputSchema = z.object({
   startingBalance: z.number().positive().optional(),
   entryType: z.enum(['MARKET', 'LIMIT']).default('MARKET'),
   limitPullbackAtr: z.number().gt(0).default(0.3),
+  // ATR-based minimum stop buffer (perp). The stop must sit at least `minStopAtrMult × ATR`
+  // from entry — a structure pivot closer than that is inside the noise band (a normal candle
+  // wiggle) and gets overridden to this distance, so trades aren't stopped by routine jitter.
+  // Default 1.0 = one full normal wiggle. 0 disables the floor (legacy pivot-only behavior).
+  // Diagnosed 2026-09-05: 46% of seeded stops were < 0.2% ≈ one 5m SOL candle range → noise-stopped.
+  minStopAtrMult: z.number().nonnegative().default(1.0),
   // Per-agent LLM Judge switch (perp only in MVP — memecoin has no Judge). When false, this
   // agent's signals skip the Judge wait entirely and go straight to the deterministic prediction
   // path (§18 "LLM down" branch), even if the API key is configured. Useful for agents where

@@ -87,6 +87,22 @@ export async function planPerp(i: PerpPlanInputs): Promise<PlanResult> {
     takeProfit = supportBelow ? supportBelow.price : entry - ATR_FALLBACK_MULT * a * (i.config.minRR ?? 1.5);
   }
 
+  // ATR-based minimum stop buffer: the stop must clear at least `minStopAtrMult × ATR` of noise.
+  // A structure pivot closer than that is inside the normal candle-wiggle band — using it would
+  // guarantee a noise stop-out. Override to the floored distance (widening the stop, never
+  // tightening it). Only intervenes on pathologically-tight stops; comfortable pivots are kept.
+  const minStopMult = i.config.minStopAtrMult ?? 1.0;
+  if (minStopMult > 0) {
+    const minStopDist = minStopMult * a;
+    if (i.direction === 'LONG') {
+      const floored = entry - minStopDist;
+      if (stopLoss > floored) stopLoss = floored; // pivot too close to entry → push stop out
+    } else {
+      const floored = entry + minStopDist;
+      if (stopLoss < floored) stopLoss = floored;
+    }
+  }
+
   if (stopLoss <= 0 || takeProfit <= 0) {
     return { kind: 'NO_TRADE', reason: 'NO_STOP_DERIVABLE', detail: 'derived non-positive level' };
   }

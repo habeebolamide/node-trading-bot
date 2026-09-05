@@ -88,6 +88,24 @@ describe('planPerp (Part III §4)', () => {
     expect(a).toEqual(b);
   });
 
+  it('ATR-based minimum stop buffer widens a too-tight stop; floor=0 leaves it', async () => {
+    // trendingBars puts the support pivot ~2 below entry (~100), ATR ≈ 0.3. A large
+    // minStopAtrMult forces the floor (mult × ATR) to exceed the 2-wide pivot, so the stop
+    // widens past the pivot. With the floor OFF (0), the pivot stop stands.
+    const view = fakeView(trendingBars());
+    const args = { symbol: marketSymbol('BTCUSDT'), direction: 'LONG' as const, style: 'day' as const, configVersion: 1, balance: 100_000, view };
+    const withFloor = await planPerp({ ...args, config: { ...perpConfig, minStopAtrMult: 10, minRR: 0.1 } });
+    const noFloor = await planPerp({ ...args, config: { ...perpConfig, minStopAtrMult: 0, minRR: 0.1 } });
+    expect(withFloor.kind).toBe('TRADE');
+    expect(noFloor.kind).toBe('TRADE');
+    if (withFloor.kind !== 'TRADE' || noFloor.kind !== 'TRADE') return;
+    const flooredDist = withFloor.setup.entry - withFloor.setup.stopLoss;
+    const pivotDist = noFloor.setup.entry - noFloor.setup.stopLoss;
+    expect(flooredDist).toBeGreaterThan(pivotDist);         // floor pushed the stop out
+    expect(pivotDist).toBeCloseTo(2, 0);                    // raw pivot ≈ 2 below entry
+    expect(flooredDist).toBeGreaterThan(2.5);               // widened to 10×ATR (~3)
+  });
+
   it('NO_TRADE(STALE_OR_MISSING_DATA) when history is too thin for ATR(14)', async () => {
     const view = fakeView(makeBars([{ high: 1, low: 1, close: 1 }]));
     const r = await planPerp({ symbol: marketSymbol('BTCUSDT'), direction: 'LONG', style: 'day', config: perpConfig, configVersion: 1, balance: 100_000, view });
