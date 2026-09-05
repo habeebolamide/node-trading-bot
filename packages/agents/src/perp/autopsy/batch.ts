@@ -176,6 +176,21 @@ async function runOneBatch(deps: BulkAutopsyDeps, batch: BatchEvidence[]): Promi
   const tokensOut = call.completionTokens;
   const cost = call.cost;
 
+  // Raw response log (every batch, success or failure). Truncated head/tail so a full autopsy
+  // (28 batches × ~5000 chars) doesn't overwhelm logs/api.log while still capturing enough to
+  // eyeball what the LLM actually returned. `predictionIds` scopes the batch so grepping by id
+  // finds the exact call.
+  log.info('autopsy batch llm response', {
+    llmCallLogId: call.id,
+    size: batch.length,
+    ok: call.ok,
+    tokensIn, tokensOut, cost,
+    contentLength: call.rawContent.length,
+    contentHead: call.rawContent.slice(0, 600),
+    contentTail: call.rawContent.length > 1200 ? call.rawContent.slice(-600) : '',
+    predictionIds: batch.map((b) => b.predictionId),
+  });
+
   if (!call.ok) {
     // Whole batch failed — write FAILED_LLM for each prediction in this batch.
     log.warn('bulk autopsy batch failed', { size: batch.length, errorKind: call.errorKind, message: call.message });

@@ -29,12 +29,17 @@ export interface CallLogRow {
 export interface CallOk<T> extends CallLogRow {
   readonly ok: true;
   readonly value: T;
+  /** Raw content string returned by the LLM (before JSON.parse). Passed through so callers
+   *  can log the exact wire response — e.g. autopsy batch dumps this to logs/api.log. */
+  readonly rawContent: string;
 }
 
 export interface CallErr extends CallLogRow {
   readonly ok: false;
   readonly value: null;
   readonly message: string;
+  /** Raw content on failure (empty on network/timeout paths, populated on 4xx / parse fail). */
+  readonly rawContent: string;
 }
 
 export async function callWithLog<T>(
@@ -73,6 +78,6 @@ export async function callWithLog<T>(
     promptTokens: result.usage.promptTokens,
     completionTokens: result.usage.completionTokens,
   };
-  if (result.ok) return { ...base, ok: true as const, value: result.value };
-  return { ...base, ok: false as const, value: null, message: result.message };
+  if (result.ok) return { ...base, ok: true as const, value: result.value, rawContent: result.rawContent };
+  return { ...base, ok: false as const, value: null, message: result.message, rawContent: result.rawContent };
 }

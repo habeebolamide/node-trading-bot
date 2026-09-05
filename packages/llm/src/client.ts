@@ -38,6 +38,9 @@ export interface CompleteOk<T> {
   readonly usage: TokenUsage;
   readonly latencyMs: number;
   readonly model: string;
+  /** The raw content string from the LLM before JSON.parse. Kept so callers that want to log
+   *  the exact wire response (e.g. autopsy batch → logs/api.log) don't have to re-request. */
+  readonly rawContent: string;
 }
 
 export interface CompleteErr {
@@ -47,6 +50,8 @@ export interface CompleteErr {
   readonly usage: TokenUsage; // zeros when unavailable
   readonly latencyMs: number;
   readonly model: string;
+  /** Raw content on failure (empty on network/timeout paths). Same rationale as CompleteOk. */
+  readonly rawContent: string;
 }
 
 export type CompleteResult<T> = CompleteOk<T> | CompleteErr;
@@ -130,6 +135,7 @@ export function createDeepSeekClient(opts: ClientOptions): DeepSeekClient {
         usage: { promptTokens: 0, completionTokens: 0 },
         latencyMs: Date.now() - startedAt,
         model,
+        rawContent: '',
       };
     } finally {
       clearTimeout(timer);
@@ -140,12 +146,14 @@ export function createDeepSeekClient(opts: ClientOptions): DeepSeekClient {
       return {
         ok: false, errorKind: 'HTTP_5XX', message: `HTTP ${resp.status}`,
         usage: { promptTokens: 0, completionTokens: 0 }, latencyMs: Date.now() - startedAt, model,
+        rawContent: '',
       };
     }
     if (resp.status === 429) {
       return {
         ok: false, errorKind: 'RATE_LIMIT', message: 'HTTP 429',
         usage: { promptTokens: 0, completionTokens: 0 }, latencyMs: Date.now() - startedAt, model,
+        rawContent: '',
       };
     }
     if (!resp.ok) {
@@ -153,6 +161,7 @@ export function createDeepSeekClient(opts: ClientOptions): DeepSeekClient {
       return {
         ok: false, errorKind: 'OTHER', message: `HTTP ${resp.status}: ${body.slice(0, 200)}`,
         usage: { promptTokens: 0, completionTokens: 0 }, latencyMs: Date.now() - startedAt, model,
+        rawContent: body,
       };
     }
 
@@ -179,7 +188,7 @@ export function createDeepSeekClient(opts: ClientOptions): DeepSeekClient {
       });
       return {
         ok: false, errorKind: 'INVALID_JSON', message: `JSON parse failed: ${String(e).slice(0, 200)}`,
-        usage, latencyMs: Date.now() - startedAt, model,
+        usage, latencyMs: Date.now() - startedAt, model, rawContent: content,
       };
     }
     const check = input.schema.safeParse(parsed);
@@ -192,10 +201,10 @@ export function createDeepSeekClient(opts: ClientOptions): DeepSeekClient {
       return {
         ok: false, errorKind: 'INVALID_JSON',
         message: `schema: ${check.error.issues.map((i) => i.message).join('; ').slice(0, 200)}`,
-        usage, latencyMs: Date.now() - startedAt, model,
+        usage, latencyMs: Date.now() - startedAt, model, rawContent: content,
       };
     }
-    return { ok: true, value: check.data, usage, latencyMs: Date.now() - startedAt, model };
+    return { ok: true, value: check.data, usage, latencyMs: Date.now() - startedAt, model, rawContent: content };
   }
 
   return {
