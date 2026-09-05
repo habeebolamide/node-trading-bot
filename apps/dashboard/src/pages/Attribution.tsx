@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Card, CardBody, CardHeader } from '@/components/ui/Card';
 import { Badge } from '@/components/ui/Badge';
@@ -6,6 +6,8 @@ import { Skeleton } from '@/components/ui/Skeleton';
 import { Table, Thead, Th, Tbody, Tr, Td } from '@/components/ui/Table';
 import { useAgents } from '@/hooks/useAgents';
 import { apiGet } from '@/lib/api';
+
+interface ConfigVersionsResp { activeVersion: number; versions: { version: number; active: boolean }[] }
 
 interface TertileStats { effectiveN: number; effectiveWins: number; winRate: number | null; wilsonLower: number | null; wilsonUpper: number | null }
 interface FactorPV {
@@ -25,30 +27,64 @@ const HORIZON_BY_STYLE: Record<string, string> = { scalp: '15m', day: '4h', swin
 export function Attribution() {
   const agents = useAgents();
   const [agentId, setAgentId] = useState('');
+  const [version, setVersion] = useState<number | null>(null);
   const agent = useMemo(() => (agents.data ?? []).find((a) => a.id === agentId), [agents.data, agentId]);
   const horizon = agent ? HORIZON_BY_STYLE[agent.tradingStyle] ?? '4h' : '4h';
+
+  // Config versions for the selected agent (drives the second filter).
+  const configs = useQuery({
+    enabled: !!agentId,
+    queryKey: ['agent.configs', agentId],
+    queryFn: () => apiGet<ConfigVersionsResp>(`/../trading-agents/${agentId}/configs`),
+  });
+  // When the agent changes, default the version to its active one.
+  useEffect(() => {
+    if (configs.data) setVersion(configs.data.activeVersion);
+  }, [configs.data, agentId]);
 
   return (
     <div>
       <h1 className="mb-4 text-lg font-semibold">Attribution</h1>
       <Card className="mb-4">
         <CardHeader>Factor predictive value, by contribution tertile (version-scoped)</CardHeader>
-        <CardBody>
-          {agents.isLoading ? <Skeleton className="h-8 w-72" /> : (
-            <select value={agentId} onChange={(e) => setAgentId(e.target.value)}
-              className="rounded-md border border-neutral-800 bg-neutral-950 px-3 py-2 text-sm">
-              <option value="">— select agent —</option>
-              {(agents.data ?? []).filter((a) => a.domain === 'perp').map((a) => (
-                <option key={a.id} value={a.id}>{a.name} · v{a.activeConfigVersion}</option>
+        <CardBody className="flex flex-wrap items-end gap-4">
+          <label className="flex flex-col gap-1">
+            <span className="text-xs text-neutral-400">Agent</span>
+            {agents.isLoading ? <Skeleton className="h-9 w-56" /> : (
+              <select value={agentId} onChange={(e) => { setAgentId(e.target.value); setVersion(null); }}
+                className="rounded-md border border-neutral-800 bg-neutral-950 px-3 py-2 text-sm">
+                <option value="">— select agent —</option>
+                {(agents.data ?? []).filter((a) => a.domain === 'perp').map((a) => (
+                  <option key={a.id} value={a.id}>{a.name}</option>
+                ))}
+              </select>
+            )}
+          </label>
+          <label className="flex flex-col gap-1">
+            <span className="text-xs text-neutral-400">Config version</span>
+            <select
+              value={version ?? ''} disabled={!agentId || configs.isLoading}
+              onChange={(e) => setVersion(Number(e.target.value))}
+              className="rounded-md border border-neutral-800 bg-neutral-950 px-3 py-2 text-sm disabled:opacity-40">
+              {(configs.data?.versions ?? []).map((v) => (
+                <option key={v.version} value={v.version}>
+                  v{v.version}{v.active ? ' (active)' : ''}
+                </option>
               ))}
             </select>
+          </label>
+          {agentId && (
+            <span className="pb-2 text-xs text-neutral-500">
+              horizon <code>{horizon}</code> · attribution is version-scoped (rule 16). Pick the
+              version your predictions were made under — seeded predictions are usually v1.
+            </span>
           )}
         </CardBody>
       </Card>
-      {agent && (
+      {agent && version !== null && (
         <div className="space-y-4">
           {PERP_FACTORS.map((k) => (
-            <FactorPanel key={k} agentKey={k} domain={agent.domain} configVersion={agent.activeConfigVersion} horizon={horizon} />
+            <FactorPanel key={k} agentKey={k} domain={agent.domain} configVersion={version} horizon={horizon} />
           ))}
         </div>
       )}
