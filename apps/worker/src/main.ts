@@ -13,6 +13,8 @@ import {
   HeliusWebhookAdmin,
   HELIUS_WEBHOOK_FEED,
   HELIUS_REST_FEED,
+  LIQUIDATION_FEED,
+  TICKERS_FEED,
   DEFAULT_TIMEFRAMES,
   HELIUS_CANARY_WALLET,
 } from '@tip/ingestion';
@@ -63,6 +65,16 @@ async function main(): Promise<void> {
   let monitor: FeedMonitor;
   monitor = new FeedMonitor({
     onStale: (id, age) => {
+      // Liquidation is a SPARSE feed: no liquidations for 30 min is NORMAL in a calm market, not a
+      // broken feed. It rides the same WS socket as tickers, so cross-check — if tickers are fresh,
+      // the connection is alive and this is just quiet. Warn, don't block. (A genuinely dead socket
+      // shows up as tickers ALSO stale, which still blocks below.) Mirrors the helius webhook/REST
+      // cross-check. Fixes agents — including ones with perp.liquidation weight 0 — being BLOCKED
+      // over a quiet liquidation feed.
+      if (id === LIQUIDATION_FEED && !monitor.isStale(TICKERS_FEED)) {
+        console.warn(`[staleness] ${id} quiet (${Math.round(age / 1000)}s) but tickers fresh — calm market, not blocking`);
+        return;
+      }
       // Helius webhook stale while REST is fresh ⇒ webhook path broken, not just quiet (§10).
       if (id === HELIUS_WEBHOOK_FEED && !monitor.isStale(HELIUS_REST_FEED)) {
         console.warn('[staleness] helius WEBHOOK path likely BROKEN — REST reachable but no webhooks arriving');
