@@ -134,17 +134,13 @@ function Hypotheses() {
                   <Td className="text-xs">{h.category}</Td>
                   <Td><Badge tone={h.categoryKind === 'SUCCESS' ? 'success' : 'danger'}>{h.categoryKind}</Badge></Td>
                   <Td className="tabular-nums">{Number(h.evidenceCount).toFixed(1)}</Td>
-                  <Td className="text-xs">
-                    {'agentKey' in h.proposedChange && typeof h.proposedChange.agentKey === 'string'
-                      ? <><span className="font-mono">{h.proposedChange.agentKey}</span> Δ{(Number(h.proposedChange.delta) * 100).toFixed(1)}%</>
-                      : '—'}
-                  </Td>
+                  <Td className="text-xs font-mono">{renderChange(h.proposedChange)}</Td>
                   <Td className="text-xs">{h.fromConfigVersion !== null ? `v${h.fromConfigVersion} → v${h.toConfigVersion ?? '?'}` : '—'}</Td>
                   <Td className="text-neutral-400 text-xs tabular-nums">{fmtWhen(h.createdAt)}</Td>
                 </Tr>
               ))}
               {(q.data?.rows ?? []).length === 0 && (
-                <Tr><Td colSpan={8} className="text-neutral-500">No hypotheses yet — the pipeline runs when enough autopsies cluster on a category above effective-n 20.</Td></Tr>
+                <Tr><Td colSpan={8} className="text-neutral-500">No hypotheses yet — the pipeline runs when enough autopsies cluster on a category above the effective-n floor.</Td></Tr>
               )}
             </Tbody>
           </Table>
@@ -152,6 +148,29 @@ function Hypotheses() {
       )}
     </div>
   );
+}
+
+/**
+ * Render a hypothesis's proposedChange across all three kinds. weightDelta is a % (renormalized
+ * agent weight); paramDelta and thresholdWiden are raw scalar deltas. Older/unknown shapes → '—'.
+ */
+function renderChange(pc: Record<string, unknown>): string {
+  const kind = pc.kind as string | undefined;
+  const delta = typeof pc.delta === 'number' ? pc.delta : undefined;
+  if (kind === 'weightDelta' && typeof pc.agentKey === 'string' && delta !== undefined) {
+    return `${pc.agentKey} Δ${delta > 0 ? '+' : ''}${(delta * 100).toFixed(1)}%`;
+  }
+  if (kind === 'paramDelta' && typeof pc.param === 'string' && delta !== undefined) {
+    return `${pc.param} Δ${delta > 0 ? '+' : ''}${delta}`;
+  }
+  if (kind === 'thresholdWiden' && delta !== undefined) {
+    return `signalThreshold widen ±${delta}`;
+  }
+  // Legacy rows that stored agentKey without a kind.
+  if (typeof pc.agentKey === 'string' && delta !== undefined) {
+    return `${pc.agentKey} Δ${(delta * 100).toFixed(1)}%`;
+  }
+  return '—';
 }
 
 function HypBadge({ status }: { status: string }) {
