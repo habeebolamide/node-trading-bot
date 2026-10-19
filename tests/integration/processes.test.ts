@@ -30,6 +30,8 @@ async function launch(file: string, port: number) {
       API_PORT: '43430',
       RUNTIME_HEALTH_PORT: '43431',
       WORKER_HEALTH_PORT: '43432',
+      NOTIFIER_HEALTH_PORT: '43433',
+      TELEGRAM_BOT_TOKEN: '',
       LOG_LEVEL: 'silent',
     },
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -122,6 +124,33 @@ it('API restart preserves stored config and leaves runtime/worker processes aliv
     });
     expect(created.status).toBe(201);
     const body = (await created.json()) as { data: { id: string } };
+    const notificationAccount = (
+      await pool.query(
+        'SELECT id FROM exchange_accounts WHERE owner_user_id=$1',
+        [owner!.id],
+      )
+    ).rows[0].id;
+    await pool.query(
+      `INSERT INTO notification_outbox(account_id,domain_event_id,recipient_ref,template_key,payload_snapshot,dedupe_key,severity) VALUES($1,'restart-fixture','123','ENTRY','{"text":"Simulated process fixture"}','restart-fixture','INFO')`,
+      [notificationAccount],
+    );
+    const notifier = await launch('apps/notifier/src/main.ts', 43433);
+    expect(
+      (
+        (await (await fetch('http://127.0.0.1:43433/health/live')).json()) as {
+          telegramConfigured: boolean;
+        }
+      ).telegramConfigured,
+    ).toBe(false);
+    await stop(notifier);
+    await launch('apps/notifier/src/main.ts', 43433);
+    expect(
+      (
+        await pool.query(
+          "SELECT status FROM notification_outbox WHERE dedupe_key='restart-fixture'",
+        )
+      ).rows[0].status,
+    ).toBe('PENDING');
     await stop(api);
     expect(runtime.exitCode).toBeNull();
     expect(worker.exitCode).toBeNull();

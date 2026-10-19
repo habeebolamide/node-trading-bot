@@ -745,3 +745,96 @@ it('can explicitly fund an initially zero-allocation bot after its first positiv
     ).rows[0].count,
   ).toBe('1');
 });
+
+it('an indefinitely hanging Telegram send cannot delay risk approval, paper fills, protection or stop loss', async () => {
+  const { deliverOne } =
+    await import('../../packages/notifications/src/service.js');
+  await pool.query(
+    `INSERT INTO notification_outbox(account_id,domain_event_id,recipient_ref,template_key,payload_snapshot,dedupe_key,severity) VALUES($1,'hang-fixture','123','ENTRY','{"text":"Simulated fixture"}','hang-fixture','INFO')`,
+    [bot.accountId],
+  );
+  let started!: () => void;
+  const ready = new Promise<void>((r) => {
+    started = r;
+  });
+  let settled = false;
+  const notification = deliverOne(
+    pool,
+    () => {
+      started();
+      return new Promise(() => {});
+    },
+    2000,
+  ).then(() => {
+    settled = true;
+  });
+  await ready;
+  await enter();
+  await tick('99.95');
+  let view = await store.load(bot.id);
+  expect(view.trade!.protectionStatus).toBe('CONFIRMED');
+  expect(new Decimal(view.trade!.filledQuantity).gt(0)).toBe(true);
+  await tick('103');
+  view = await store.load(bot.id);
+  expect(new Decimal(view.trade!.confirmedStop!).gte(100)).toBe(true);
+  await tick('98');
+  await tick('98');
+  expect((await store.load(bot.id)).trading).toBe('IDLE');
+  expect(settled).toBe(false);
+  expect(
+    new Decimal((await capital())[0]!.reserved)
+      .plus((await capital())[0]!.committed)
+      .isZero(),
+  ).toBe(true);
+  await notification;
+  expect(
+    (await pool.query('SELECT last_error FROM notification_outbox')).rows[0]
+      .last_error,
+  ).toBe('TIMEOUT');
+});
+
+it('groups feed-induced unresolved paper exposure into the shared incident without per-bot recovery alerts', async () => {
+  const { recordGap } = await import('../../packages/replay/src/recovery.js');
+  const { projectNotifications, savePreferences } =
+    await import('../../packages/notifications/src/service.js');
+  await enter();
+  await tick('99.95');
+  // Consume earlier entry/fill events while the feed is healthy and routing is disabled.
+  const instrument = (
+    await pool.query(
+      'SELECT id FROM market_instruments WHERE canonical_market_id=$1',
+      [bot.canonicalMarketId],
+    )
+  ).rows[0];
+  await pool.query(
+    'INSERT INTO market_checkpoints(stream_key,instrument_id,observed_at,state) VALUES($1,$2,$3,$4)',
+    [
+      bot.canonicalMarketId + ':health',
+      instrument.id,
+      clock.time,
+      JSON.stringify({
+        marketKey: bot.canonicalMarketId,
+        canEvaluate: true,
+        state: 'READY',
+      }),
+    ],
+  );
+  await projectNotifications(pool, clock.time);
+  await savePreferences(pool, bot.accountId, actor.userId, {
+    botId: null,
+    enabled: true,
+    recipientRef: '123',
+    events: ['ENTRY', 'EXIT', 'PROTECTION', 'RECOVERY'],
+  });
+  await recordGap(db, store, lease, 'shared-outage-fixture', clock.time);
+  await projectNotifications(pool, clock.time);
+  await projectNotifications(pool, clock.time);
+  const incidents = (await pool.query('SELECT * FROM system_incidents')).rows;
+  expect(incidents).toHaveLength(1);
+  expect(incidents[0].fingerprint).toBe('feed:bybit');
+  expect((await pool.query('SELECT * FROM notification_outbox')).rowCount).toBe(
+    1,
+  );
+  expect((await store.load(bot.id)).trading).toBe('UNRESOLVED');
+  expect(new Decimal((await capital())[0]!.committed).gt(0)).toBe(true);
+});

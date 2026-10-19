@@ -8,6 +8,7 @@
     "apps/api/**/*.ts",
     "apps/runtime/**/*.ts",
     "apps/worker/**/*.ts",
+    "apps/notifier/**/*.ts",
     "packages/**/*.ts",
     "scripts/**/*.ts"
   ],

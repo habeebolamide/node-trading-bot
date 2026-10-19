@@ -1,3 +1,5 @@
+import { resolve } from 'node:path';
+import { dashboardRoutes } from './dashboard.js';
 import {
   createExperiment,
   queueValidation,
@@ -44,6 +46,7 @@ import type { Pool } from 'pg';
 import { RuntimeControlRepository } from '../../../packages/database/src/runtime.js';
 import {
   runtimeCommands,
+  runtimeActions,
   runtimeEvents,
   tradeLifecycles,
 } from '../../../packages/database/src/index.js';
@@ -83,18 +86,25 @@ export function createApp(db: Database, pool: Pool, log = createLogger('api')) {
   app.get('/health/ready', async (_req, res) => {
     try {
       await pool.query(
-        'select b.config_version from bots b, api_tokens t limit 0',
+        'select b.config_version from bots b, api_tokens t, notification_outbox n limit 0',
       );
       res.json({
         status: 'ready',
         executionMode: 'PAPER',
-        capabilities: ['bot_configuration'],
+        capabilities: [
+          'bot_configuration',
+          'durable_commands',
+          'paper_reports',
+          'incidents',
+          'notifications',
+        ],
         acceptsNewEntries: false,
       });
     } catch {
       res.status(503).json({ status: 'unavailable' });
     }
   });
+  app.use(express.static(resolve('apps/web/dist')));
   app.use('/api', async (req, res, next) => {
     try {
       const match = /^Bearer ([A-Za-z0-9_-]{43})$/.exec(
@@ -139,6 +149,7 @@ export function createApp(db: Database, pool: Pool, log = createLogger('api')) {
   });
   const actor = (res: Response) => res.locals.actor as Actor;
   const id = (req: Request) => z.uuid().parse(req.params.id);
+  dashboardRoutes(app, pool, (res) => repo.account(actor(res)), actor);
   app.get('/api/backtest-experiments/:id', async (req, res) => {
     const [experiment] = await db
       .select()
@@ -275,7 +286,10 @@ export function createApp(db: Database, pool: Pool, log = createLogger('api')) {
     }),
   );
   app.get('/api/market-data/health', async (_req, res) => {
-    const rows = await db.select().from(marketCheckpoints);
+    const ownBots = await repo.list(actor(res));
+    const rows = (await db.select().from(marketCheckpoints)).filter((r) =>
+      ownBots.some((b) => r.streamKey === b.canonicalMarketId + ':health'),
+    );
     const now = Date.now();
     res.json({
       data: rows
@@ -340,7 +354,7 @@ export function createApp(db: Database, pool: Pool, log = createLogger('api')) {
     });
   app.get('/api/bots/:id/runtime', async (req, res) => {
     const bot = await repo.get(actor(res), id(req));
-    const [commands, trades, events] = await Promise.all([
+    const [commands, trades, events, actions, checkpoint] = await Promise.all([
       db
         .select()
         .from(runtimeCommands)
@@ -359,9 +373,18 @@ export function createApp(db: Database, pool: Pool, log = createLogger('api')) {
         .where(eq(runtimeEvents.botId, bot.id))
         .orderBy(desc(runtimeEvents.eventTime))
         .limit(50),
+      db
+        .select()
+        .from(runtimeActions)
+        .where(eq(runtimeActions.botId, bot.id))
+        .orderBy(desc(runtimeActions.createdAt))
+        .limit(50),
+      pool.query('SELECT * FROM runtime_checkpoints WHERE bot_id=$1', [bot.id]),
     ]);
     res.json({
       data: {
+        actions,
+        checkpoint: checkpoint.rows[0] ?? null,
         executionBackend:
           trades.find((t) =>
             ['PENDING_ENTRY', 'OPEN', 'CLOSING', 'UNRESOLVED'].includes(

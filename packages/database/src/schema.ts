@@ -738,3 +738,106 @@ export const replayExperiments = pgTable('replay_experiments', {
   selectionReason: text('selection_reason'),
   createdAt: time('created_at'),
 });
+
+export const notificationPreferences = pgTable('notification_preferences', {
+  scope: text('scope').primaryKey(),
+  accountId: uuid('account_id')
+    .notNull()
+    .references(() => accounts.id),
+  botId: uuid('bot_id').references(() => bots.id),
+  enabled: boolean('enabled').notNull().default(false),
+  recipientRef: text('recipient_ref'),
+  events: jsonb('events')
+    .notNull()
+    .default(['ENTRY', 'EXIT', 'PROTECTION', 'RECOVERY']),
+  updatedAt: time('updated_at'),
+});
+export const systemIncidents = pgTable(
+  'system_incidents',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    accountId: uuid('account_id')
+      .notNull()
+      .references(() => accounts.id),
+    fingerprint: text('fingerprint').notNull(),
+    severity: text('severity').notNull(),
+    status: text('status').notNull().default('ACTIVE'),
+    title: text('title').notNull(),
+    affectedBots: jsonb('affected_bots').notNull(),
+    evidence: jsonb('evidence').notNull(),
+    occurrenceCount: integer('occurrence_count').notNull().default(1),
+    firstSeen: time('first_seen'),
+    lastSeen: time('last_seen'),
+  },
+  (t) => [uniqueIndex('incident_fingerprint').on(t.accountId, t.fingerprint)],
+);
+export const incidentEvents = pgTable('incident_events', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  incidentId: uuid('incident_id')
+    .notNull()
+    .references(() => systemIncidents.id),
+  actorId: uuid('actor_id').references(() => users.id),
+  kind: text('kind').notNull(),
+  evidence: jsonb('evidence').notNull(),
+  createdAt: time('created_at'),
+});
+export const notificationOutbox = pgTable(
+  'notification_outbox',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    accountId: uuid('account_id')
+      .notNull()
+      .references(() => accounts.id),
+    domainEventId: text('domain_event_id').notNull(),
+    destination: text('destination').notNull().default('TELEGRAM'),
+    recipientRef: text('recipient_ref').notNull(),
+    templateKey: text('template_key').notNull(),
+    payloadSnapshot: jsonb('payload_snapshot').notNull(),
+    dedupeKey: text('dedupe_key').notNull().unique(),
+    severity: text('severity').notNull(),
+    status: text('status').notNull().default('PENDING'),
+    availableAt: time('available_at'),
+    attemptCount: integer('attempt_count').notNull().default(0),
+    leaseToken: uuid('lease_token'),
+    leaseUntil: timestamp('lease_until', { withTimezone: true }),
+    lastError: text('last_error'),
+    sentAt: timestamp('sent_at', { withTimezone: true }),
+    createdAt: time('created_at'),
+  },
+  (t) => [
+    uniqueIndex('notification_event_destination').on(
+      t.domainEventId,
+      t.recipientRef,
+      t.templateKey,
+    ),
+  ],
+);
+export const notificationAttempts = pgTable(
+  'notification_attempts',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    outboxId: uuid('outbox_id')
+      .notNull()
+      .references(() => notificationOutbox.id),
+    attemptNo: integer('attempt_no').notNull(),
+    result: text('result').notNull(),
+    messageId: text('message_id'),
+    retryAt: timestamp('retry_at', { withTimezone: true }),
+    createdAt: time('created_at'),
+  },
+  (t) => [
+    uniqueIndex('notification_attempt_number').on(t.outboxId, t.attemptNo),
+  ],
+);
+export const projectedEvents = pgTable('notification_projected_events', {
+  eventId: uuid('event_id')
+    .primaryKey()
+    .references(() => runtimeEvents.id),
+  accountId: uuid('account_id')
+    .notNull()
+    .references(() => accounts.id),
+});
+export const notificationWorkerHealth = pgTable('notification_worker_health', {
+  id: text('id').primaryKey(),
+  observedAt: time('observed_at'),
+});

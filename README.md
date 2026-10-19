@@ -1,6 +1,6 @@
 # Strategy trading platform
 
-Paper-first, rule-based trading platform. Phases 1–4 implement configuration, market data, deterministic strategies and a durable runtime against a fake execution contract; **economic PAPER/LIVE trading is not active**. The implementation specification is [docs/prd.md](docs/prd.md), with the authoritative phase sequence in Section 23.
+Paper-first, rule-based trading platform. Phases 1–7 implement durable configuration, public market data, deterministic strategies, risk-sized simulated execution and independent capital ledgers, historical replay/recovery, an operator dashboard and asynchronous Telegram delivery. **All P&L is simulated; production LIVE trading is disabled.** The implementation specification is [docs/prd.md](docs/prd.md), with the authoritative phase sequence in Section 23.
 
 ## Requirements and setup
 
@@ -40,10 +40,11 @@ Run these independently in separate terminals after `nvm use`:
 npm run dev:api
 npm run dev:runtime
 npm run dev:worker
+npm run dev:notifier
 npm run dev:web
 ```
 
-API: `http://127.0.0.1:3000`; runtime health: `3001`; worker health: `3002`; Vite: `5173`. API restart does not restart the other processes. Runtime processes durable bot commands, strategy-owned public feeds, risk-sized PAPER orders and independent capital ledgers; worker executes durable historical replay jobs. Runtime readiness returns 200 when its PAPER schema is available; each bot still requires healthy data and atomic risk approval. No process submits exchange orders. See [Phase 2 setup](docs/phase-2.md) for seeding and continuous data monitoring. API readiness checks its database schema and advertises configuration capability only.
+API: `http://127.0.0.1:3000`; runtime health: `3001`; worker health: `3002`; Vite: `5173`. API restart does not restart the other processes. Runtime processes durable bot commands, strategy-owned public feeds, risk-sized PAPER orders and independent capital ledgers; worker executes durable historical replay jobs. Runtime readiness returns 200 when its PAPER schema is available; each bot still requires healthy data and atomic risk approval. No process submits exchange orders. See [Phase 2 setup](docs/phase-2.md) for seeding and continuous data monitoring. The independent notifier runs on health port `3003`; see [Phase 7 dashboard and Telegram setup](docs/phase-7.md).
 
 ```sh
 npm run check
@@ -53,7 +54,7 @@ npm audit
 
 `check` runs type checking, unit tests, real PostgreSQL integration tests, actual child-process restart tests, and production builds. A missing test database is a failure, not a skipped gate. Use `npm run db:generate` for schema changes; custom SQL migrations contain locking and integrity triggers. Never edit an already applied migration.
 
-Built entrypoints are runnable independently with `npm run start:api`, `npm run start:runtime`, and `npm run start:worker`. They load `.env` from the working directory. Deploy with a restricted database role, TLS/reverse proxy, secret management and supervisor in the later hardening phase; the local scaffold is not a hardened public deployment.
+Built entrypoints are runnable independently with `npm run start:api`, `npm run start:runtime`, `npm run start:worker`, and `npm run start:notifier`. The API serves the built dashboard at its root; Vite proxies the API during development. They load `.env` from the working directory. Deploy with a restricted database role, TLS/reverse proxy, secret management and supervisor in the later hardening phase; the local scaffold is not a hardened public deployment.
 
 ## API
 
@@ -122,3 +123,5 @@ A stale version, existing coin owner or allocation conflict returns 409. Invalid
 See [Phase 3 setup and research rules](docs/phase-3.md) for `npm run strategies:register` and offline `npm run strategy:preview`. See [Phase 4 controls](docs/phase-4.md) for bot scheduling and [Phase 5 PAPER execution and capital](docs/phase-5.md) for current fill/risk assumptions, funding semantics and capital APIs.
 
 Historical replay, funding, A/B and holdout validation, and outage recovery are implemented in Phase 6. See [Phase 6 workflow and data assumptions](docs/phase-6.md) for dataset requirements, `npm run backtest`, the replay worker, authenticated report endpoints and offline recovery. Incomplete trade histories produce explicit uncertainty rather than simulated candle-touch profits.
+
+See [Phase 7](docs/phase-7.md) for the operator dashboard, incident workflow, notification preferences, durable outbox and `npm run dev:notifier`. Configure a server-side Telegram token and a destination before expecting delivery. Trading never awaits Telegram.

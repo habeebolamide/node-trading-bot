@@ -32,7 +32,9 @@
     "strategies:register": "tsx --env-file=.env scripts/register-strategies.ts",
     "strategy:preview": "tsx --env-file=.env scripts/strategy-preview.ts",
     "backtest": "tsx --env-file=.env scripts/backtest.ts",
-    "recovery:replay": "tsx --env-file=.env scripts/recover.ts"
+    "recovery:replay": "tsx --env-file=.env scripts/recover.ts",
+    "dev:notifier": "tsx --env-file=.env apps/notifier/src/main.ts",
+    "start:notifier": "node --env-file=.env dist/apps/notifier/src/main.js"
   },
   "dependencies": {
     "decimal.js": "^10.6.0",

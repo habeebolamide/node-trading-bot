@@ -1,0 +1,81 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-10-19T22:04:24.996435+00:00",
+  "title": "Design System: Strategy platform",
+  "extensions": {
+    "shadows": [],
+    "motion": [
+      {
+        "name": "control",
+        "value": "background 150ms ease-out",
+        "purpose": "Button hover feedback"
+      }
+    ],
+    "breakpoints": [
+      {
+        "name": "compact-rail",
+        "value": "1000px"
+      },
+      {
+        "name": "mobile",
+        "value": "650px"
+      }
+    ]
+  },
+  "components": [
+    {
+      "name": "Primary button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "Submit an operator request.",
+      "html": "<button class=\"ds-primary\">Request action</button>",
+      "css": ".ds-primary {font:600 14px sans-serif;background:#245c4d;color:#fff;padding:10px 14px;border:1px solid #245c4d;border-radius:6px;cursor:pointer}.ds-primary:hover{background:#184337}.ds-primary:focus-visible{outline:2px solid #245c4d;outline-offset:4px}"
+    },
+    {
+      "name": "Secondary button",
+      "kind": "button",
+      "description": "Refresh or inspect evidence.",
+      "html": "<button class=\"ds-secondary\">Refresh</button>",
+      "css": ".ds-secondary{font:600 14px sans-serif;background:#fff;color:#244b3d;padding:10px 14px;border:1px solid #b4c0b7;border-radius:6px}.ds-secondary:hover{background:#eaf0e9}.ds-secondary:focus-visible{outline:2px solid #245c4d;outline-offset:4px}"
+    },
+    {
+      "name": "Text field",
+      "kind": "input",
+      "description": "Explicitly labelled operator input.",
+      "html": "<label class=\"ds-field\">Reason<input placeholder=\"Explain the action\"></label>",
+      "css": ".ds-field{font:550 12px sans-serif;display:grid;gap:8px;color:#202e2b}.ds-field input{font:14px sans-serif;border:1px solid #b4c0b7;background:#fff;padding:10px 12px;border-radius:5px;caret-color:#245c4d}.ds-field input:focus-visible{outline:2px solid #245c4d;outline-offset:4px}"
+    },
+    {
+      "name": "State badge",
+      "kind": "chip",
+      "description": "A status projection rather than an action.",
+      "html": "<span class=\"ds-state\">RUNNING</span>",
+      "css": ".ds-state{font:650 10px sans-serif;letter-spacing:.025em;padding:4px 7px;border-radius:4px;background:#dfecdf;color:#22563a;display:inline-block}"
+    },
+    {
+      "name": "Exposure warning",
+      "kind": "custom",
+      "description": "Explain residual or unresolved exposure alongside controls.",
+      "html": "<p class=\"ds-alert\">Exposure remains active or unresolved. Pause and stop do not close a position.</p>",
+      "css": ".ds-alert{font:14px/1.7 sans-serif;background:#fff0d6;color:#714326;padding:17px 20px;border-radius:6px}"
+    }
+  ],
+  "narrative": {
+    "northStar": "Real paper state in a calm operator workspace",
+    "overview": "The user-approved light workspace prioritizes current financial state, durable control status and evidence.",
+    "keyCharacteristics": [
+      "Flat warm surfaces",
+      "Tabular financial values",
+      "Focused bot details"
+    ],
+    "rules": [
+      {
+        "name": "State truth",
+        "body": "Acceptance is separate from completion; acknowledgment does not resume a bot.",
+        "section": "components"
+      }
+    ],
+    "dos": ["Label simulated P&L", "Keep exposure warnings beside controls"],
+    "donts": ["Fabricate balances or healthy projections"]
+  }
+}
