@@ -1,0 +1,39 @@
+{
+  "metrics": {
+    "fees": "0.0121407",
+    "expired": 0,
+    "funding": "-0.001",
+    "noTrade": 0,
+    "winRate": "1",
+    "slippage": "0.0105",
+    "averageWin": "0.2413593",
+    "expectancy": "0.2413593",
+    "openTrades": 0,
+    "averageLoss": null,
+    "evaluations": 1,
+    "maxDrawdown": "0.00011994",
+    "realizedNet": "0.2413593",
+    "closedTrades": 1,
+    "endingEquity": "100.2413593",
+    "filledTrades": 1,
+    "profitFactor": null,
+    "longProposals": 1,
+    "returnPercent": "0.2413593",
+    "noTradeReasons": {},
+    "riskRejections": {},
+    "shortProposals": 0,
+    "maxLosingStreak": 0,
+    "peakReservedAndCommitted": "2.030069"
+  },
+  "trades": [
+    {
+      "bot": "trend",
+      "net": "0.2413593",
+      "side": "LONG",
+      "entry": "199.8",
+      "quantity": "0.05",
+      "holdingMs": 2000,
+      "closeReason": "TAKE_PROFIT"
+    }
+  ]
+}

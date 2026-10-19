@@ -12,3 +12,18 @@ cpSync(
   'packages/market-data/src/indicators.ts',
   'dist/packages/market-data/src/indicators.ts',
 );
+
+// Replay manifests pin the exact runtime, risk, execution, accounting and replay sources.
+for (const name of [
+  'runtime',
+  'risk',
+  'replay',
+  'database',
+  'core',
+  'market-data',
+]) {
+  cpSync(`packages/${name}/src`, `dist/packages/${name}/src`, {
+    recursive: true,
+    filter: (path) => !path.endsWith('.js'),
+  });
+}

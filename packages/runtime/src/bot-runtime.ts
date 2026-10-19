@@ -25,6 +25,9 @@ import type {
 } from './contracts.js';
 export class BotRuntime {
   private acceptingEntries = true;
+  allowEntries() {
+    this.acceptingEntries = true;
+  }
   freeze() {
     this.acceptingEntries = false;
   }
@@ -71,7 +74,20 @@ export class BotRuntime {
         this.lease,
         `command:${command.id}`,
         this.now(),
-        (v) => this.manager.command(v, command, this.now()),
+        (v) => {
+          const c = this.manager.command(v, command, this.now());
+          if (v.fault === 'RECONCILIATION_UNCERTAIN') {
+            c.actions = [];
+            c.view.actions = v.actions;
+            c.view.trade = v.trade;
+            c.view.trading = v.trading;
+            c.details = {
+              ...c.details,
+              controlsDeferred: 'RECOVERY_EVIDENCE_REQUIRED',
+            };
+          }
+          return c;
+        },
       );
       await this.pump();
       return this.store.load(v.botId);
@@ -107,6 +123,11 @@ export class BotRuntime {
   timer() {
     return this.serial(async () => {
       const now = this.now();
+      if (
+        (await this.store.load(this.lease.botId)).fault ===
+        'RECONCILIATION_UNCERTAIN'
+      )
+        return;
       await this.store.transact(this.lease, `timer:${now}`, now, (v) => {
         const c = this.manager.timer(v, now);
         if (
@@ -128,6 +149,13 @@ export class BotRuntime {
   }
   price(event: Price) {
     return this.serial(async () => {
+      if (event.eventTime > event.observedAt || event.observedAt > this.now())
+        return;
+      if (
+        (await this.store.load(this.lease.botId)).fault ===
+        'RECONCILIATION_UNCERTAIN'
+      )
+        return;
       if (this.adapter.onPrice) {
         for (const report of await this.adapter.onPrice(event, this.lease))
           await this.apply(report);
@@ -152,6 +180,9 @@ export class BotRuntime {
     return this.serial(async () => {
       let view = await this.store.load(this.lease.botId);
       if (
+        trigger.observedAt > this.now() ||
+        trigger.eventTime > trigger.observedAt ||
+        view.fault === 'RECONCILIATION_UNCERTAIN' ||
         trigger.type !== 'CANDLE_CLOSE' ||
         this.strategy.requirements.trigger !== 'CANDLE_CLOSE' ||
         trigger.timeframe !== this.strategy.requirements.primaryTimeframe ||

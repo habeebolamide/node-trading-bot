@@ -7,6 +7,7 @@ import {
   capitalLedger,
   capitalReservations,
   instruments,
+  replayInstruments,
   paperEquityPeaks,
   type Database,
 } from './index.js';
@@ -178,10 +179,21 @@ export async function approvePaperEntry(
         funded.gt(accountEquity.mul('.8')))
     )
       throw Error('ALLOCATION_ENVELOPE_EXCEEDED');
-    const [instrument] = await tx
+    let [instrument] = await tx
       .select()
       .from(instruments)
       .where(eq(instruments.canonicalMarketId, previous.marketKey));
+    if (account.replayScope !== 'FORWARD') {
+      const [snapshot] = await tx
+        .select()
+        .from(replayInstruments)
+        .where(
+          eq(replayInstruments.key, `${account.id}:${previous.marketKey}`),
+        );
+      instrument = snapshot
+        ? ({ spec: snapshot.snapshot } as typeof instrument)
+        : undefined;
+    }
     if (!instrument) throw Error('INSTRUMENT_MISSING');
     const spec = instrument.spec as Instrument;
     const round = (value: string, up: boolean) =>

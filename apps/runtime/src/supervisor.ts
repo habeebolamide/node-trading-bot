@@ -1,3 +1,9 @@
+import { recoveryGaps } from '../../../packages/database/src/index.js';
+import {
+  recordGap,
+  markUncertain,
+  updateGap,
+} from '../../../packages/replay/src/recovery.js';
 import { riskPolicyFromEnv } from '../../../packages/risk/src/sizing.js';
 import { systemClock, type Clock } from '../../../packages/core/src/index.js';
 import { randomUUID } from 'node:crypto';
@@ -42,6 +48,11 @@ export class RuntimeSupervisor {
       runtime: BotRuntime;
       lease: Lease;
       legacy: boolean;
+      state: {
+        blocked: boolean;
+        tail: Promise<unknown>;
+        gap: typeof recoveryGaps.$inferSelect | null;
+      };
       remove: () => void;
       definition: ReturnType<typeof researchCatalog>[number]['definition'];
     }
@@ -66,7 +77,7 @@ export class RuntimeSupervisor {
         .select()
         .from(bots)
         .where(
-          sql`${bots.operationalStatus} NOT IN ('STOPPED','ERROR') OR ${bots.tradingState}<>'IDLE' OR EXISTS(SELECT 1 FROM runtime_commands c WHERE c.bot_id=${bots.id} AND c.status='PENDING')`,
+          sql`EXISTS(SELECT 1 FROM exchange_accounts a WHERE a.id=${bots.accountId} AND a.replay_scope='FORWARD') AND (${bots.operationalStatus} NOT IN ('STOPPED','ERROR') OR ${bots.tradingState}<>'IDLE' OR EXISTS(SELECT 1 FROM runtime_commands c WHERE c.bot_id=${bots.id} AND c.status='PENDING'))`,
         );
       for (const bot of candidates) {
         if (this.stopping) break;
@@ -146,12 +157,108 @@ export class RuntimeSupervisor {
             );
             if (legacy) runtime.freeze();
             await runtime.restore();
+            const pendingGaps = await this.db
+              .select()
+              .from(recoveryGaps)
+              .where(eq(recoveryGaps.botId, bot.id));
+            const state = {
+              blocked: pendingGaps.some((g) => g.status !== 'RESOLVED'),
+              tail: Promise.resolve() as Promise<unknown>,
+              gap: pendingGaps.find((g) => g.status !== 'RESOLVED') ?? null,
+            };
+            const queue = (run: () => Promise<unknown>) => {
+              const task = state.tail.then(run);
+              state.tail = task.catch(() => {
+                state.blocked = true;
+              });
+              return task;
+            };
+            const restored = await this.store.load(bot.id);
+            if (
+              restored.trade &&
+              this.clock.now().getTime() -
+                Math.max(restored.lastPriceTime, restored.trade.createdAt) >
+                0 &&
+              !state.gap
+            ) {
+              state.gap = await recordGap(
+                this.db,
+                this.store,
+                lease,
+                'startup:' + lease.token,
+                Math.max(restored.lastPriceTime, restored.trade.createdAt),
+                this.clock.now().getTime(),
+              );
+              await markUncertain(
+                this.store,
+                lease,
+                state.gap.id,
+                this.clock.now().getTime(),
+              );
+              await updateGap(this.db, lease, state.gap.id, {
+                status: 'UNCERTAIN',
+              });
+              state.blocked = true;
+            }
+            if (state.blocked) runtime.freeze();
+            const status = this.data.onStatus((event) => {
+              if (
+                event.marketKey !== bot.canonicalMarketId ||
+                event.state === 'HEARTBEAT'
+              )
+                return;
+              if (event.state !== 'CONNECTED') {
+                state.blocked = true;
+                runtime.freeze();
+                void queue(async () => {
+                  const view = await this.store.load(bot.id);
+                  state.gap = await recordGap(
+                    this.db,
+                    this.store,
+                    lease,
+                    'connection:' + event.observedAt,
+                    view.lastPriceTime || event.observedAt,
+                  );
+                }).catch(() => {});
+              } else if (state.blocked)
+                void queue(async () => {
+                  if (!state.gap) return;
+                  const view = await this.store.load(bot.id);
+                  if (view.trade) {
+                    await markUncertain(
+                      this.store,
+                      lease,
+                      state.gap.id,
+                      event.observedAt,
+                    );
+                    await updateGap(this.db, lease, state.gap.id, {
+                      status: 'UNCERTAIN',
+                      endTime: event.observedAt,
+                      coverage: {
+                        ...(state.gap.coverage as object),
+                        reason:
+                          'Public provider cannot certify complete historical trade ordering',
+                      },
+                    });
+                  } else {
+                    await updateGap(this.db, lease, state.gap.id, {
+                      status: 'RESOLVED',
+                      endTime: event.observedAt,
+                    });
+                    state.gap = null;
+                    state.blocked = false;
+                    runtime.allowEntries();
+                  }
+                }).catch(() => {});
+            });
             const req = this.requirements(selected.definition);
             const price = await this.data.onPrice(
               bot.market as never,
               req,
               (e) => {
-                void runtime.price(e).catch((error) =>
+                void queue(() =>
+                  state.blocked ? Promise.resolve() : runtime.price(e),
+                ).catch((error) =>
                   this.log.warn(
                     {
                       botId: bot.id,
@@ -173,11 +280,15 @@ export class RuntimeSupervisor {
                   c.timeframe ===
                     selected.definition.requirements.primaryTimeframe
                 )
-                  void this.onCandle(
-                    runtime,
-                    selected.definition,
-                    c.closeTime,
-                    c.observedAt,
+                  void queue(() =>
+                    state.blocked
+                      ? Promise.resolve()
+                      : this.onCandle(
+                          runtime,
+                          selected.definition,
+                          c.closeTime,
+                          c.observedAt,
+                        ),
                   ).catch(() =>
                     this.log.warn(
                       { botId: bot.id },
@@ -190,9 +301,11 @@ export class RuntimeSupervisor {
               runtime,
               lease,
               legacy,
+              state,
               remove: () => {
                 price();
                 candle();
+                status();
               },
               definition: selected.definition,
             };
@@ -211,6 +324,7 @@ export class RuntimeSupervisor {
             this.handles.delete(bot.id);
             continue;
           }
+          if (handle.state.blocked) continue;
           const health = await this.data.seed(
             view.market,
             this.requirements(handle.definition),
@@ -303,6 +417,7 @@ export class RuntimeSupervisor {
     for (const h of this.handles.values()) h.remove();
     while (this.busy) await new Promise((resolve) => setTimeout(resolve, 10));
     for (const h of this.handles.values()) {
+      await h.state.tail;
       await h.runtime.drain();
       await this.store.release(h.lease);
     }

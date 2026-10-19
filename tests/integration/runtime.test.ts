@@ -62,7 +62,7 @@ beforeAll(() => migrateDatabase(url));
 afterAll(() => pool.end());
 beforeEach(async () => {
   await pool.query(
-    'TRUNCATE audit_events,bot_config_versions,coin_ownership,bots,api_tokens,exchange_accounts,strategy_versions,strategies,app_users CASCADE',
+    'TRUNCATE market_instruments,audit_events,bot_config_versions,coin_ownership,bots,api_tokens,exchange_accounts,strategy_versions,strategies,app_users CASCADE',
   );
   const [owner] = await db
     .insert(users)

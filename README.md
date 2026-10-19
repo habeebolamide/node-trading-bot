@@ -43,7 +43,7 @@ npm run dev:worker
 npm run dev:web
 ```
 
-API: `http://127.0.0.1:3000`; runtime health: `3001`; worker health: `3002`; Vite: `5173`. API restart does not restart the other processes. Runtime processes durable bot commands, strategy-owned public feeds, risk-sized PAPER orders and independent capital ledgers; worker remains a scaffold. Runtime readiness returns 200 when its PAPER schema is available; each bot still requires healthy data and atomic risk approval. No process submits exchange orders. See [Phase 2 setup](docs/phase-2.md) for seeding and continuous data monitoring. API readiness checks its database schema and advertises configuration capability only.
+API: `http://127.0.0.1:3000`; runtime health: `3001`; worker health: `3002`; Vite: `5173`. API restart does not restart the other processes. Runtime processes durable bot commands, strategy-owned public feeds, risk-sized PAPER orders and independent capital ledgers; worker executes durable historical replay jobs. Runtime readiness returns 200 when its PAPER schema is available; each bot still requires healthy data and atomic risk approval. No process submits exchange orders. See [Phase 2 setup](docs/phase-2.md) for seeding and continuous data monitoring. API readiness checks its database schema and advertises configuration capability only.
 
 ```sh
 npm run check
@@ -120,3 +120,5 @@ A stale version, existing coin owner or allocation conflict returns 409. Invalid
 - `docs/phase-1.md`, `docs/phase-2.md`, `docs/phase-3.md`, `docs/phase-4.md`: decisions, verification and deferred work.
 
 See [Phase 3 setup and research rules](docs/phase-3.md) for `npm run strategies:register` and offline `npm run strategy:preview`. See [Phase 4 controls](docs/phase-4.md) for bot scheduling and [Phase 5 PAPER execution and capital](docs/phase-5.md) for current fill/risk assumptions, funding semantics and capital APIs.
+
+Historical replay, funding, A/B and holdout validation, and outage recovery are implemented in Phase 6. See [Phase 6 workflow and data assumptions](docs/phase-6.md) for dataset requirements, `npm run backtest`, the replay worker, authenticated report endpoints and offline recovery. Incomplete trade histories produce explicit uncertainty rather than simulated candle-touch profits.

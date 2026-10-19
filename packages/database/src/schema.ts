@@ -32,6 +32,7 @@ export const accounts = pgTable(
       .references(() => users.id),
     name: text('name').notNull(),
     environment: text('environment').notNull().default('PAPER'),
+    replayScope: text('replay_scope').notNull().default('FORWARD'),
     equityBaseline: numeric('equity_baseline', { precision: 38, scale: 18 })
       .notNull()
       .default('100'),
@@ -167,12 +168,13 @@ export const ownership = pgTable(
     botId: uuid('bot_id')
       .notNull()
       .references(() => bots.id),
+    scope: text('scope').notNull().default('FORWARD'),
     claimedAt: time('claimed_at'),
     releasedAt: timestamp('released_at', { withTimezone: true }),
   },
   (t) => [
     uniqueIndex('uq_active_coin_owner')
-      .on(t.canonicalCoinKey)
+      .on(t.scope, t.canonicalCoinKey)
       .where(sql`${t.releasedAt} IS NULL`),
     uniqueIndex('uq_bot_coin_owner')
       .on(t.botId)
@@ -658,4 +660,81 @@ export const paperEquityPeaks = pgTable('paper_equity_peaks', {
     .notNull()
     .references(() => accounts.id),
   peak: numeric('peak', { precision: 38, scale: 18 }).notNull(),
+});
+
+export const replayRuns = pgTable('replay_runs', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  experimentId: uuid('experiment_id'),
+  stage: text('stage').notNull().default('EXPLORATORY'),
+  variant: text('variant'),
+  windowIndex: integer('window_index'),
+  ownerUserId: uuid('owner_user_id')
+    .notNull()
+    .references(() => users.id),
+  accountId: uuid('account_id').references(() => accounts.id),
+  status: text('status').notNull().default('QUEUED'),
+  inputHash: text('input_hash').notNull(),
+  input: jsonb('input').notNull(),
+  checkpoint: integer('checkpoint').notNull().default(-1),
+  leaseOwner: uuid('lease_owner'),
+  leaseUntil: timestamp('lease_until', { withTimezone: true }),
+  report: jsonb('report'),
+  error: text('error'),
+  createdAt: time('created_at'),
+});
+export const replayInstruments = pgTable('replay_instruments', {
+  key: text('key').primaryKey(),
+  accountId: uuid('account_id')
+    .notNull()
+    .references(() => accounts.id),
+  marketKey: text('market_key').notNull(),
+  snapshot: jsonb('snapshot').notNull(),
+});
+export const replaySamples = pgTable('replay_samples', {
+  key: text('key').primaryKey(),
+  runId: uuid('run_id')
+    .notNull()
+    .references(() => replayRuns.id),
+  ordinal: integer('ordinal').notNull(),
+  eventTime: millis('event_time'),
+  equity: numeric('equity', { precision: 38, scale: 18 }).notNull(),
+  capacity: numeric('capacity', { precision: 38, scale: 18 }).notNull(),
+});
+export const recoveryGaps = pgTable('recovery_gaps', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  botId: uuid('bot_id')
+    .notNull()
+    .references(() => bots.id),
+  key: text('key').notNull().unique(),
+  startTime: millis('start_time'),
+  endTime: bigint('end_time', { mode: 'number' }),
+  status: text('status').notNull().default('OPEN'),
+  coverage: jsonb('coverage').notNull().default({}),
+  checkpoint: integer('checkpoint').notNull().default(-1),
+});
+export const paperFundingEvents = pgTable('paper_funding_events', {
+  key: text('key').primaryKey(),
+  botId: uuid('bot_id')
+    .notNull()
+    .references(() => bots.id),
+  tradeId: uuid('trade_id')
+    .notNull()
+    .references(() => tradeLifecycles.id),
+  period: millis('period'),
+  rate: text('rate').notNull(),
+  price: numeric('price', { precision: 38, scale: 18 }).notNull(),
+  quantity: numeric('quantity', { precision: 38, scale: 18 }).notNull(),
+  amount: numeric('amount', { precision: 38, scale: 18 }).notNull(),
+  observedAt: millis('observed_at'),
+});
+export const replayExperiments = pgTable('replay_experiments', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  ownerUserId: uuid('owner_user_id')
+    .notNull()
+    .references(() => users.id),
+  plan: jsonb('plan').notNull(),
+  variants: jsonb('variants').notNull(),
+  selectedVariant: text('selected_variant'),
+  selectionReason: text('selection_reason'),
+  createdAt: time('created_at'),
 });

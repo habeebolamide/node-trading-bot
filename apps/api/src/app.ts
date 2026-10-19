@@ -1,3 +1,16 @@
+import {
+  createExperiment,
+  queueValidation,
+  selectVariant,
+} from '../../../packages/replay/src/validation.js';
+import {
+  enqueueReplay,
+  readReplay,
+} from '../../../packages/replay/src/runner.js';
+import {
+  replayRuns,
+  replayExperiments,
+} from '../../../packages/database/src/index.js';
 import { PaperCapitalRepository } from '../../../packages/database/src/capital.js';
 import express, {
   type Request,
@@ -126,6 +139,125 @@ export function createApp(db: Database, pool: Pool, log = createLogger('api')) {
   });
   const actor = (res: Response) => res.locals.actor as Actor;
   const id = (req: Request) => z.uuid().parse(req.params.id);
+  app.get('/api/backtest-experiments/:id', async (req, res) => {
+    const [experiment] = await db
+      .select()
+      .from(replayExperiments)
+      .where(
+        and(
+          eq(replayExperiments.id, id(req)),
+          eq(replayExperiments.ownerUserId, actor(res).userId),
+        ),
+      );
+    if (!experiment)
+      throw new DomainError(
+        'EXPERIMENT_NOT_FOUND',
+        'Experiment not found',
+        404,
+      );
+    const runs = await db
+      .select({
+        id: replayRuns.id,
+        status: replayRuns.status,
+        stage: replayRuns.stage,
+        variant: replayRuns.variant,
+        windowIndex: replayRuns.windowIndex,
+      })
+      .from(replayRuns)
+      .where(eq(replayRuns.experimentId, experiment.id));
+    res.json({
+      data: {
+        id: experiment.id,
+        plan: experiment.plan,
+        selectedVariant: experiment.selectedVariant,
+        selectionReason: experiment.selectionReason,
+        variants: (experiment.variants as { key: string }[]).map((v) => v.key),
+        runs,
+      },
+    });
+  });
+  app.post('/api/backtest-experiments', async (req, res) =>
+    res
+      .status(201)
+      .json({ data: await createExperiment(db, actor(res), req.body) }),
+  );
+  app.post('/api/backtest-experiments/:id/runs', async (req, res) => {
+    const body = z
+      .object({
+        variant: z.string().min(1),
+        stage: z.enum(['TRAIN', 'TEST', 'HOLDOUT']),
+        windowIndex: z.number().int().nonnegative().default(0),
+      })
+      .strict()
+      .parse(req.body);
+    res.status(202).json({
+      data: await queueValidation(
+        db,
+        actor(res),
+        id(req),
+        body.variant,
+        body.stage,
+        body.windowIndex,
+      ),
+    });
+  });
+  app.post('/api/backtest-experiments/:id/selection', async (req, res) => {
+    const body = z
+      .object({
+        variant: z.string().min(1),
+        reason: z.string().trim().min(1).max(500),
+      })
+      .strict()
+      .parse(req.body);
+    res.json({
+      data: await selectVariant(
+        db,
+        actor(res),
+        id(req),
+        body.variant,
+        body.reason,
+      ),
+    });
+  });
+  app.post('/api/backtests', async (req, res) =>
+    res
+      .status(202)
+      .json({ data: await enqueueReplay(db, actor(res), req.body) }),
+  );
+  app.get('/api/backtests', async (_req, res) =>
+    res.json({
+      data: await db
+        .select({
+          id: replayRuns.id,
+          status: replayRuns.status,
+          checkpoint: replayRuns.checkpoint,
+          inputHash: replayRuns.inputHash,
+          createdAt: replayRuns.createdAt,
+        })
+        .from(replayRuns)
+        .where(eq(replayRuns.ownerUserId, actor(res).userId))
+        .orderBy(desc(replayRuns.createdAt))
+        .limit(50),
+    }),
+  );
+  app.get('/api/backtests/:id', async (req, res) => {
+    const run = await readReplay(db, actor(res), id(req));
+    res.json({
+      data: {
+        id: run.id,
+        status: run.status,
+        inputHash: run.inputHash,
+        checkpoint: run.checkpoint,
+        manifest: (run.input as { manifest: unknown }).manifest,
+        report: run.report,
+        error: run.error,
+        experimentId: run.experimentId,
+        stage: run.stage,
+        variant: run.variant,
+        windowIndex: run.windowIndex,
+      },
+    });
+  });
   app.get('/api/strategies', async (_req, res) =>
     res.json({
       data: await db

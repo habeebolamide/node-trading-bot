@@ -141,6 +141,62 @@
       "when": 1792441332605,
       "tag": "0019_paper_initial_funding_guards",
       "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1792442157565,
+      "tag": "0020_unknown_black_cat",
+      "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "7",
+      "when": 1792442157566,
+      "tag": "0021_replay_isolation",
+      "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "7",
+      "when": 1792442288124,
+      "tag": "0022_sloppy_shadowcat",
+      "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "7",
+      "when": 1792442288125,
+      "tag": "0023_funding_evidence",
+      "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1792442613579,
+      "tag": "0024_abnormal_timeslip",
+      "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1792442613580,
+      "tag": "0025_validation_and_funding_integrity",
+      "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "7",
+      "when": 1792442613581,
+      "tag": "0026_replay_evidence_guards",
+      "breakpoints": true
+    },
+    {
+      "idx": 27,
+      "version": "7",
+      "when": 1792442613582,
+      "tag": "0027_recovery_context_integrity",
+      "breakpoints": true
     }
   ]
 }

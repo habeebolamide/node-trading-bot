@@ -66,7 +66,7 @@ const server = createServer(async (req, res) => {
       JSON.stringify({
         status: 'alive',
         service: 'runtime',
-        phase: 5,
+        phase: 6,
         capabilities: [
           'public_market_data',
           'paper_execution',

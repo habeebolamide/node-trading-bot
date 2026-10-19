@@ -559,6 +559,7 @@ export class PositionManager {
           x.state === 'UNKNOWN' ||
           (x.state === 'REJECTED' && x.kind !== 'ENTRY'),
       ) &&
+      view.fault !== 'RECONCILIATION_UNCERTAIN' &&
       report.kind !== 'UNKNOWN' &&
       report.kind !== 'REJECTED'
     ) {

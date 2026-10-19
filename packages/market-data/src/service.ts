@@ -47,6 +47,25 @@ type Watch = {
   listeners: Set<(event: PriceEvent & { late: boolean }) => void>;
 };
 export class MarketDataService {
+  private statusListeners = new Set<
+    (e: {
+      marketKey: string;
+      state: string;
+      observedAt: number;
+      reason?: string;
+    }) => void
+  >();
+  onStatus(
+    listener: (e: {
+      marketKey: string;
+      state: string;
+      observedAt: number;
+      reason?: string;
+    }) => void,
+  ) {
+    this.statusListeners.add(listener);
+    return () => this.statusListeners.delete(listener);
+  }
   private watches = new Map<string, Watch>();
   private seeds = new Map<string, Promise<MarketHealth>>();
   private registration = new Map<string, Promise<Watch>>();
@@ -148,6 +167,13 @@ export class MarketDataService {
       return;
     }
     if (event.kind === 'STATUS') {
+      for (const listener of this.statusListeners)
+        listener({
+          marketKey: w.instrument.marketKey,
+          state: event.state,
+          observedAt: event.observedAt,
+          ...(event.reason ? { reason: event.reason } : {}),
+        });
       if (event.state === 'CONNECTED') {
         if (w.interruptedAt !== null) {
           const start = w.interruptedAt;

@@ -17,6 +17,7 @@ import {
   runtimeActions,
   runtimeCheckpoints,
   runtimeEvents,
+  recoveryGaps,
   audits,
   strategyVersions,
   type Database,
@@ -184,7 +185,7 @@ export class PostgresRuntimeRepository implements RuntimeRepository {
           and(eq(runtimeEvents.botId, lease.botId), eq(runtimeEvents.key, key)),
         );
       if (seen) return previous;
-      const c = reduce(previous),
+      const c = reduce(structuredClone(previous)),
         v = c.view;
       if (
         v.botId !== previous.botId ||
@@ -215,6 +216,18 @@ export class PostgresRuntimeRepository implements RuntimeRepository {
         eventTime,
         this.policy,
       );
+      if (c.kind === 'recovery.gap_open') {
+        const gap = c.details.recoveryGap as {
+          key: string;
+          startTime: number;
+          endTime: number | null;
+          coverage: Record<string, unknown>;
+        };
+        await tx
+          .insert(recoveryGaps)
+          .values({ ...gap, botId: lease.botId })
+          .onConflictDoNothing();
+      }
       const current = c.view;
       // Risk rejection replaces the tentative view before anything becomes durable.
       Object.assign(v, current);

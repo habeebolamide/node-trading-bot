@@ -81,6 +81,7 @@ export class BotRepository {
       await tx.insert(ownership).values({
         accountId: account.id,
         canonicalCoinKey: input.market.baseAsset,
+        scope: account.replayScope,
         botId: bot.id,
       });
       await tx.insert(configs).values({
