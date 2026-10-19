@@ -36,6 +36,20 @@
       "when": 1792400701531,
       "tag": "0004_market_integrity",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1792402034169,
+      "tag": "0005_volatile_vulcan",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1792402035979,
+      "tag": "0006_evaluation_integrity",
+      "breakpoints": true
     }
   ]
 }

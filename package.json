@@ -28,7 +28,9 @@
     "start:worker": "node --env-file=.env dist/apps/worker/src/main.js",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "market:seed": "tsx --env-file=.env scripts/market-seed.ts"
+    "market:seed": "tsx --env-file=.env scripts/market-seed.ts",
+    "strategies:register": "tsx --env-file=.env scripts/register-strategies.ts",
+    "strategy:preview": "tsx --env-file=.env scripts/strategy-preview.ts"
   },
   "dependencies": {
     "decimal.js": "^10.6.0",

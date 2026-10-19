@@ -1,0 +1,42 @@
+{
+  "fixtureVersion": "illustrative-history-v1",
+  "note": "Synthetic closed-candle histories; functional regression evidence, not a profitability study.",
+  "scenarios": {
+    "trend-long": {
+      "action": "PROPOSE_ENTRY",
+      "side": "LONG",
+      "reason": "TREND_CONFIRMED",
+      "entryPrice": "199.8",
+      "stopLoss": "198.6",
+      "takeProfit": "202.2"
+    },
+    "trend-short": {
+      "action": "PROPOSE_ENTRY",
+      "side": "SHORT",
+      "reason": "TREND_CONFIRMED",
+      "entryPrice": "100.2",
+      "stopLoss": "101.4",
+      "takeProfit": "97.8"
+    },
+    "trend-flat": { "action": "NO_TRADE", "reason": "WEAK_TREND" },
+    "trend-conflict": { "action": "NO_TRADE", "reason": "CONFLICTING_SIGNALS" },
+    "mean-long": {
+      "action": "PROPOSE_ENTRY",
+      "side": "LONG",
+      "reason": "MEAN_REVERSION_EXTREME",
+      "entryPrice": "88",
+      "stopLoss": "84.658723515535",
+      "takeProfit": "99.570710678"
+    },
+    "mean-short": {
+      "action": "PROPOSE_ENTRY",
+      "side": "SHORT",
+      "reason": "MEAN_REVERSION_EXTREME",
+      "entryPrice": "108",
+      "stopLoss": "110.48413362732",
+      "takeProfit": "100.570710678"
+    },
+    "mean-flat": { "action": "NO_TRADE", "reason": "NO_SETUP" },
+    "mean-trend": { "action": "NO_TRADE", "reason": "MARKET_REGIME_UNSUITABLE" }
+  }
+}

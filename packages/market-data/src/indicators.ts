@@ -112,6 +112,7 @@ export function calculateIndicator(
   input: readonly Candle[],
   request: IndicatorRequest,
   asOf: number,
+  availableAsOf: number = asOf,
 ) {
   const minimum = warmupFor(request),
     d = durations[request.timeframe];
@@ -125,7 +126,7 @@ export function calculateIndicator(
       c.timeframe !== request.timeframe ||
       c.marketKey !== key ||
       c.closeTime > asOf ||
-      c.availableAt > asOf ||
+      c.availableAt > availableAsOf ||
       (i > 0 && c.openTime !== candles[i - 1]!.closeTime)
     )
       throw Error('Indicator input has mixed, missing or future data');
@@ -164,6 +165,7 @@ export function calculateIndicator(
     name: request.name,
     timeframe: request.timeframe,
     asOf,
+    availableAsOf,
     inputsThrough: candles.at(-1)!.closeTime,
     begIndex: result.begIndex,
     outputs: result.result,

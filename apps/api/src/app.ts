@@ -6,7 +6,7 @@ import express, {
 import helmet from 'helmet';
 import { rateLimit } from 'express-rate-limit';
 import { createHash, randomUUID } from 'node:crypto';
-import { and, eq, gt, isNull } from 'drizzle-orm';
+import { and, eq, gt, isNull, desc, sql, getTableColumns } from 'drizzle-orm';
 import { z, ZodError } from 'zod';
 import {
   DomainError,
@@ -20,6 +20,7 @@ import {
   strategies,
   type Database,
   marketCheckpoints,
+  evaluations,
 } from '../../../packages/database/src/index.js';
 import {
   BotRepository,
@@ -127,6 +128,7 @@ export function createApp(db: Database, pool: Pool, log = createLogger('api')) {
           version: strategyVersions.version,
           status: strategyVersions.status,
           requirements: strategyVersions.requirements,
+          codeHash: strategyVersions.codeHash,
         })
         .from(strategyVersions)
         .innerJoin(strategies, eq(strategies.id, strategyVersions.strategyId)),
@@ -170,6 +172,53 @@ export function createApp(db: Database, pool: Pool, log = createLogger('api')) {
   app.get('/api/bots/:id', async (req, res) =>
     res.json({ data: await repo.get(actor(res), id(req)) }),
   );
+  app.get('/api/bots/:id/evaluations', async (req, res) => {
+    const bot = await repo.get(actor(res), id(req));
+    const limit = z.coerce
+      .number()
+      .int()
+      .min(1)
+      .max(100)
+      .default(20)
+      .parse(req.query.limit);
+    res.json({
+      data: await db
+        .select({
+          ...getTableColumns(evaluations),
+          snapshot: sql<unknown>`${evaluations.snapshot} #- '{context,candles}'`,
+        })
+        .from(evaluations)
+        .where(
+          and(
+            eq(evaluations.botId, bot.id),
+            eq(evaluations.accountId, bot.accountId),
+          ),
+        )
+        .orderBy(desc(evaluations.eventTime))
+        .limit(limit),
+    });
+  });
+  app.get('/api/bots/:id/evaluations/:evaluationId', async (req, res) => {
+    const bot = await repo.get(actor(res), id(req));
+    const evaluationId = z.uuid().parse(req.params.evaluationId);
+    const [evaluation] = await db
+      .select()
+      .from(evaluations)
+      .where(
+        and(
+          eq(evaluations.id, evaluationId),
+          eq(evaluations.botId, bot.id),
+          eq(evaluations.accountId, bot.accountId),
+        ),
+      );
+    if (!evaluation)
+      throw new DomainError(
+        'EVALUATION_NOT_FOUND',
+        'Evaluation not found',
+        404,
+      );
+    res.json({ data: evaluation });
+  });
   app.get('/api/bots/:id/config-versions', async (req, res) =>
     res.json({ data: await repo.history(actor(res), id(req)) }),
   );

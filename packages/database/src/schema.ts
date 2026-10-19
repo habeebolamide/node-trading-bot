@@ -310,3 +310,55 @@ export const marketCheckpoints = pgTable('market_checkpoints', {
   observedAt: millis('observed_at'),
   state: jsonb('state').notNull(),
 });
+
+export const evaluations = pgTable(
+  'strategy_evaluations',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    accountId: uuid('account_id')
+      .notNull()
+      .references(() => accounts.id),
+    botId: uuid('bot_id')
+      .notNull()
+      .references(() => bots.id),
+    strategyVersionId: uuid('strategy_version_id')
+      .notNull()
+      .references(() => strategyVersions.id),
+    configSnapshotId: uuid('config_snapshot_id')
+      .notNull()
+      .references(() => configs.id),
+    configVersion: integer('config_version').notNull(),
+    triggerType: text('trigger_type').notNull(),
+    triggerEventKey: text('trigger_event_key').notNull(),
+    decision: text('decision').notNull(),
+    reasonCode: text('reason_code').notNull(),
+    eventTime: millis('event_time'),
+    decisionTime: millis('decision_time'),
+    snapshot: jsonb('snapshot').notNull(),
+    correlationId: uuid('correlation_id').notNull(),
+  },
+  (t) => [
+    uniqueIndex('uq_strategy_eval_event').on(
+      t.botId,
+      t.strategyVersionId,
+      t.triggerType,
+      t.triggerEventKey,
+    ),
+    foreignKey({
+      columns: [t.botId, t.accountId],
+      foreignColumns: [bots.id, bots.accountId],
+    }),
+    check(
+      'evaluation_decision',
+      sql`${t.decision} IN ('LONG','SHORT','NO_TRADE')`,
+    ),
+    check(
+      'evaluation_trigger',
+      sql`${t.triggerType} IN ('CANDLE_CLOSE','MARKET_EVENT')`,
+    ),
+    check(
+      'evaluation_time',
+      sql`${t.configVersion}>0 AND ${t.eventTime}>=0 AND ${t.decisionTime}>=${t.eventTime}`,
+    ),
+  ],
+);

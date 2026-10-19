@@ -10,11 +10,13 @@ import {
 } from '../packages/database/src/index.js';
 import { configFromEnv } from '../packages/core/src/index.js';
 import { eq } from 'drizzle-orm';
+import { registerResearchStrategies } from '../packages/database/src/strategies.js';
 const email = z
   .email()
   .parse(process.env.OWNER_EMAIL ?? 'owner@localhost.test');
 const { db, pool } = connectDatabase(configFromEnv().DATABASE_URL);
 try {
+  await registerResearchStrategies(db);
   await db.transaction(async (tx) => {
     let [owner] = await tx.select().from(users).where(eq(users.email, email));
     if (!owner) [owner] = await tx.insert(users).values({ email }).returning();
