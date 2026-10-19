@@ -2,6 +2,7 @@ import {
   pgTable,
   bigint,
   boolean,
+  bigserial,
   uuid,
   text,
   timestamp,
@@ -112,8 +113,12 @@ export const bots = pgTable(
     unique('bot_account_identity').on(t.id, t.accountId),
     check('bot_mode', sql`${t.executionMode} IN ('PAPER','SIGNAL_ONLY')`),
     check(
-      'phase1_stopped',
-      sql`${t.operationalStatus} = 'STOPPED' AND ${t.tradingState} = 'IDLE'`,
+      'bot_operational_state',
+      sql`${t.operationalStatus} IN ('STOPPED','STARTING','WARMING_UP','RUNNING','PAUSED','STOP_REQUESTED','RECONCILING','RISK_SUSPENDED','ERROR')`,
+    ),
+    check(
+      'bot_trading_state',
+      sql`${t.tradingState} IN ('IDLE','PENDING_ENTRY','IN_TRADE','CLOSING','UNRESOLVED')`,
     ),
     check(
       'bot_risk_profile',
@@ -362,3 +367,214 @@ export const evaluations = pgTable(
     ),
   ],
 );
+
+export const runtimeLeases = pgTable(
+  'runtime_leases',
+  {
+    botId: uuid('bot_id')
+      .primaryKey()
+      .references(() => bots.id),
+    ownerId: uuid('owner_instance_id').notNull(),
+    token: bigint('fencing_token', { mode: 'number' }).notNull(),
+    expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+  },
+  (t) => [check('positive_fence', sql`${t.token}>0`)],
+);
+export const runtimeCommands = pgTable(
+  'runtime_commands',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    sequence: bigserial('sequence', { mode: 'number' }).notNull(),
+    botId: uuid('bot_id')
+      .notNull()
+      .references(() => bots.id),
+    accountId: uuid('account_id')
+      .notNull()
+      .references(() => accounts.id),
+    actorId: uuid('actor_id')
+      .notNull()
+      .references(() => users.id),
+    kind: text('kind').notNull(),
+    status: text('status').notNull().default('PENDING'),
+    idempotencyKey: uuid('idempotency_key').notNull(),
+    reason: text('reason').notNull(),
+    requestedAt: millis('requested_at'),
+    completedAt: bigint('completed_at', { mode: 'number' }),
+    result: jsonb('result'),
+    correlationId: uuid('correlation_id').notNull(),
+  },
+  (t) => [
+    uniqueIndex('command_idempotency').on(t.botId, t.idempotencyKey),
+    foreignKey({
+      columns: [t.botId, t.accountId],
+      foreignColumns: [bots.id, bots.accountId],
+    }),
+    check('command_kind', sql`${t.kind} IN ('START','PAUSE','RESUME','STOP')`),
+    check(
+      'command_status',
+      sql`${t.status} IN ('PENDING','APPLIED','REJECTED')`,
+    ),
+  ],
+);
+export const tradeLifecycles = pgTable(
+  'trade_lifecycles',
+  {
+    id: uuid('id').primaryKey(),
+    botId: uuid('bot_id')
+      .notNull()
+      .references(() => bots.id),
+    accountId: uuid('account_id')
+      .notNull()
+      .references(() => accounts.id),
+    evaluationId: uuid('evaluation_id')
+      .notNull()
+      .references(() => evaluations.id),
+    state: text('state').notNull(),
+    side: text('side').notNull(),
+    orderType: text('order_type').notNull(),
+    executionBackend: text('execution_backend')
+      .notNull()
+      .default('FAKE_CONTRACT'),
+    requestedQuantity: amount('requested_quantity'),
+    filledQuantity: amount('filled_quantity'),
+    closedQuantity: amount('closed_quantity'),
+    entryReference: amount('entry_reference'),
+    averageEntry: numeric('average_entry', { precision: 38, scale: 18 }),
+    initialStop: amount('initial_stop'),
+    desiredStop: amount('desired_stop'),
+    submittedStop: numeric('submitted_stop', { precision: 38, scale: 18 }),
+    confirmedStop: numeric('confirmed_stop', { precision: 38, scale: 18 }),
+    takeProfit: amount('take_profit'),
+    protectedQuantity: amount('protected_quantity'),
+    protectionRevision: integer('protection_revision').notNull(),
+    confirmedRevision: integer('confirmed_revision').notNull(),
+    protectionStatus: text('protection_status').notNull(),
+    entryTerminal: boolean('entry_terminal').notNull(),
+    expiresAt: millis('expires_at'),
+    openedAt: bigint('opened_at', { mode: 'number' }),
+    createdAt: millis('created_at'),
+    closedAt: bigint('closed_at', { mode: 'number' }),
+    closeReason: text('close_reason'),
+    closeGeneration: integer('close_generation').notNull(),
+    pendingCancelReason: text('pending_cancel_reason'),
+    trailingDistance: numeric('trailing_distance', {
+      precision: 38,
+      scale: 18,
+    }),
+    policy: jsonb('policy').notNull(),
+  },
+  (t) => [
+    uniqueIndex('one_trade_per_evaluation').on(t.evaluationId),
+    uniqueIndex('one_unresolved_lifecycle')
+      .on(t.botId)
+      .where(
+        sql`${t.state} IN ('PENDING_ENTRY','OPEN','CLOSING','UNRESOLVED')`,
+      ),
+    foreignKey({
+      columns: [t.botId, t.accountId],
+      foreignColumns: [bots.id, bots.accountId],
+    }),
+    check('trade_backend', sql`${t.executionBackend}='FAKE_CONTRACT'`),
+    check(
+      'trade_state',
+      sql`${t.state} IN ('PENDING_ENTRY','OPEN','CLOSING','UNRESOLVED','CLOSED','CANCELLED','EXPIRED')`,
+    ),
+    check('trade_side', sql`${t.side} IN ('LONG','SHORT')`),
+    check('trade_order_type', sql`${t.orderType} IN ('MARKET','LIMIT')`),
+    check(
+      'trade_quantities',
+      sql`${t.requestedQuantity}>0 AND ${t.filledQuantity}>=0 AND ${t.filledQuantity}<=${t.requestedQuantity} AND ${t.closedQuantity}>=0 AND ${t.closedQuantity}<=${t.filledQuantity} AND ${t.protectedQuantity}>=0 AND ${t.protectedQuantity}<=${t.filledQuantity}-${t.closedQuantity}`,
+    ),
+    check(
+      'trade_prices',
+      sql`${t.entryReference}>0 AND ${t.initialStop}>0 AND ${t.desiredStop}>0 AND ${t.takeProfit}>0 AND (${t.averageEntry} IS NULL OR ${t.averageEntry}>0) AND (${t.confirmedStop} IS NULL OR ${t.confirmedStop}>0)`,
+    ),
+    check(
+      'protection_status',
+      sql`${t.protectionStatus} IN ('UNCONFIRMED','REQUESTED','CONFIRMED','UNKNOWN')`,
+    ),
+  ],
+);
+export const runtimeActions = pgTable(
+  'runtime_actions',
+  {
+    id: uuid('id').primaryKey(),
+    botId: uuid('bot_id')
+      .notNull()
+      .references(() => bots.id),
+    tradeId: uuid('trade_id')
+      .notNull()
+      .references(() => tradeLifecycles.id),
+    key: text('idempotency_key').notNull(),
+    kind: text('kind').notNull(),
+    state: text('state').notNull(),
+    quantity: amount('quantity'),
+    price: numeric('price', { precision: 38, scale: 18 }),
+    stopPrice: numeric('stop_price', { precision: 38, scale: 18 }),
+    takeProfit: numeric('take_profit', { precision: 38, scale: 18 }),
+    revision: integer('revision').notNull(),
+    reason: text('reason').notNull(),
+    createdAt: millis('created_at'),
+  },
+  (t) => [
+    uniqueIndex('runtime_action_idempotency').on(t.botId, t.key),
+    check(
+      'runtime_action_kind',
+      sql`${t.kind} IN ('ENTRY','CANCEL_ENTRY','CLOSE','PROTECT','AMEND_STOP')`,
+    ),
+    check(
+      'runtime_action_state',
+      sql`${t.state} IN ('CREATED','SUBMITTING','OPEN','CONFIRMED','FILLED','CANCELLED','REJECTED','UNKNOWN')`,
+    ),
+    check('runtime_action_qty', sql`${t.quantity}>=0`),
+  ],
+);
+export const runtimeCheckpoints = pgTable(
+  'runtime_checkpoints',
+  {
+    botId: uuid('bot_id')
+      .primaryKey()
+      .references(() => bots.id),
+    desired: text('desired').notNull(),
+    lastPriceTime: millis('last_price_time'),
+    lastCandleTime: millis('last_candle_time'),
+    lastEvaluationId: uuid('last_evaluation_id').references(
+      () => evaluations.id,
+    ),
+    fault: text('fault'),
+    updatedAt: millis('updated_at'),
+  },
+  (t) => [
+    check(
+      'runtime_desired',
+      sql`${t.desired} IN ('RUNNING','PAUSED','STOPPED')`,
+    ),
+  ],
+);
+export const runtimeEvents = pgTable(
+  'runtime_events',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    botId: uuid('bot_id')
+      .notNull()
+      .references(() => bots.id),
+    key: text('event_key').notNull(),
+    kind: text('kind').notNull(),
+    eventTime: millis('event_time'),
+    fencingToken: bigint('fencing_token', { mode: 'number' }).notNull(),
+    details: jsonb('details').notNull(),
+  },
+  (t) => [uniqueIndex('runtime_event_idempotency').on(t.botId, t.key)],
+);
+export const fakeReports = pgTable('fake_execution_reports', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  sequence: bigserial('sequence', { mode: 'number' }).notNull(),
+  botId: uuid('bot_id')
+    .notNull()
+    .references(() => bots.id),
+  actionId: uuid('action_id')
+    .notNull()
+    .references(() => runtimeActions.id),
+  eventKey: text('event_key').notNull().unique(),
+  payload: jsonb('payload').notNull(),
+});

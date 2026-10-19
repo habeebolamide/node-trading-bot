@@ -1,6 +1,6 @@
 # Strategy trading platform
 
-Paper-first, rule-based trading platform. Phases 1–3 implement configuration, persistence, public market data and deterministic research strategies; **trading is not active**. The implementation specification is [docs/prd.md](docs/prd.md), with the authoritative phase sequence in Section 23.
+Paper-first, rule-based trading platform. Phases 1–4 implement configuration, market data, deterministic strategies and a durable runtime against a fake execution contract; **economic PAPER/LIVE trading is not active**. The implementation specification is [docs/prd.md](docs/prd.md), with the authoritative phase sequence in Section 23.
 
 ## Requirements and setup
 
@@ -43,7 +43,7 @@ npm run dev:worker
 npm run dev:web
 ```
 
-API: `http://127.0.0.1:3000`; runtime health: `3001`; worker health: `3002`; Vite: `5173`. API restart does not restart the other processes. Runtime hosts optional public-market-data subscriptions (empty watchlist by default); worker remains a scaffold. Liveness returns 200; trading readiness returns **503**. They do not execute trades. See [Phase 2 setup](docs/phase-2.md) for seeding and continuous data monitoring. API readiness checks its database schema and advertises configuration capability only.
+API: `http://127.0.0.1:3000`; runtime health: `3001`; worker health: `3002`; Vite: `5173`. API restart does not restart the other processes. Runtime processes durable bot commands, strategy-owned public feeds and FAKE_CONTRACT lifecycles; worker remains a scaffold. Liveness returns 200; paper-trading readiness returns **503**. They do not submit exchange orders or calculate paper fills/P&L. See [Phase 2 setup](docs/phase-2.md) for seeding and continuous data monitoring. API readiness checks its database schema and advertises configuration capability only.
 
 ```sh
 npm run check
@@ -59,20 +59,22 @@ Built entrypoints are runnable independently with `npm run start:api`, `npm run 
 
 All `/api` routes require `Authorization: Bearer <token>`. OWNER can read/write its portfolio; VIEWER can read it. Health routes are public. Authentication uses headers rather than cookies; there is no cookie session or browser token storage yet. Responses carry server-generated correlation IDs. JSON financial values and percentages are strings.
 
-| Route                                         | Behavior                                                       |
-| --------------------------------------------- | -------------------------------------------------------------- |
-| `GET /health/live`                            | API process liveness                                           |
-| `GET /health/ready`                           | API schema/database readiness                                  |
-| `GET /api/market-data/health`                 | Persisted market-data health with stale-projection guards      |
-| `GET /api/account`                            | Authorized synthetic portfolio                                 |
-| `GET /api/strategies`                         | Registry versions and DRAFT status                             |
-| `GET /api/bots`                               | Own bots                                                       |
-| `POST /api/bots`                              | Create STOPPED/IDLE PAPER or SIGNAL_ONLY bot                   |
-| `GET /api/bots/:id`                           | Fetch own bot                                                  |
-| `PATCH /api/bots/:id`                         | Update name/target allocation with expected version and reason |
-| `GET /api/bots/:id/evaluations`               | Latest immutable evaluation metadata and indicators            |
-| `GET /api/bots/:id/evaluations/:evaluationId` | Full evaluation snapshot and exact inputs                      |
-| `GET /api/bots/:id/config-versions`           | Immutable configuration history                                |
+| Route                                                    | Behavior                                                       |
+| -------------------------------------------------------- | -------------------------------------------------------------- |
+| `GET /health/live`                                       | API process liveness                                           |
+| `GET /health/ready`                                      | API schema/database readiness                                  |
+| `GET /api/market-data/health`                            | Persisted market-data health with stale-projection guards      |
+| `GET /api/account`                                       | Authorized synthetic portfolio                                 |
+| `GET /api/strategies`                                    | Registry versions and DRAFT status                             |
+| `GET /api/bots`                                          | Own bots                                                       |
+| `POST /api/bots`                                         | Create STOPPED/IDLE PAPER or SIGNAL_ONLY bot                   |
+| `GET /api/bots/:id`                                      | Fetch own bot                                                  |
+| `PATCH /api/bots/:id`                                    | Update name/target allocation with expected version and reason |
+| `POST /api/bots/:id/start`, `/pause`, `/resume`, `/stop` | Queue authorized, idempotent runtime commands (202)            |
+| `GET /api/bots/:id/runtime`                              | Fake backend, actual states, commands and lifecycle evidence   |
+| `GET /api/bots/:id/evaluations`                          | Latest immutable evaluation metadata and indicators            |
+| `GET /api/bots/:id/evaluations/:evaluationId`            | Full evaluation snapshot and exact inputs                      |
+| `GET /api/bots/:id/config-versions`                      | Immutable configuration history                                |
 
 Create body (replace `strategyVersionId` using the registry response):
 
@@ -102,18 +104,19 @@ Update body:
 }
 ```
 
-A stale version, existing coin owner or allocation conflict returns 409. Invalid input returns 400; unauthorized 401; forbidden 403; absent or foreign bot 404. LIVE and start/stop endpoints are unavailable in this phase. SIGNAL_ONLY requires zero allocation.
+A stale version, existing coin owner or allocation conflict returns 409. Invalid input returns 400; unauthorized 401; forbidden 403; absent or foreign bot 404. LIVE remains unavailable; start/pause/resume/stop are durable fake-runtime commands with required idempotency keys and reasons (see Phase 4). SIGNAL_ONLY requires zero allocation.
 
 ## Layout
 
 - `apps/api`: Express API and header-token authorization.
-- `apps/runtime`: independent public-market-data process; `apps/worker`: independent lifecycle/health scaffold.
+- `apps/runtime`: independent public-market-data and fake-contract runtime process; `apps/worker`: independent lifecycle/health scaffold.
 - `apps/web`: React/Vite scaffold; dashboard arrives in Phase 7.
 - `packages/core`: validation, canonical market identities, shared states, clock/event contracts, logging.
 - `packages/database`: Drizzle schema, SQL migrations, transactional bot and candle repositories.
 - `packages/market-data`: public Bybit REST/WebSocket, history seeding, health gates and native TA-Lib.
+- `packages/runtime`: serialized runtime, position management and explicit execution contracts.
 - `packages/strategies`: pure versioned research definitions, closed-candle context, deterministic evaluation and immutable evidence.
 - `tests`: deterministic validation, real PostgreSQL domain tests, process-isolation tests.
-- `docs/phase-1.md`, `docs/phase-2.md`, `docs/phase-3.md`: decisions, verification and deferred work.
+- `docs/phase-1.md`, `docs/phase-2.md`, `docs/phase-3.md`, `docs/phase-4.md`: decisions, verification and deferred work.
 
-See [Phase 3 setup and research rules](docs/phase-3.md) for `npm run strategies:register` and offline `npm run strategy:preview`. Bot scheduling and execution remain future phases.
+See [Phase 3 setup and research rules](docs/phase-3.md) for `npm run strategies:register` and offline `npm run strategy:preview`. See [Phase 4 controls and limits](docs/phase-4.md) for bot scheduling and fake execution. Economic paper fills, risk and ledgers arrive in Phase 5.

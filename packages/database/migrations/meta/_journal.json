@@ -50,6 +50,34 @@
       "when": 1792402035979,
       "tag": "0006_evaluation_integrity",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1792439262664,
+      "tag": "0007_tiny_thunderbolt_ross",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1792439264511,
+      "tag": "0008_runtime_integrity",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1792439807424,
+      "tag": "0009_runtime_state_guards",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1792440081089,
+      "tag": "0010_runtime_action_exclusivity",
+      "breakpoints": true
     }
   ]
 }

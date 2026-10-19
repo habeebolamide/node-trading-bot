@@ -1,17 +1,22 @@
-import { and, eq } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import {
   bots,
+  runtimeLeases,
   configs,
   strategyVersions,
   evaluations,
   type Database,
 } from './index.js';
+import type { Lease } from '../../runtime/src/contracts.js';
 import type {
   EvaluationRecord,
   EvaluationRepository,
 } from '../../strategies/src/contracts.js';
 export class PostgresEvaluationRepository implements EvaluationRepository {
-  constructor(private db: Database) {}
+  constructor(
+    private db: Database,
+    private lease?: Lease,
+  ) {}
   async find(
     botId: string,
     strategyVersionId: string,
@@ -37,6 +42,26 @@ export class PostgresEvaluationRepository implements EvaluationRepository {
   }
   async insert(record: Omit<EvaluationRecord, 'id'>) {
     return this.db.transaction(async (tx) => {
+      if (this.lease) {
+        const lease = this.lease;
+        const [owner] = await tx
+          .select()
+          .from(runtimeLeases)
+          .where(
+            and(
+              eq(runtimeLeases.botId, lease.botId),
+              eq(runtimeLeases.ownerId, lease.ownerId),
+              eq(runtimeLeases.token, lease.token),
+              sql`${runtimeLeases.expiresAt}>clock_timestamp()`,
+            ),
+          )
+          .for('update');
+        if (!owner || lease.botId !== record.botId)
+          throw Error('FENCED: evaluation owner changed');
+        await tx.execute(
+          sql`select set_config('platform.runtime_bot',${lease.botId},true),set_config('platform.runtime_owner',${lease.ownerId},true),set_config('platform.runtime_fence',${String(lease.token)},true)`,
+        );
+      }
       const [bot] = await tx
         .select()
         .from(bots)

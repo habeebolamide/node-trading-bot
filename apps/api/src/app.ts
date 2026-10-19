@@ -27,9 +27,16 @@ import {
   type Actor,
 } from '../../../packages/database/src/bots.js';
 import type { Pool } from 'pg';
+import { RuntimeControlRepository } from '../../../packages/database/src/runtime.js';
+import {
+  runtimeCommands,
+  runtimeEvents,
+  tradeLifecycles,
+} from '../../../packages/database/src/index.js';
 export function createApp(db: Database, pool: Pool, log = createLogger('api')) {
   const app = express();
   const repo = new BotRepository(db);
+  const controls = new RuntimeControlRepository(db);
   app.disable('x-powered-by');
   app.use(helmet());
   app.use((req, res, next) => {
@@ -172,6 +179,65 @@ export function createApp(db: Database, pool: Pool, log = createLogger('api')) {
   app.get('/api/bots/:id', async (req, res) =>
     res.json({ data: await repo.get(actor(res), id(req)) }),
   );
+  for (const [path, kind] of [
+    ['start', 'START'],
+    ['pause', 'PAUSE'],
+    ['resume', 'RESUME'],
+    ['stop', 'STOP'],
+  ] as const)
+    app.post(`/api/bots/:id/${path}`, async (req, res) => {
+      const key = z.uuid().parse(req.headers['idempotency-key']);
+      const body = z
+        .object({ reason: z.string().trim().min(1).max(500) })
+        .strict()
+        .parse(req.body);
+      const command = await controls.enqueue(
+        actor(res),
+        id(req),
+        kind,
+        key,
+        body.reason,
+        res.locals.correlationId,
+      );
+      res.status(202).json({
+        data: command,
+        executionBackend: 'FAKE_CONTRACT',
+        commandProcessed: command.status !== 'PENDING',
+      });
+    });
+  app.get('/api/bots/:id/runtime', async (req, res) => {
+    const bot = await repo.get(actor(res), id(req));
+    const [commands, trades, events] = await Promise.all([
+      db
+        .select()
+        .from(runtimeCommands)
+        .where(eq(runtimeCommands.botId, bot.id))
+        .orderBy(desc(runtimeCommands.sequence))
+        .limit(20),
+      db
+        .select()
+        .from(tradeLifecycles)
+        .where(eq(tradeLifecycles.botId, bot.id))
+        .orderBy(desc(tradeLifecycles.createdAt))
+        .limit(20),
+      db
+        .select()
+        .from(runtimeEvents)
+        .where(eq(runtimeEvents.botId, bot.id))
+        .orderBy(desc(runtimeEvents.eventTime))
+        .limit(50),
+    ]);
+    res.json({
+      data: {
+        executionBackend: 'FAKE_CONTRACT',
+        operationalStatus: bot.operationalStatus,
+        tradingState: bot.tradingState,
+        commands,
+        trades,
+        events,
+      },
+    });
+  });
   app.get('/api/bots/:id/evaluations', async (req, res) => {
     const bot = await repo.get(actor(res), id(req));
     const limit = z.coerce

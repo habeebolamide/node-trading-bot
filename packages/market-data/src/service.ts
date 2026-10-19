@@ -31,6 +31,7 @@ export type MarketHealth = {
   >;
 };
 type Watch = {
+  candleListeners: Set<(candle: import('./contracts.js').Candle) => void>;
   interruptedAt: number | null;
   fault: string | null;
   integrityFault: string | null;
@@ -72,6 +73,7 @@ export class MarketDataService {
       pending = (async () => {
         const instrument = await this.instrument(market),
           watch: Watch = {
+            candleListeners: new Set(),
             interruptedAt: null,
             fault: null,
             integrityFault: null,
@@ -190,6 +192,16 @@ export class MarketDataService {
         await this.repository.store([candleSchema.parse(event.candle)]);
         await this.checkSeries(w, event.candle.timeframe);
         await this.persist(w);
+        for (const listener of w.candleListeners)
+          try {
+            const result = listener(event.candle) as unknown;
+            if (result instanceof Promise)
+              void result.catch(() => {
+                w.integrityFault = 'Candle consumer failed';
+              });
+          } catch {
+            w.integrityFault = 'Candle consumer failed';
+          }
       })
       .catch((error: unknown) => {
         w.health.state = 'DEGRADED';
@@ -352,6 +364,15 @@ export class MarketDataService {
     const w = await this.watch(market, requirements);
     w.listeners.add(listener);
     return () => w.listeners.delete(listener);
+  }
+  async onCandle(
+    market: Market,
+    requirements: DataRequirements,
+    listener: (candle: import('./contracts.js').Candle) => void,
+  ) {
+    const w = await this.watch(market, requirements);
+    w.candleListeners.add(listener);
+    return () => w.candleListeners.delete(listener);
   }
   health(key: string) {
     const w = this.watches.get(key);

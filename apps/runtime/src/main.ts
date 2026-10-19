@@ -1,4 +1,5 @@
 import { createServer } from 'node:http';
+import { RuntimeSupervisor } from './supervisor.js';
 import {
   configFromEnv,
   createLogger,
@@ -19,6 +20,19 @@ const service = new MarketDataService(
   new PostgresCandleRepository(db),
   undefined,
   marketConfig.heartbeatMaxAgeMs,
+);
+const supervisor = new RuntimeSupervisor(db, service, log);
+const runtimeTimer = setInterval(
+  () => void supervisor.poll().catch(() => log.warn('runtime poll failed')),
+  1000,
+);
+void supervisor.poll().catch(() => log.warn('runtime startup poll failed'));
+const leaseTimer = setInterval(
+  () =>
+    void supervisor
+      .renew()
+      .catch(() => log.warn('runtime lease renewal failed')),
+  5000,
 );
 let stopping = false,
   busy = false;
@@ -52,8 +66,9 @@ const server = createServer(async (req, res) => {
       JSON.stringify({
         status: 'alive',
         service: 'runtime',
-        phase: 2,
-        capabilities: ['public_market_data'],
+        phase: 4,
+        capabilities: ['public_market_data', 'fake_contract_runtime'],
+        runtime: supervisor.health(),
         acceptsNewEntries: false,
       }),
     );
@@ -64,7 +79,9 @@ const server = createServer(async (req, res) => {
     res.end(
       JSON.stringify({
         status: 'not_ready',
-        reason: 'Strategy and trading runtime arrive in later phases',
+        reason:
+          'FAKE_CONTRACT runtime; paper execution and risk management require Phase 5',
+        runtime: supervisor.health(),
         marketData: service.allHealth(),
         acceptsNewEntries: false,
       }),
@@ -81,10 +98,14 @@ for (const signal of ['SIGTERM', 'SIGINT'])
     if (stopping) return;
     stopping = true;
     clearInterval(timer);
+    clearInterval(runtimeTimer);
+    clearInterval(leaseTimer);
+    const closing = supervisor.close();
     service.close();
     const timeout = setTimeout(() => process.exit(1), 10000);
     timeout.unref();
     server.close(async () => {
+      await closing;
       await service.drain();
       await pool.end();
       clearTimeout(timeout);

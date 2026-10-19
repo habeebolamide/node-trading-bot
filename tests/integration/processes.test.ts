@@ -70,6 +70,9 @@ it('API restart preserves stored config and leaves runtime/worker processes aliv
   const { db, pool } = connectDatabase(url!);
   try {
     await migrateDatabase(url!);
+    await pool.query(
+      'TRUNCATE audit_events,bot_config_versions,coin_ownership,bots,api_tokens,exchange_accounts,strategy_versions,strategies,app_users CASCADE',
+    );
     const suffix = randomBytes(5).toString('hex');
     const [owner] = await db
       .insert(users)
