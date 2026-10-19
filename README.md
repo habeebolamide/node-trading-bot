@@ -1,10 +1,11 @@
 # Strategy trading platform
 
-Paper-first, rule-based trading platform. Phase 1 implements configuration and persistence; **trading is not active**. The implementation specification is [docs/prd.md](docs/prd.md), with the authoritative phase sequence in Section 23.
+Paper-first, rule-based trading platform. Phases 1–2 implement configuration, persistence and public market data; **trading is not active**. The implementation specification is [docs/prd.md](docs/prd.md), with the authoritative phase sequence in Section 23.
 
 ## Requirements and setup
 
 - Node **22.23.2** (pinned in `.nvmrc`), npm 10+, and native or managed PostgreSQL 17+.
+- Native C/C++ build tools, Python and make for TA-Lib (`xcode-select --install` on macOS; `build-essential` and `python3` on Debian/Ubuntu).
 - No Docker, exchange credentials, Redis, or Telegram credentials required.
 
 ```sh
@@ -42,7 +43,7 @@ npm run dev:worker
 npm run dev:web
 ```
 
-API: `http://127.0.0.1:3000`; runtime health: `3001`; worker health: `3002`; Vite: `5173`. API restart does not restart the other processes. Runtime/worker are executable scaffolds: liveness returns 200, readiness returns **503** with an explicit explanation. They do not subscribe to markets or execute jobs/trades. API readiness checks its database schema and advertises configuration capability only.
+API: `http://127.0.0.1:3000`; runtime health: `3001`; worker health: `3002`; Vite: `5173`. API restart does not restart the other processes. Runtime hosts optional public-market-data subscriptions (empty watchlist by default); worker remains a scaffold. Liveness returns 200; trading readiness returns **503**. They do not execute trades. See [Phase 2 setup](docs/phase-2.md) for seeding and continuous data monitoring. API readiness checks its database schema and advertises configuration capability only.
 
 ```sh
 npm run check
@@ -62,6 +63,7 @@ All `/api` routes require `Authorization: Bearer <token>`. OWNER can read/write 
 | ----------------------------------- | -------------------------------------------------------------- |
 | `GET /health/live`                  | API process liveness                                           |
 | `GET /health/ready`                 | API schema/database readiness                                  |
+| `GET /api/market-data/health`       | Persisted market-data health with stale-projection guards      |
 | `GET /api/account`                  | Authorized synthetic portfolio                                 |
 | `GET /api/strategies`               | Registry versions and DRAFT status                             |
 | `GET /api/bots`                     | Own bots                                                       |
@@ -103,9 +105,10 @@ A stale version, existing coin owner or allocation conflict returns 409. Invalid
 ## Layout
 
 - `apps/api`: Express API and header-token authorization.
-- `apps/runtime`, `apps/worker`: independent lifecycle/health scaffolds.
+- `apps/runtime`: independent public-market-data process; `apps/worker`: independent lifecycle/health scaffold.
 - `apps/web`: React/Vite scaffold; dashboard arrives in Phase 7.
 - `packages/core`: validation, canonical market identities, shared states, clock/event contracts, logging.
-- `packages/database`: Drizzle schema, SQL migrations and transactional bot repository.
+- `packages/database`: Drizzle schema, SQL migrations, transactional bot and candle repositories.
+- `packages/market-data`: public Bybit REST/WebSocket, history seeding, health gates and native TA-Lib.
 - `tests`: deterministic validation, real PostgreSQL domain tests, process-isolation tests.
-- `docs/phase-1.md`: decisions, verification and deferred work.
+- `docs/phase-1.md`, `docs/phase-2.md`: decisions, verification and deferred work.

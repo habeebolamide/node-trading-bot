@@ -27,7 +27,8 @@
     "start:runtime": "node --env-file=.env dist/apps/runtime/src/main.js",
     "start:worker": "node --env-file=.env dist/apps/worker/src/main.js",
     "format": "prettier --write .",
-    "format:check": "prettier --check ."
+    "format:check": "prettier --check .",
+    "market:seed": "tsx --env-file=.env scripts/market-seed.ts"
   },
   "dependencies": {
     "decimal.js": "^10.6.0",
@@ -37,6 +38,8 @@
     "helmet": "^8.1.0",
     "pg": "^8.16.3",
     "pino": "^10.0.0",
+    "talib": "1.1.6",
+    "ws": "^8.22.0",
     "zod": "^4.1.12"
   },
   "devDependencies": {
@@ -46,12 +49,13 @@
     "@types/react": "^19.2.0",
     "@types/react-dom": "^19.2.0",
     "@types/supertest": "^6.0.3",
+    "@types/ws": "^8.18.2",
     "drizzle-kit": "^0.31.11",
+    "prettier": "^3.6.2",
     "supertest": "^7.1.4",
     "tsx": "^4.20.6",
     "typescript": "^5.9.3",
-    "vitest": "^5.0.5",
-    "prettier": "^3.6.2"
+    "vitest": "^5.0.5"
   },
   "overrides": {
     "@esbuild-kit/core-utils": {

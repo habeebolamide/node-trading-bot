@@ -19,6 +19,7 @@ import {
   strategyVersions,
   strategies,
   type Database,
+  marketCheckpoints,
 } from '../../../packages/database/src/index.js';
 import {
   BotRepository,
@@ -131,6 +132,26 @@ export function createApp(db: Database, pool: Pool, log = createLogger('api')) {
         .innerJoin(strategies, eq(strategies.id, strategyVersions.strategyId)),
     }),
   );
+  app.get('/api/market-data/health', async (_req, res) => {
+    const rows = await db.select().from(marketCheckpoints);
+    const now = Date.now();
+    res.json({
+      data: rows
+        .filter((r) => r.streamKey.endsWith(':health'))
+        .map((row) => {
+          const state = row.state as Record<string, unknown>;
+          // Projections expire even if a dead runtime cannot update their persisted state.
+          const stale = now - row.observedAt > 15000;
+          return {
+            ...state,
+            canEvaluate: !stale && state.canEvaluate === true,
+            state: stale ? 'DEGRADED' : state.state,
+            reason: stale ? 'Runtime health projection stale' : state.reason,
+            projectionObservedAt: row.observedAt,
+          };
+        }),
+    });
+  });
   app.get('/api/account', async (_req, res) =>
     res.json({ data: await repo.account(actor(res)) }),
   );

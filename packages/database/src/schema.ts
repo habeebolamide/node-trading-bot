@@ -1,5 +1,7 @@
 import {
   pgTable,
+  bigint,
+  boolean,
   uuid,
   text,
   timestamp,
@@ -193,4 +195,118 @@ export const audits = pgTable('audit_events', {
   correlationId: uuid('correlation_id').notNull(),
   details: jsonb('details').notNull(),
   createdAt: time('created_at'),
+});
+
+const millis = (name: string) => bigint(name, { mode: 'number' }).notNull();
+const amount = (name: string) =>
+  numeric(name, { precision: 38, scale: 18 }).notNull();
+export const instruments = pgTable(
+  'market_instruments',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    canonicalMarketId: text('canonical_market_id').notNull().unique(),
+    exchange: text('exchange').notNull(),
+    marketType: text('market_type').notNull(),
+    symbol: text('symbol').notNull(),
+    baseAsset: text('base_asset').notNull(),
+    quoteAsset: text('quote_asset').notNull(),
+    specVersion: text('spec_version').notNull(),
+    spec: jsonb('spec_json').notNull(),
+    verifiedAt: millis('verified_at'),
+    expiresAt: millis('expires_at'),
+  },
+  (t) => [
+    check(
+      'instrument_market_type',
+      sql`${t.marketType} IN ('SPOT','LINEAR_PERPETUAL')`,
+    ),
+    check('instrument_expiry', sql`${t.expiresAt}>${t.verifiedAt}`),
+  ],
+);
+export const instrumentVersions = pgTable(
+  'instrument_versions',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    instrumentId: uuid('instrument_id')
+      .notNull()
+      .references(() => instruments.id),
+    specVersion: text('spec_version').notNull(),
+    spec: jsonb('spec_json').notNull(),
+    observedAt: millis('observed_at'),
+  },
+  (t) => [
+    uniqueIndex('instrument_spec_unique').on(t.instrumentId, t.specVersion),
+  ],
+);
+export const candles = pgTable(
+  'candles',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    instrumentId: uuid('instrument_id')
+      .notNull()
+      .references(() => instruments.id),
+    timeframe: text('timeframe').notNull(),
+    openTime: millis('open_time'),
+    closeTime: millis('close_time'),
+    open: amount('open'),
+    high: amount('high'),
+    low: amount('low'),
+    close: amount('close'),
+    volume: amount('volume'),
+    isClosed: boolean('is_closed').notNull(),
+    source: text('source').notNull(),
+    observedAt: millis('observed_at'),
+    availableAt: millis('available_at'),
+  },
+  (t) => [
+    uniqueIndex('candle_identity').on(t.instrumentId, t.timeframe, t.openTime),
+    check(
+      'candle_closed_ohlc',
+      sql`${t.isClosed}=true AND ${t.open}>0 AND ${t.low}>0 AND ${t.volume}>=0 AND ${t.high}>=greatest(${t.open},${t.close}) AND ${t.low}<=least(${t.open},${t.close}) AND ${t.high}>=${t.low}`,
+    ),
+    check(
+      'candle_time_availability',
+      sql`${t.openTime}>=0 AND ${t.closeTime}<=${t.availableAt} AND ${t.availableAt}<=${t.observedAt}`,
+    ),
+    check(
+      'candle_timeframe_alignment',
+      sql`CASE ${t.timeframe} WHEN '1m' THEN ${t.closeTime}-${t.openTime}=60000 AND ${t.openTime}%60000=0 WHEN '5m' THEN ${t.closeTime}-${t.openTime}=300000 AND ${t.openTime}%300000=0 WHEN '15m' THEN ${t.closeTime}-${t.openTime}=900000 AND ${t.openTime}%900000=0 WHEN '1h' THEN ${t.closeTime}-${t.openTime}=3600000 AND ${t.openTime}%3600000=0 WHEN '4h' THEN ${t.closeTime}-${t.openTime}=14400000 AND ${t.openTime}%14400000=0 ELSE false END`,
+    ),
+  ],
+);
+export const marketGaps = pgTable(
+  'market_data_gaps',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    instrumentId: uuid('instrument_id')
+      .notNull()
+      .references(() => instruments.id),
+    stream: text('stream').notNull(),
+    startTime: millis('start_time'),
+    endTime: millis('end_time'),
+    status: text('status').notNull(),
+    evidence: jsonb('evidence').notNull(),
+    observedAt: millis('observed_at'),
+    resolvedAt: bigint('resolved_at', { mode: 'number' }),
+  },
+  (t) => [
+    uniqueIndex('market_gap_identity').on(
+      t.instrumentId,
+      t.stream,
+      t.startTime,
+      t.endTime,
+    ),
+    check('gap_status', sql`${t.status} IN ('OPEN','RESOLVED','UNCERTAIN')`),
+    check('gap_range', sql`${t.endTime}>${t.startTime}`),
+  ],
+);
+export const marketCheckpoints = pgTable('market_checkpoints', {
+  streamKey: text('stream_key').primaryKey(),
+  instrumentId: uuid('instrument_id')
+    .notNull()
+    .references(() => instruments.id),
+  lastOpenTime: bigint('last_open_time', { mode: 'number' }),
+  lastEventTime: bigint('last_event_time', { mode: 'number' }),
+  observedAt: millis('observed_at'),
+  state: jsonb('state').notNull(),
 });
