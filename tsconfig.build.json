@@ -1,0 +1,15 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "outDir": "dist",
+    "sourceMap": true
+  },
+  "include": [
+    "apps/api/**/*.ts",
+    "apps/runtime/**/*.ts",
+    "apps/worker/**/*.ts",
+    "packages/**/*.ts",
+    "scripts/**/*.ts"
+  ],
+  "exclude": ["tests", "node_modules"]
+}

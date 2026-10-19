@@ -1,0 +1,61 @@
+{
+  "name": "strategy-platform",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.12.0 <23"
+  },
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev:api": "tsx --env-file=.env apps/api/src/main.ts",
+    "dev:runtime": "tsx --env-file=.env apps/runtime/src/main.ts",
+    "dev:worker": "tsx --env-file=.env apps/worker/src/main.ts",
+    "dev:web": "npm run dev -w @platform/web",
+    "build": "tsc -p tsconfig.build.json && node scripts/copy-assets.mjs && npm run build -w @platform/web",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run tests/unit",
+    "test:integration": "vitest run tests/integration",
+    "check": "npm run typecheck && npm test && npm run test:integration && npm run build",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "tsx --env-file=.env packages/database/src/migrate.ts",
+    "bootstrap": "tsx --env-file=.env scripts/bootstrap.ts",
+    "start:api": "node --env-file=.env dist/apps/api/src/main.js",
+    "start:runtime": "node --env-file=.env dist/apps/runtime/src/main.js",
+    "start:worker": "node --env-file=.env dist/apps/worker/src/main.js",
+    "format": "prettier --write .",
+    "format:check": "prettier --check ."
+  },
+  "dependencies": {
+    "decimal.js": "^10.6.0",
+    "drizzle-orm": "^0.45.4",
+    "express": "^5.1.0",
+    "express-rate-limit": "^8.1.0",
+    "helmet": "^8.1.0",
+    "pg": "^8.16.3",
+    "pino": "^10.0.0",
+    "zod": "^4.1.12"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.3",
+    "@types/node": "^22.18.12",
+    "@types/pg": "^8.15.5",
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "@types/supertest": "^6.0.3",
+    "drizzle-kit": "^0.31.11",
+    "supertest": "^7.1.4",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3",
+    "vitest": "^5.0.5",
+    "prettier": "^3.6.2"
+  },
+  "overrides": {
+    "@esbuild-kit/core-utils": {
+      "esbuild": "^0.25.12"
+    }
+  }
+}
