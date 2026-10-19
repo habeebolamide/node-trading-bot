@@ -1,3 +1,4 @@
+import { PaperCapitalRepository } from '../../../packages/database/src/capital.js';
 import express, {
   type Request,
   type Response,
@@ -201,7 +202,7 @@ export function createApp(db: Database, pool: Pool, log = createLogger('api')) {
       );
       res.status(202).json({
         data: command,
-        executionBackend: 'FAKE_CONTRACT',
+        executionBackend: 'PAPER',
         commandProcessed: command.status !== 'PENDING',
       });
     });
@@ -229,12 +230,41 @@ export function createApp(db: Database, pool: Pool, log = createLogger('api')) {
     ]);
     res.json({
       data: {
-        executionBackend: 'FAKE_CONTRACT',
+        executionBackend:
+          trades.find((t) =>
+            ['PENDING_ENTRY', 'OPEN', 'CLOSING', 'UNRESOLVED'].includes(
+              t.state,
+            ),
+          )?.executionBackend ?? 'PAPER',
         operationalStatus: bot.operationalStatus,
         tradingState: bot.tradingState,
         commands,
         trades,
         events,
+      },
+    });
+  });
+  app.post('/api/bots/:id/initial-funding', async (req, res) => {
+    const body = z
+      .object({ reason: z.string().trim().min(1).max(500) })
+      .strict()
+      .parse(req.body);
+    res.json({
+      data: await new PaperCapitalRepository(db).fundInitial(
+        actor(res),
+        id(req),
+        body.reason,
+        res.locals.correlationId,
+      ),
+    });
+  });
+  app.get('/api/account/capital', async (_req, res) => {
+    const account = await repo.account(actor(res));
+    res.json({
+      data: {
+        environment: 'PAPER',
+        equityBaseline: account.equityBaseline,
+        bots: await new PaperCapitalRepository(db).snapshot(account.id),
       },
     });
   });

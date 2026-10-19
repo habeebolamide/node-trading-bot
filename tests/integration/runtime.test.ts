@@ -398,7 +398,7 @@ it('commands are authorized, durable, retry-safe requests with truthful pending 
     .get(`/api/bots/${bot.id}/runtime`)
     .set('Authorization', `Bearer ${token}`)
     .expect(200);
-  expect(state.body.data.executionBackend).toBe('FAKE_CONTRACT');
+  expect(state.body.data.executionBackend).toBe('PAPER');
 });
 it('database guards reject phantom IDLE and unmanaged state writes', async () => {
   await fill();

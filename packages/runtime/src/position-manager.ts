@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
-import { Decimal } from 'decimal.js';
+import { FinancialDecimal as Decimal } from '../../core/src/decimal.js';
+import type { Decimal as DecimalValue } from 'decimal.js';
 import type {
   View,
   Change,
@@ -15,7 +16,7 @@ import type {
 const live = (a: Action) =>
   ['CREATED', 'SUBMITTING', 'OPEN', 'UNKNOWN'].includes(a.state);
 const decimal = (s: string) => new Decimal(s);
-const text = (d: Decimal) =>
+const text = (d: DecimalValue) =>
   d.toFixed(18, Decimal.ROUND_HALF_EVEN).replace(/\.?0+$/, '') || '0';
 export const openQuantity = (t: Trade) =>
   decimal(t.filledQuantity).minus(t.closedQuantity);
@@ -183,12 +184,18 @@ export class PositionManager {
   }
   restore(view: View) {
     const c = change(view, 'runtime.restoring');
-    if (view.operational === 'STOPPED' && view.trading === 'IDLE') return c;
+    if (
+      (view.operational === 'STOPPED' && view.trading === 'IDLE') ||
+      view.operational === 'RISK_SUSPENDED'
+    )
+      return c;
     c.view.operational = 'RECONCILING';
     return c;
   }
   readiness(view: View, ready: boolean, now: number) {
     const c = change(view, 'runtime.readiness');
+    if (view.operational === 'RISK_SUSPENDED' && view.desired === 'RUNNING')
+      return c;
     const unresolved =
       view.actions.some(
         (a) => a.state === 'UNKNOWN' || a.state === 'SUBMITTING',
@@ -427,6 +434,7 @@ export class PositionManager {
       report.botId !== view.botId
     )
       throw Error('Execution report does not match active trade/action');
+    c.details.report = structuredClone(report);
     switch (report.kind) {
       case 'ENTRY_OPEN':
         a.state = 'OPEN';

@@ -1,3 +1,11 @@
+import { isDeepStrictEqual } from 'node:util';
+import { paperPolicy, type RiskPolicy } from '../../risk/src/sizing.js';
+import {
+  approvePaperEntry,
+  settlePaperChange,
+  normalizePaperProtection,
+  trackEquityPeaks,
+} from './capital.js';
 import { and, eq, inArray, asc, sql } from 'drizzle-orm';
 import {
   accounts,
@@ -76,7 +84,10 @@ async function loadView(
   };
 }
 export class PostgresRuntimeRepository implements RuntimeRepository {
-  constructor(private db: Database) {}
+  constructor(
+    private db: Database,
+    private policy: RiskPolicy = paperPolicy,
+  ) {}
   async acquire(
     botId: string,
     ownerId: string,
@@ -133,6 +144,16 @@ export class PostgresRuntimeRepository implements RuntimeRepository {
     reduce: (view: View) => Change,
   ): Promise<View> {
     return this.db.transaction(async (tx) => {
+      const [scope] = await tx
+        .select()
+        .from(bots)
+        .where(eq(bots.id, lease.botId));
+      if (!scope) throw Error('Bot not found');
+      await tx
+        .select()
+        .from(accounts)
+        .where(eq(accounts.id, scope.accountId))
+        .for('update');
       const [owner] = await tx
         .select()
         .from(runtimeLeases)
@@ -172,6 +193,32 @@ export class PostgresRuntimeRepository implements RuntimeRepository {
         v.configVersion !== previous.configVersion
       )
         throw Error('Runtime cannot change bot identity or configuration');
+      if (
+        previous.trade?.executionBackend === 'PAPER' &&
+        key.startsWith('report:')
+      ) {
+        const fact = await tx.execute<{ payload: unknown }>(
+          sql`SELECT payload FROM paper_execution_reports WHERE bot_id=${lease.botId} AND event_key=${key.slice(7)}`,
+        );
+        const report = c.details.report as { kind?: string } | undefined;
+        if (
+          fact.rows[0]
+            ? !isDeepStrictEqual(fact.rows[0].payload, report)
+            : report?.kind !== 'UNKNOWN'
+        )
+          throw Error('PAPER_REPORT_EVIDENCE_MISMATCH');
+      }
+      const approval = await approvePaperEntry(
+        tx,
+        c,
+        previous,
+        eventTime,
+        this.policy,
+      );
+      const current = c.view;
+      // Risk rejection replaces the tentative view before anything becomes durable.
+      Object.assign(v, current);
+      await normalizePaperProtection(tx, c);
       const tradeChanged =
           JSON.stringify(v.trade) !== JSON.stringify(previous.trade),
         stateChanged =
@@ -182,6 +229,9 @@ export class PostgresRuntimeRepository implements RuntimeRepository {
           .insert(tradeLifecycles)
           .values(v.trade)
           .onConflictDoUpdate({ target: tradeLifecycles.id, set: v.trade });
+      await settlePaperChange(tx, previous, c, key, eventTime, approval);
+      if (v.trade?.executionBackend === 'PAPER')
+        await trackEquityPeaks(tx, v.accountId, eventTime);
       for (const a of v.actions) {
         const old = previous.actions.find((x) => x.id === a.id);
         if (old && old.state !== a.state)

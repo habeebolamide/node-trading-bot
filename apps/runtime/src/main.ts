@@ -66,24 +66,34 @@ const server = createServer(async (req, res) => {
       JSON.stringify({
         status: 'alive',
         service: 'runtime',
-        phase: 4,
-        capabilities: ['public_market_data', 'fake_contract_runtime'],
+        phase: 5,
+        capabilities: [
+          'public_market_data',
+          'paper_execution',
+          'risk_and_capital',
+        ],
         runtime: supervisor.health(),
-        acceptsNewEntries: false,
+        acceptsNewEntries: !stopping,
       }),
     );
     return;
   }
   if (req.url === '/health/ready') {
-    res.statusCode = 503;
+    let ready = !stopping;
+    try {
+      await pool.query('select trade_id from paper_reservations limit 0');
+    } catch {
+      ready = false;
+    }
+    res.statusCode = ready ? 200 : 503;
     res.end(
       JSON.stringify({
-        status: 'not_ready',
+        status: ready ? 'ready' : 'stopping',
         reason:
-          'FAKE_CONTRACT runtime; paper execution and risk management require Phase 5',
+          'PAPER only; each entry additionally requires healthy market data and atomic risk approval',
         runtime: supervisor.health(),
         marketData: service.allHealth(),
-        acceptsNewEntries: false,
+        acceptsNewEntries: !stopping,
       }),
     );
     return;

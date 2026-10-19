@@ -1,3 +1,4 @@
+import { riskPolicyFromEnv } from '../../../packages/risk/src/sizing.js';
 import { systemClock, type Clock } from '../../../packages/core/src/index.js';
 import { randomUUID } from 'node:crypto';
 import { eq, sql } from 'drizzle-orm';
@@ -14,6 +15,7 @@ import {
 } from '../../../packages/database/src/runtime.js';
 import { PostgresEvaluationRepository } from '../../../packages/database/src/evaluations.js';
 import { DurableFakeExecutionAdapter } from '../../../packages/database/src/fake-execution.js';
+import { PaperExecutionAdapter } from '../../../packages/database/src/paper-execution.js';
 import { PostgresCandleRepository } from '../../../packages/database/src/market-data.js';
 import { researchCatalog } from '../../../packages/strategies/src/catalog.js';
 import { requiredHistory } from '../../../packages/market-data/src/indicators.js';
@@ -39,6 +41,7 @@ export class RuntimeSupervisor {
     {
       runtime: BotRuntime;
       lease: Lease;
+      legacy: boolean;
       remove: () => void;
       definition: ReturnType<typeof researchCatalog>[number]['definition'];
     }
@@ -51,7 +54,7 @@ export class RuntimeSupervisor {
     private log: Logger,
     private clock: Clock = systemClock,
   ) {
-    this.store = new PostgresRuntimeRepository(db);
+    this.store = new PostgresRuntimeRepository(db, riskPolicyFromEnv());
     this.controls = new RuntimeControlRepository(db);
     this.candles = new PostgresCandleRepository(db);
   }
@@ -127,15 +130,21 @@ export class RuntimeSupervisor {
               await this.store.release(lease);
               continue;
             }
+            const legacy =
+              (await this.store.load(bot.id)).trade?.executionBackend ===
+              'FAKE_CONTRACT';
             const runtime = new BotRuntime(
               this.store,
               lease,
-              new DurableFakeExecutionAdapter(this.db, {}, this.clock),
+              legacy
+                ? new DurableFakeExecutionAdapter(this.db, {}, this.clock)
+                : new PaperExecutionAdapter(this.db, this.clock),
               selected.definition,
               selected.codeHash,
               new PostgresEvaluationRepository(this.db, lease),
               this.clock,
             );
+            if (legacy) runtime.freeze();
             await runtime.restore();
             const req = this.requirements(selected.definition);
             const price = await this.data.onPrice(
@@ -180,6 +189,7 @@ export class RuntimeSupervisor {
             handle = {
               runtime,
               lease,
+              legacy,
               remove: () => {
                 price();
                 candle();
@@ -192,7 +202,10 @@ export class RuntimeSupervisor {
             await handle.runtime.command(command as Command);
           await handle.runtime.reconcile();
           const view = await this.store.load(bot.id);
-          if (view.operational === 'STOPPED' && view.trading === 'IDLE') {
+          if (
+            (view.operational === 'STOPPED' && view.trading === 'IDLE') ||
+            (handle.legacy && !view.trade)
+          ) {
             handle.remove();
             await this.store.release(handle.lease);
             this.handles.delete(bot.id);
@@ -270,9 +283,9 @@ export class RuntimeSupervisor {
   }
   health() {
     return {
-      backend: 'FAKE_CONTRACT',
+      backend: 'PAPER',
       ownedBots: this.handles.size,
-      acceptsPaperOrders: false,
+      acceptsPaperOrders: true,
     };
   }
   async renew() {

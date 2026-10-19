@@ -474,7 +474,10 @@ export const tradeLifecycles = pgTable(
       columns: [t.botId, t.accountId],
       foreignColumns: [bots.id, bots.accountId],
     }),
-    check('trade_backend', sql`${t.executionBackend}='FAKE_CONTRACT'`),
+    check(
+      'trade_backend',
+      sql`${t.executionBackend} IN ('FAKE_CONTRACT','PAPER')`,
+    ),
     check(
       'trade_state',
       sql`${t.state} IN ('PENDING_ENTRY','OPEN','CLOSING','UNRESOLVED','CLOSED','CANCELLED','EXPIRED')`,
@@ -577,4 +580,82 @@ export const fakeReports = pgTable('fake_execution_reports', {
     .references(() => runtimeActions.id),
   eventKey: text('event_key').notNull().unique(),
   payload: jsonb('payload').notNull(),
+});
+
+export const paperReports = pgTable('paper_execution_reports', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  sequence: bigserial('sequence', { mode: 'number' }).notNull(),
+  botId: uuid('bot_id')
+    .notNull()
+    .references(() => bots.id),
+  actionId: uuid('action_id')
+    .notNull()
+    .references(() => runtimeActions.id),
+  eventKey: text('event_key').notNull().unique(),
+  payload: jsonb('payload').notNull(),
+});
+export const capitalLedger = pgTable('paper_capital_ledger', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  sequence: bigserial('sequence', { mode: 'number' }).notNull(),
+  accountId: uuid('account_id')
+    .notNull()
+    .references(() => accounts.id),
+  botId: uuid('bot_id')
+    .notNull()
+    .references(() => bots.id),
+  tradeId: uuid('trade_id').references(() => tradeLifecycles.id),
+  source: text('source').notNull().unique(),
+  kind: text('kind').notNull(),
+  amount: numeric('amount', { precision: 38, scale: 18 }).notNull(),
+  eventTime: millis('event_time'),
+});
+export const capitalReservations = pgTable(
+  'paper_reservations',
+  {
+    tradeId: uuid('trade_id')
+      .primaryKey()
+      .references(() => tradeLifecycles.id),
+    accountId: uuid('account_id')
+      .notNull()
+      .references(() => accounts.id),
+    botId: uuid('bot_id')
+      .notNull()
+      .references(() => bots.id),
+    approval: jsonb('approval').notNull(),
+    reserved: numeric('reserved', { precision: 38, scale: 18 }).notNull(),
+    committed: numeric('committed', { precision: 38, scale: 18 }).notNull(),
+    notional: numeric('notional', { precision: 38, scale: 18 }).notNull(),
+    stopExposure: numeric('stop_exposure', {
+      precision: 38,
+      scale: 18,
+    }).notNull(),
+  },
+  (t) => [
+    check(
+      'reservation_nonnegative',
+      sql`${t.reserved}>=0 AND ${t.committed}>=0 AND ${t.notional}>=0 AND ${t.stopExposure}>=0`,
+    ),
+  ],
+);
+export const paperMarks = pgTable('paper_marks', {
+  botId: uuid('bot_id')
+    .primaryKey()
+    .references(() => bots.id),
+  price: numeric('price', { precision: 38, scale: 18 }).notNull(),
+  eventTime: millis('event_time'),
+});
+
+export const paperPriceEvents = pgTable('paper_price_events', {
+  key: text('key').primaryKey(),
+  botId: uuid('bot_id')
+    .notNull()
+    .references(() => bots.id),
+  payload: jsonb('payload').notNull(),
+});
+export const paperEquityPeaks = pgTable('paper_equity_peaks', {
+  scope: text('scope').primaryKey(),
+  accountId: uuid('account_id')
+    .notNull()
+    .references(() => accounts.id),
+  peak: numeric('peak', { precision: 38, scale: 18 }).notNull(),
 });

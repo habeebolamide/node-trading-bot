@@ -41,8 +41,6 @@ export class BotRuntime {
     private clock: Clock = systemClock,
   ) {
     this.engine = new StrategyEngine(evaluations);
-    if (adapter.backend !== 'FAKE_CONTRACT')
-      throw Error('Phase 4 requires fake execution backend');
   }
   private serial<T>(run: () => Promise<T>): Promise<T> {
     const task = this.tail.then(run);
@@ -130,6 +128,11 @@ export class BotRuntime {
   }
   price(event: Price) {
     return this.serial(async () => {
+      if (this.adapter.onPrice) {
+        for (const report of await this.adapter.onPrice(event, this.lease))
+          await this.apply(report);
+        await this.pump();
+      }
       const view = await this.store.load(this.lease.botId);
       if (!view.trade || openQuantity(view.trade).lte(0)) return;
       await this.store.transact(
@@ -237,8 +240,8 @@ export class BotRuntime {
             this.lease,
             `evaluation:${evaluation.id}`,
             trigger.observedAt,
-            (v) =>
-              this.manager.entry(
+            (v) => {
+              const change = this.manager.entry(
                 v,
                 evaluation.snapshot.decision as Extract<
                   typeof evaluation.snapshot.decision,
@@ -248,7 +251,11 @@ export class BotRuntime {
                 structuredClone(this.strategy.managementPolicy),
                 trigger.observedAt,
                 evaluation.snapshot.context.indicators.atr?.latest.outReal,
-              ),
+              );
+              if (change.view.trade)
+                change.view.trade.executionBackend = this.adapter.backend;
+              return change;
+            },
           );
         await this.store.transact(
           this.lease,

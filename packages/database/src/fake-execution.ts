@@ -5,6 +5,7 @@ import { Decimal } from 'decimal.js';
 import { z } from 'zod';
 import {
   fakeReports,
+  paperReports,
   runtimeActions,
   runtimeLeases,
   type Database,
@@ -37,6 +38,7 @@ const schema = z
     eventTime: epoch,
     quantity: decimalString.optional(),
     price: decimalString.optional(),
+    fee: decimalString.optional(),
     stopPrice: decimalString.optional(),
     revision: z.number().int().nonnegative().optional(),
     terminal: z.boolean().optional(),
@@ -50,6 +52,7 @@ export class DurableFakeExecutionAdapter implements ExecutionAdapter {
       Record<ActionKind, 'ACK' | 'DEFER' | 'UNKNOWN' | 'REJECT'>
     > = {},
     private clock: Clock = systemClock,
+    private journal: typeof fakeReports | typeof paperReports = fakeReports,
   ) {}
   async submit(action: Action, authorization: Lease) {
     if (this.behavior[action.kind] === 'DEFER') return [];
@@ -103,15 +106,18 @@ export class DurableFakeExecutionAdapter implements ExecutionAdapter {
           )
           .for('share');
         if (!lease || authorization.botId !== report.botId)
-          throw Error('FENCED: fake submission authorization expired');
+          throw Error('FENCED: execution submission authorization expired');
+        await tx.execute(
+          sql`select set_config('platform.runtime_bot',${authorization.botId},true),set_config('platform.runtime_owner',${authorization.ownerId},true),set_config('platform.runtime_fence',${String(authorization.token)},true)`,
+        );
       }
       await tx.execute(
         sql`select pg_advisory_xact_lock(hashtextextended(${`fake:${report.botId}`},0))`,
       );
       const [old] = await tx
         .select()
-        .from(fakeReports)
-        .where(eq(fakeReports.eventKey, report.eventId));
+        .from(this.journal)
+        .where(eq(this.journal.eventKey, report.eventId));
       if (old) {
         if (
           JSON.stringify(old.payload) !== JSON.stringify(report) &&
@@ -134,9 +140,9 @@ export class DurableFakeExecutionAdapter implements ExecutionAdapter {
         throw Error('Fake intent was not submitted');
       const rows = await tx
         .select()
-        .from(fakeReports)
-        .where(eq(fakeReports.botId, report.botId))
-        .orderBy(asc(fakeReports.sequence));
+        .from(this.journal)
+        .where(eq(this.journal.botId, report.botId))
+        .orderBy(asc(this.journal.sequence));
       const history = rows.map((r) => r.payload as Report);
       const same = history.filter((r) => r.actionId === report.actionId);
       if (report.kind === 'ENTRY_FILL') {
@@ -201,7 +207,7 @@ export class DurableFakeExecutionAdapter implements ExecutionAdapter {
           report.stopPrice !== action.stopPrice)
       )
         throw Error('Invalid fake protection confirmation');
-      await tx.insert(fakeReports).values({
+      await tx.insert(this.journal).values({
         botId: report.botId,
         actionId: report.actionId,
         eventKey: report.eventId,
@@ -213,9 +219,9 @@ export class DurableFakeExecutionAdapter implements ExecutionAdapter {
   async reconcile(botId: string) {
     const rows = await this.db
       .select()
-      .from(fakeReports)
-      .where(eq(fakeReports.botId, botId))
-      .orderBy(asc(fakeReports.sequence));
+      .from(this.journal)
+      .where(eq(this.journal.botId, botId))
+      .orderBy(asc(this.journal.sequence));
     return rows.map((r) => r.payload as Report);
   }
 }

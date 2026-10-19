@@ -43,7 +43,7 @@ npm run dev:worker
 npm run dev:web
 ```
 
-API: `http://127.0.0.1:3000`; runtime health: `3001`; worker health: `3002`; Vite: `5173`. API restart does not restart the other processes. Runtime processes durable bot commands, strategy-owned public feeds and FAKE_CONTRACT lifecycles; worker remains a scaffold. Liveness returns 200; paper-trading readiness returns **503**. They do not submit exchange orders or calculate paper fills/P&L. See [Phase 2 setup](docs/phase-2.md) for seeding and continuous data monitoring. API readiness checks its database schema and advertises configuration capability only.
+API: `http://127.0.0.1:3000`; runtime health: `3001`; worker health: `3002`; Vite: `5173`. API restart does not restart the other processes. Runtime processes durable bot commands, strategy-owned public feeds, risk-sized PAPER orders and independent capital ledgers; worker remains a scaffold. Runtime readiness returns 200 when its PAPER schema is available; each bot still requires healthy data and atomic risk approval. No process submits exchange orders. See [Phase 2 setup](docs/phase-2.md) for seeding and continuous data monitoring. API readiness checks its database schema and advertises configuration capability only.
 
 ```sh
 npm run check
@@ -104,7 +104,7 @@ Update body:
 }
 ```
 
-A stale version, existing coin owner or allocation conflict returns 409. Invalid input returns 400; unauthorized 401; forbidden 403; absent or foreign bot 404. LIVE remains unavailable; start/pause/resume/stop are durable fake-runtime commands with required idempotency keys and reasons (see Phase 4). SIGNAL_ONLY requires zero allocation.
+A stale version, existing coin owner or allocation conflict returns 409. Invalid input returns 400; unauthorized 401; forbidden 403; absent or foreign bot 404. LIVE remains unavailable; start/pause/resume/stop are durable runtime commands with required idempotency keys and reasons (see Phase 4 and Phase 5). SIGNAL_ONLY requires zero allocation.
 
 ## Layout
 
@@ -119,4 +119,4 @@ A stale version, existing coin owner or allocation conflict returns 409. Invalid
 - `tests`: deterministic validation, real PostgreSQL domain tests, process-isolation tests.
 - `docs/phase-1.md`, `docs/phase-2.md`, `docs/phase-3.md`, `docs/phase-4.md`: decisions, verification and deferred work.
 
-See [Phase 3 setup and research rules](docs/phase-3.md) for `npm run strategies:register` and offline `npm run strategy:preview`. See [Phase 4 controls and limits](docs/phase-4.md) for bot scheduling and fake execution. Economic paper fills, risk and ledgers arrive in Phase 5.
+See [Phase 3 setup and research rules](docs/phase-3.md) for `npm run strategies:register` and offline `npm run strategy:preview`. See [Phase 4 controls](docs/phase-4.md) for bot scheduling and [Phase 5 PAPER execution and capital](docs/phase-5.md) for current fill/risk assumptions, funding semantics and capital APIs.

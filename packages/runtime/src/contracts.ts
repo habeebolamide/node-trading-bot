@@ -56,7 +56,7 @@ export type Trade = {
   pendingCancelReason: string | null;
   trailingDistance: string | null;
   policy: ManagementPolicy;
-  executionBackend: 'FAKE_CONTRACT';
+  executionBackend: 'FAKE_CONTRACT' | 'PAPER';
 };
 export type ActionKind =
   'ENTRY' | 'CANCEL_ENTRY' | 'CLOSE' | 'PROTECT' | 'AMEND_STOP';
@@ -129,13 +129,15 @@ export type Report = {
     | 'UNKNOWN';
   eventTime: number;
   quantity?: string;
+  fee?: string;
   price?: string;
   stopPrice?: string;
   revision?: number;
   terminal?: boolean;
 };
 export interface ExecutionAdapter {
-  readonly backend: 'FAKE_CONTRACT';
+  readonly backend: 'FAKE_CONTRACT' | 'PAPER';
+  onPrice?(event: Price, authorization: Lease): Promise<Report[]>;
   submit(action: Action, authorization: Lease): Promise<Report[]>;
   reconcile(botId: string): Promise<Report[]>;
 }

@@ -132,7 +132,7 @@ it('API restart preserves stored config and leaves runtime/worker processes aliv
       200,
     );
     expect((await fetch('http://127.0.0.1:43431/health/ready')).status).toBe(
-      503,
+      200,
     );
     await launch('apps/api/src/main.ts', 43430);
     const restored = await fetch(
