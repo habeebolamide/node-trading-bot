@@ -2,6 +2,7 @@ import { createServer } from 'node:http';
 import { RuntimeSupervisor } from './supervisor.js';
 import {
   configFromEnv,
+  paperEntriesEnabled,
   createLogger,
 } from '../../../packages/core/src/index.js';
 import { connectDatabase } from '../../../packages/database/src/index.js';
@@ -66,14 +67,14 @@ const server = createServer(async (req, res) => {
       JSON.stringify({
         status: 'alive',
         service: 'runtime',
-        phase: 6,
+        phase: 8,
         capabilities: [
           'public_market_data',
           'paper_execution',
           'risk_and_capital',
         ],
         runtime: supervisor.health(),
-        acceptsNewEntries: !stopping,
+        acceptsNewEntries: !stopping && paperEntriesEnabled(),
       }),
     );
     return;
@@ -88,12 +89,12 @@ const server = createServer(async (req, res) => {
     res.statusCode = ready ? 200 : 503;
     res.end(
       JSON.stringify({
-        status: ready ? 'ready' : 'stopping',
+        status: ready ? 'ready' : stopping ? 'stopping' : 'unavailable',
         reason:
           'PAPER only; each entry additionally requires healthy market data and atomic risk approval',
         runtime: supervisor.health(),
         marketData: service.allHealth(),
-        acceptsNewEntries: !stopping,
+        acceptsNewEntries: !stopping && paperEntriesEnabled(),
       }),
     );
     return;

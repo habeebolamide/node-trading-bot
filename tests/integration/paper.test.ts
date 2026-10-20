@@ -1,3 +1,5 @@
+import { once } from 'node:events';
+import fc from 'fast-check';
 import { paperPolicy } from '../../packages/risk/src/sizing.js';
 import { beforeAll, beforeEach, afterAll, it, expect } from 'vitest';
 import { loadEnvFile } from 'node:process';
@@ -54,7 +56,7 @@ let actor: Actor,
   token: string;
 beforeAll(() => migrateDatabase(url));
 afterAll(() => pool.end());
-beforeEach(async () => {
+async function setupPaper() {
   await pool.query(
     'TRUNCATE market_instruments,audit_events,bot_config_versions,coin_ownership,bots,api_tokens,exchange_accounts,strategy_versions,strategies,app_users CASCADE',
   );
@@ -103,7 +105,8 @@ beforeEach(async () => {
     new PostgresEvaluationRepository(db, lease),
     clock,
   );
-});
+}
+beforeEach(setupPaper);
 
 const manager = new PositionManager();
 async function start() {
@@ -837,4 +840,532 @@ it('groups feed-induced unresolved paper exposure into the shared incident witho
   );
   expect((await store.load(bot.id)).trading).toBe('UNRESOLVED');
   expect(new Decimal((await capital())[0]!.committed).gt(0)).toBe(true);
+});
+
+it('property: partial fills, duplicate events, funding and releases conserve ledger equity without funding another bot', async () => {
+  const { postPaperFunding } =
+    await import('../../packages/database/src/funding.js');
+  await fc.assert(
+    fc.asyncProperty(
+      fc.array(fc.integer({ min: 1, max: 20 }), { minLength: 2, maxLength: 6 }),
+      fc.integer({ min: -10, max: 10 }),
+      async (volumes, rate) => {
+        await setupPaper();
+        const other = await botRepo.create(
+          actor,
+          {
+            name: 'Independent property fixture',
+            market: { ...market, baseAsset: 'ETH' },
+            strategyVersionId: bot.strategyVersionId,
+            executionMode: 'PAPER',
+            riskProfile: 'CONSERVATIVE',
+            allocationTargetPercent: '20',
+          },
+          randomUUID(),
+        );
+        const initial = await capital();
+        await enter('LIMIT');
+        expect(
+          new Decimal(
+            (await capital()).find((b) => b.bot_id === bot.id)!.balance,
+          ).eq(20),
+        ).toBe(true);
+        for (const volume of volumes) {
+          clock.advance(1000);
+          const event = {
+            kind: 'PRICE' as const,
+            marketKey: bot.canonicalMarketId,
+            tradeId: randomUUID(),
+            eventTime: clock.time,
+            observedAt: clock.time,
+            price: '99.9',
+            quantity: new Decimal(volume).div(100).toString(),
+            reference: 'LAST' as const,
+            side: 'SELL' as const,
+            late: false,
+          };
+          await runtime.price(event);
+          const before = await pool.query(
+            'SELECT count(*)::int AS count FROM paper_capital_ledger',
+          );
+          await runtime.price(event);
+          expect(
+            (
+              await pool.query(
+                'SELECT count(*)::int AS count FROM paper_capital_ledger',
+              )
+            ).rows,
+          ).toEqual(before.rows);
+        }
+        const funding = {
+          period: clock.time,
+          observedAt: clock.time,
+          rate: new Decimal(rate).div(100000).toString(),
+          price: '100',
+        };
+        await postPaperFunding(db, lease, funding);
+        await postPaperFunding(db, lease, funding);
+        await runtime.protectAndFreeze();
+        const protectedView = await store.load(bot.id);
+        expect(protectedView.trade!.protectionStatus).toBe('CONFIRMED');
+        expect(
+          new Decimal(protectedView.trade!.protectedQuantity).eq(
+            protectedView.trade!.filledQuantity,
+          ),
+        ).toBe(true);
+        await store.transact(lease, randomUUID(), clock.time, (v) =>
+          manager.close(v, 'PROPERTY_EXIT', clock.time),
+        );
+        await runtime.reconcile();
+        await tick('101');
+        expect((await store.load(bot.id)).trading).toBe('IDLE');
+        const fills = (
+          await pool.query(
+            "SELECT payload FROM paper_execution_reports WHERE payload->>'kind' IN ('ENTRY_FILL','EXIT_FILL')",
+          )
+        ).rows.map((r) => r.payload);
+        let net = new Decimal(0);
+        for (const f of fills)
+          net = net
+            .plus(
+              new Decimal(f.quantity)
+                .mul(f.price)
+                .mul(f.kind === 'EXIT_FILL' ? 1 : -1),
+            )
+            .minus(f.fee ?? 0);
+        const fundingTotal = (
+          await pool.query(
+            'SELECT coalesce(sum(amount),0)::text AS amount FROM paper_funding_events',
+          )
+        ).rows[0].amount;
+        const rows = await capital(),
+          own = rows.find((b) => b.bot_id === bot.id)!;
+        expect(
+          new Decimal(own.balance).eq(
+            new Decimal(20).plus(net).plus(fundingTotal),
+          ),
+        ).toBe(true);
+        expect(new Decimal(own.reserved).plus(own.committed).isZero()).toBe(
+          true,
+        );
+        expect(rows.find((b) => b.bot_id === other.id)!.balance).toBe(
+          initial.find((b) => b.bot_id === other.id)!.balance,
+        );
+      },
+    ),
+    { seed: 22082026, numRuns: 12 },
+  );
+}, 30000);
+
+it('backup/restore preserves open exposure, ledger, pending notifications and guards, while invalidating old leases', async () => {
+  const { mkdtemp, rm, appendFile, stat } = await import('node:fs/promises');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const { backupDatabase, restoreDatabase, pgTool } =
+    await import('../../packages/operations/src/backup.js');
+  const dir = await mkdtemp(join(tmpdir(), 'paper-restore-')),
+    file = join(dir, 'snapshot.dump'),
+    target = 'paper_restore_' + randomUUID().replaceAll('-', '') + '_test';
+  const targetUrl = new URL(url!);
+  targetUrl.pathname = '/' + target;
+  let restored: ReturnType<typeof connectDatabase> | undefined;
+  try {
+    await enter();
+    await tick('99.95', '.2');
+    await pool.query(
+      `INSERT INTO notification_outbox(account_id,domain_event_id,recipient_ref,template_key,payload_snapshot,dedupe_key,severity) VALUES($1,'restore','123','ENTRY','{"text":"Synthetic restore fixture"}','restore','INFO')`,
+      [bot.accountId],
+    );
+    const ledger = (
+        await pool.query('SELECT * FROM paper_capital_ledger ORDER BY sequence')
+      ).rows,
+      original = await store.load(bot.id);
+    await backupDatabase(url!, file);
+    expect((await stat(file)).mode & 0o777).toBe(0o600);
+    await pgTool('createdb', ['--template=template0', target], url!);
+    await restoreDatabase(targetUrl.toString(), file, target);
+    restored = connectDatabase(targetUrl.toString());
+    expect(
+      (
+        await restored.pool.query(
+          'SELECT * FROM paper_capital_ledger ORDER BY sequence',
+        )
+      ).rows,
+    ).toEqual(ledger);
+    const restoredStore = new PostgresRuntimeRepository(restored.db),
+      view = await restoredStore.load(bot.id);
+    expect(view.trade).toEqual(original.trade);
+    expect(
+      (
+        await restored.pool.query(
+          "SELECT status FROM notification_outbox WHERE dedupe_key='restore'",
+        )
+      ).rows[0].status,
+    ).toBe('PENDING');
+    await expect(
+      restoredStore.transact(lease, randomUUID(), clock.time, (v) => ({
+        view: v,
+        actions: [],
+        kind: 'stale.restore',
+        details: {},
+      })),
+    ).rejects.toThrow('FENCED');
+    await expect(
+      restored.pool.query('DELETE FROM paper_capital_ledger'),
+    ).rejects.toMatchObject({ code: '23514' });
+    await pgTool(
+      'psql',
+      ['--file', new URL('../../deploy/roles.sql', import.meta.url).pathname],
+      targetUrl.toString(),
+    );
+    const roleClient = await restored.pool.connect();
+    try {
+      await roleClient.query('SET ROLE platform_worker');
+      await expect(
+        roleClient.query('CREATE TEMP TABLE pg_roles_fixture(x int)'),
+      ).rejects.toMatchObject({ code: '42501' });
+      await expect(
+        roleClient.query(
+          'UPDATE runtime_leases SET expires_at=now() WHERE bot_id=$1',
+          [bot.id],
+        ),
+      ).rejects.toMatchObject({ code: '42501' });
+      await roleClient.query('RESET ROLE');
+      await roleClient.query('SET ROLE platform_runtime');
+      await expect(
+        roleClient.query('SELECT * FROM api_tokens'),
+      ).rejects.toMatchObject({ code: '42501' });
+      await roleClient.query('RESET ROLE');
+      await roleClient.query('SET ROLE platform_notifier');
+      await expect(
+        roleClient.query('UPDATE paper_marks SET price=price'),
+      ).rejects.toMatchObject({ code: '42501' });
+      await roleClient.query('RESET ROLE');
+      await roleClient.query('SET ROLE platform_api');
+      await expect(roleClient.query('DELETE FROM bots')).rejects.toMatchObject({
+        code: '42501',
+      });
+      await roleClient.query('RESET ROLE');
+    } finally {
+      roleClient.release();
+    }
+    const pg = (await import('pg')).default,
+      { drizzle } = await import('drizzle-orm/node-postgres'),
+      schema = await import('../../packages/database/src/schema.js');
+    const apiPool = new pg.Pool({
+        connectionString: targetUrl.toString(),
+        options: '-c role=platform_api',
+      }),
+      workerPool = new pg.Pool({
+        connectionString: targetUrl.toString(),
+        options: '-c role=platform_worker',
+      }),
+      notifierPool = new pg.Pool({
+        connectionString: targetUrl.toString(),
+        options: '-c role=platform_notifier',
+      });
+    try {
+      const apiDb = drizzle(apiPool, { schema }),
+        workerDb = drizzle(workerPool, { schema });
+      const created = await new BotRepository(apiDb).create(
+        actor,
+        {
+          name: 'Restricted API fixture',
+          market: { ...market, baseAsset: 'ETH' },
+          strategyVersionId: bot.strategyVersionId,
+          executionMode: 'PAPER',
+          riskProfile: 'CONSERVATIVE',
+          allocationTargetPercent: '20',
+        },
+        randomUUID(),
+      );
+      expect(created.name).toBe('Restricted API fixture');
+      const { enqueueReplay, executeReplay } =
+          await import('../../packages/replay/src/runner.js'),
+        { replayFixture } = await import('../fixtures/replay.js');
+      const job = await enqueueReplay(apiDb, actor, replayFixture());
+      const report = await executeReplay(workerDb, job.id).catch(
+        (e: Error & { cause?: Error }) => {
+          throw e.cause ?? e;
+        },
+      );
+      expect(report!.metrics.closedTrades).toBe(1);
+      const { projectNotifications, deliverOne } =
+        await import('../../packages/notifications/src/service.js');
+      await projectNotifications(notifierPool);
+      expect(
+        await deliverOne(notifierPool, async () => ({
+          messageId: 'private-fixture',
+        })),
+      ).toBe(true);
+    } finally {
+      await apiPool.end();
+      await workerPool.end();
+      await notifierPool.end();
+    }
+    await restored.pool.end();
+    restored = undefined;
+    await expect(
+      restoreDatabase(targetUrl.toString(), file, target),
+    ).rejects.toThrow('empty');
+    await appendFile(file, 'corruption');
+    await expect(
+      restoreDatabase(targetUrl.toString(), file, target),
+    ).rejects.toThrow('checksum');
+  } finally {
+    await restored?.pool.end();
+    await pgTool('dropdb', ['--if-exists', '--force', target], url!);
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 30000);
+
+it('Protect & Freeze cancels unfilled entry remainder, keeps filled exposure protected, and blocks new proposals', async () => {
+  await enter();
+  await tick('99.95', '.2');
+  const before = await store.load(bot.id);
+  await runtime.protectAndFreeze();
+  const after = await store.load(bot.id);
+  expect(after.desired).toBe('PAUSED');
+  expect(after.trade!.entryTerminal).toBe(true);
+  expect(after.trade!.filledQuantity).toBe(before.trade!.filledQuantity);
+  expect(after.trade!.protectionStatus).toBe('CONFIRMED');
+  const decisions = (
+    await pool.query('SELECT count(*)::int AS count FROM strategy_evaluations')
+  ).rows;
+  await runtime.candle(
+    strategyInput('trend-long').trigger,
+    strategyInput('trend-long').candles,
+    true,
+  );
+  expect(
+    (
+      await pool.query(
+        'SELECT count(*)::int AS count FROM strategy_evaluations',
+      )
+    ).rows,
+  ).toEqual(decisions);
+  await tick('98');
+  await tick('98');
+  expect((await store.load(bot.id)).trading).toBe('IDLE');
+});
+
+it('a CPU-heavy replay process cannot block PAPER fills and protection while Telegram hangs', async () => {
+  const { enqueueReplay } = await import('../../packages/replay/src/runner.js');
+  const { replayFixture } = await import('../fixtures/replay.js');
+  const { spawn } = await import('node:child_process');
+  const { deliverOne } =
+    await import('../../packages/notifications/src/service.js');
+  const input = replayFixture(),
+    oldEnd = input.end;
+  input.end += 50000;
+  for (let i = 1; i <= 50000; i++)
+    input.dataset.events.push({ kind: 'TIMER', observedAt: oldEnd + i });
+  const job = await enqueueReplay(db, actor, input);
+  const child = spawn(
+    process.execPath,
+    [
+      '--import',
+      'tsx',
+      '--input-type=module',
+      '-e',
+      `import {connectDatabase} from './packages/database/src/index.ts';import {executeReplay} from './packages/replay/src/runner.ts';const {db}=connectDatabase(process.env.DATABASE_URL);setInterval(()=>{const end=Date.now()+200;while(Date.now()<end){}},350);await executeReplay(db,'${job.id}');`,
+    ],
+    {
+      env: { ...process.env, DATABASE_URL: url!, TELEGRAM_BOT_TOKEN: '' },
+      stdio: 'ignore',
+    },
+  );
+  try {
+    for (let i = 0; i < 80; i++) {
+      if (child.exitCode !== null)
+        throw Error('Replay child exited unexpectedly');
+      const row = (
+        await pool.query(
+          'SELECT status,checkpoint FROM replay_runs WHERE id=$1',
+          [job.id],
+        )
+      ).rows[0];
+      if (row.status === 'RUNNING' && row.checkpoint > 2) break;
+      if (i === 79) throw Error('Replay worker failed to start');
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    await pool.query(
+      `INSERT INTO notification_outbox(account_id,domain_event_id,recipient_ref,template_key,payload_snapshot,dedupe_key,severity) VALUES($1,'load','123','ENTRY','{"text":"Synthetic load fixture"}','load','INFO')`,
+      [bot.accountId],
+    );
+    let started!: () => void;
+    const ready = new Promise<void>((r) => {
+      started = r;
+    });
+    let delivered = false;
+    const delivery = deliverOne(
+      pool,
+      () => {
+        started();
+        return new Promise(() => {});
+      },
+      5000,
+    ).then(() => {
+      delivered = true;
+    });
+    await ready;
+    const began = Date.now();
+    await enter();
+    await tick('99.95');
+    expect((await store.load(bot.id)).trade!.protectionStatus).toBe(
+      'CONFIRMED',
+    );
+    await tick('98');
+    await tick('98');
+    expect((await store.load(bot.id)).trading).toBe('IDLE');
+    expect(delivered).toBe(false);
+    expect(Date.now() - began).toBeLessThan(4000);
+    expect(child.exitCode).toBeNull();
+    await delivery;
+  } finally {
+    if (child.exitCode === null) {
+      const exited = once(child, 'exit');
+      child.kill('SIGKILL');
+      await exited;
+    }
+  }
+}, 30000);
+
+it('a freeze arriving during asynchronous strategy persistence prevents entry intent and capital reservation', async () => {
+  clock.time = closeTime - 900000;
+  await start();
+  clock.time = closeTime + 2000;
+  const repository = new PostgresEvaluationRepository(db, lease);
+  let unblock!: () => void, stored!: () => void;
+  const pending = new Promise<void>((r) => {
+      unblock = r;
+    }),
+    observed = new Promise<void>((r) => {
+      stored = r;
+    });
+  const delayed = {
+    find: repository.find.bind(repository),
+    insert: async (record: Parameters<typeof repository.insert>[0]) => {
+      const result = await repository.insert(record);
+      stored();
+      await pending;
+      return result;
+    },
+  };
+  runtime = new BotRuntime(
+    store,
+    lease,
+    adapter,
+    trendFollowing,
+    codeHash,
+    delayed,
+    clock,
+  );
+  const input = strategyInput('trend-long'),
+    evaluation = runtime.candle(input.trigger, input.candles, true);
+  await observed;
+  runtime.freeze();
+  unblock();
+  await evaluation;
+  expect((await store.load(bot.id)).trade).toBeNull();
+  expect((await pool.query('SELECT * FROM paper_reservations')).rowCount).toBe(
+    0,
+  );
+  expect(
+    (
+      await pool.query(
+        "SELECT * FROM runtime_events WHERE kind='safety.entry_frozen'",
+      )
+    ).rowCount,
+  ).toBe(1);
+});
+
+it('a database failure before durable submission never calls the execution adapter or clears existing exposure', async () => {
+  await enter();
+  await tick('99.95');
+  const original = await store.load(bot.id);
+  await store.transact(lease, randomUUID(), clock.time, (v) =>
+    manager.close(v, 'DATABASE_FAILURE_FIXTURE', clock.time),
+  );
+  const failingStore = new Proxy(store, {
+    get(target, key) {
+      if (key === 'markSubmitting')
+        return async () => {
+          throw Error('DATABASE_UNAVAILABLE_FIXTURE');
+        };
+      const field = Reflect.get(target, key);
+      return typeof field === 'function' ? field.bind(target) : field;
+    },
+  });
+  let submitted = 0;
+  const observedAdapter = new Proxy(adapter, {
+    get(target, key) {
+      if (key === 'submit')
+        return async (...args: Parameters<typeof adapter.submit>) => {
+          submitted++;
+          return target.submit(...args);
+        };
+      const field = Reflect.get(target, key);
+      return typeof field === 'function' ? field.bind(target) : field;
+    },
+  });
+  runtime = new BotRuntime(
+    failingStore,
+    lease,
+    observedAdapter,
+    trendFollowing,
+    codeHash,
+    new PostgresEvaluationRepository(db, lease),
+    clock,
+  );
+  await expect(runtime.reconcile()).rejects.toThrow(
+    'DATABASE_UNAVAILABLE_FIXTURE',
+  );
+  expect(submitted).toBe(0);
+  const after = await store.load(bot.id);
+  expect(after.trade!.filledQuantity).toBe(original.trade!.filledQuantity);
+  expect(after.trade!.closedQuantity).toBe('0.000000000000000000');
+  expect(new Decimal((await capital())[0]!.committed).gt(0)).toBe(true);
+});
+
+it('freezing while submission authorization commits prevents the adapter call and retains conservative capacity', async () => {
+  let submitted = 0;
+  const observedAdapter = new Proxy(adapter, {
+    get(target, key) {
+      if (key === 'submit')
+        return async (...args: Parameters<typeof adapter.submit>) => {
+          submitted++;
+          return target.submit(...args);
+        };
+      const field = Reflect.get(target, key);
+      return typeof field === 'function' ? field.bind(target) : field;
+    },
+  });
+  const delayedStore = new Proxy(store, {
+    get(target, key) {
+      if (key === 'markSubmitting')
+        return async (...args: Parameters<typeof store.markSubmitting>) => {
+          const action = await target.markSubmitting(...args);
+          runtime.freeze();
+          return action;
+        };
+      const field = Reflect.get(target, key);
+      return typeof field === 'function' ? field.bind(target) : field;
+    },
+  });
+  runtime = new BotRuntime(
+    delayedStore,
+    lease,
+    observedAdapter,
+    trendFollowing,
+    codeHash,
+    new PostgresEvaluationRepository(db, lease),
+    clock,
+  );
+  await enter();
+  expect(submitted).toBe(0);
+  const view = await store.load(bot.id);
+  expect(view.trade).not.toBeNull();
+  expect(view.actions.some((a) => a.state === 'UNKNOWN')).toBe(true);
+  expect(new Decimal((await capital())[0]!.reserved).gt(0)).toBe(true);
 });

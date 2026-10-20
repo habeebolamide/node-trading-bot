@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { randomUUID } from 'node:crypto';
-import pino from 'pino';
+import pino, { type DestinationStream } from 'pino';
 
 export class DomainError extends Error {
   constructor(
@@ -113,22 +113,60 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env) {
         .enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent'])
         .default('info'),
       EXECUTION_MODE: z.literal('PAPER').default('PAPER'),
+      PAPER_ENTRIES_ENABLED: z.enum(['true', 'false']).optional(),
+    })
+    .superRefine((v, ctx) => {
+      if (
+        v.NODE_ENV === 'production' &&
+        !['127.0.0.1', '::1', 'localhost'].includes(v.API_HOST)
+      )
+        ctx.addIssue({
+          code: 'custom',
+          path: ['API_HOST'],
+          message: 'Production API must bind to loopback behind the TLS proxy',
+        });
     })
     .parse(env);
 }
-export function createLogger(service: string, level = 'info') {
-  return pino({
-    name: service,
-    level,
-    redact: [
-      'req.headers.authorization',
-      'token',
-      'password',
-      'databaseUrl',
-      'DATABASE_URL',
-      'secret',
-    ],
-  });
+export function paperEntriesEnabled(env: NodeJS.ProcessEnv = process.env) {
+  const value = env.PAPER_ENTRIES_ENABLED;
+  if (value !== undefined && !['true', 'false'].includes(value))
+    throw Error('PAPER_ENTRIES_ENABLED must be true or false');
+  return (
+    value === 'true' || (value === undefined && env.NODE_ENV !== 'production')
+  );
+}
+export function createLogger(
+  service: string,
+  level = 'info',
+  destination?: DestinationStream,
+) {
+  return pino(
+    {
+      name: service,
+      level,
+      redact: [
+        'req.headers.authorization',
+        'token',
+        'password',
+        'databaseUrl',
+        'DATABASE_URL',
+        'secret',
+        'TELEGRAM_BOT_TOKEN',
+        'apiKey',
+        'headers.authorization',
+        'req.headers.cookie',
+        '*.token',
+        '*.password',
+        '*.secret',
+        '*.apiKey',
+        '*.databaseUrl',
+        '*.DATABASE_URL',
+        '*.authorization',
+      ],
+    },
+    destination,
+  );
 }
 export interface EventRecorder {
   record(event: {

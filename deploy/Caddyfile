@@ -1,0 +1,14 @@
+{$PLATFORM_DOMAIN} {
+    encode zstd gzip
+    @internal path /health/*
+    respond @internal 404
+    header Strict-Transport-Security "max-age=31536000"
+    reverse_proxy 127.0.0.1:3000 {
+        flush_interval -1
+        transport http {
+            dial_timeout 3s
+            response_header_timeout 15s
+        }
+    }
+    # Access logging is intentionally disabled: never log Authorization or token query strings.
+}

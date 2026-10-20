@@ -55,6 +55,12 @@ export function createApp(db: Database, pool: Pool, log = createLogger('api')) {
   const repo = new BotRepository(db);
   const controls = new RuntimeControlRepository(db);
   app.disable('x-powered-by');
+  app.disable('etag');
+  if (process.env.NODE_ENV === 'production') app.set('trust proxy', 'loopback');
+  app.use('/api', (_req, res, next) => {
+    res.setHeader('Cache-Control', 'no-store');
+    next();
+  });
   app.use(helmet());
   app.use((req, res, next) => {
     res.locals.correlationId = randomUUID();

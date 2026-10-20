@@ -1,0 +1,39 @@
+[Unit]
+Description=Strategy platform PAPER %i
+After=network-online.target postgresql.service
+Wants=network-online.target
+StartLimitIntervalSec=120
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=strategy-%i
+Group=strategy
+WorkingDirectory=/opt/strategy-platform/current
+Environment=NODE_ENV=production
+Environment=EXECUTION_MODE=PAPER
+Environment=PAPER_ENTRIES_ENABLED=false
+EnvironmentFile=/etc/strategy-platform/%i.env
+ExecStart=/opt/node22/bin/node /opt/strategy-platform/current/dist/apps/%i/src/main.js
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=20
+KillSignal=SIGTERM
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+RestrictSUIDSGID=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+CapabilityBoundingSet=
+TasksMax=128
+LimitNOFILE=4096
+MemoryMax=768M
+CPUWeight=100
+
+[Install]
+WantedBy=multi-user.target

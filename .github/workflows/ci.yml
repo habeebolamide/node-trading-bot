@@ -1,0 +1,36 @@
+name: PAPER release gates
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  paper:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/trading_bot_ci_test
+      TEST_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/trading_bot_ci_test
+      EXECUTION_MODE: PAPER
+      TELEGRAM_BOT_TOKEN: ''
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - name: Native PostgreSQL and TA-Lib build prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql postgresql-client build-essential python3 caddy
+          sudo systemctl start postgresql
+          sudo -u postgres psql -v ON_ERROR_STOP=1 -c "ALTER USER postgres PASSWORD 'postgres'"
+          sudo -u postgres createdb trading_bot_ci_test
+      - name: Validate native service and proxy configuration
+        run: |
+          sudo mkdir -p /opt/node22/bin
+          sudo ln -s "$(command -v node)" /opt/node22/bin/node
+          systemd-analyze verify deploy/systemd/strategy@.service
+          PLATFORM_DOMAIN=paper.example.test caddy validate --config deploy/Caddyfile --adapter caddyfile
+      - run: npm ci
+      - run: npm run format:check
+      - run: npm run check
+      - run: npm audit --omit=dev --audit-level=high

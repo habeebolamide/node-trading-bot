@@ -1,3 +1,4 @@
+import { paperEntriesEnabled } from '../../../packages/core/src/index.js';
 import { recoveryGaps } from '../../../packages/database/src/index.js';
 import {
   recordGap,
@@ -154,9 +155,11 @@ export class RuntimeSupervisor {
               selected.codeHash,
               new PostgresEvaluationRepository(this.db, lease),
               this.clock,
+              () => paperEntriesEnabled() && !this.stopping,
             );
             if (legacy) runtime.freeze();
             await runtime.restore();
+            if (!paperEntriesEnabled()) await runtime.protectAndFreeze();
             const pendingGaps = await this.db
               .select()
               .from(recoveryGaps)
@@ -313,6 +316,11 @@ export class RuntimeSupervisor {
           }
           for (const command of await this.controls.pending(bot.id))
             await handle.runtime.command(command as Command);
+          if (
+            !paperEntriesEnabled() &&
+            (await this.store.load(bot.id)).desired === 'RUNNING'
+          )
+            await handle.runtime.protectAndFreeze();
           await handle.runtime.reconcile();
           const view = await this.store.load(bot.id);
           if (
@@ -399,7 +407,10 @@ export class RuntimeSupervisor {
     return {
       backend: 'PAPER',
       ownedBots: this.handles.size,
-      acceptsPaperOrders: true,
+      acceptsPaperOrders: !this.stopping,
+      acceptsNewPaperEntries: paperEntriesEnabled() && !this.stopping,
+      continuesProtectiveActions: !this.stopping,
+      failurePolicy: 'PROTECT_AND_FREEZE',
     };
   }
   async renew() {

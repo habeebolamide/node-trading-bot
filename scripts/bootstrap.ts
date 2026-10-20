@@ -1,8 +1,9 @@
-import { randomBytes, createHash } from 'node:crypto';
+import { randomBytes, createHash, randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import {
   connectDatabase,
   users,
+  audits,
   accounts,
   tokens,
   strategies,
@@ -17,7 +18,7 @@ const email = z
 const { db, pool } = connectDatabase(configFromEnv().DATABASE_URL);
 try {
   await registerResearchStrategies(db);
-  await db.transaction(async (tx) => {
+  const raw = await db.transaction(async (tx) => {
     let [owner] = await tx.select().from(users).where(eq(users.email, email));
     if (!owner) [owner] = await tx.insert(users).values({ email }).returning();
     if (!owner) throw new Error('Owner creation failed');
@@ -63,8 +64,20 @@ try {
       role: 'OWNER',
       expiresAt: new Date(Date.now() + 30 * 86400000),
     });
-    console.log('Owner bearer token (shown once; expires in 30 days): ' + raw);
+    const [account] = await tx
+      .select()
+      .from(accounts)
+      .where(eq(accounts.ownerUserId, owner.id));
+    await tx.insert(audits).values({
+      accountId: account!.id,
+      actorId: owner.id,
+      eventType: 'security.token.issue',
+      correlationId: randomUUID(),
+      details: { role: 'OWNER', source: 'bootstrap' },
+    });
+    return raw;
   });
+  console.log('Owner bearer token (shown once; expires in 30 days): ' + raw);
 } finally {
   await pool.end();
 }

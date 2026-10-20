@@ -1,6 +1,6 @@
 # Strategy trading platform
 
-Paper-first, rule-based trading platform. Phases 1–7 implement durable configuration, public market data, deterministic strategies, risk-sized simulated execution and independent capital ledgers, historical replay/recovery, an operator dashboard and asynchronous Telegram delivery. **All P&L is simulated; production LIVE trading is disabled.** The implementation specification is [docs/prd.md](docs/prd.md), with the authoritative phase sequence in Section 23.
+Paper-first, rule-based trading platform. Phases 1–8 implement durable configuration, public market data, deterministic strategies, risk-sized simulated execution and independent capital ledgers, historical replay/recovery, an operator dashboard and asynchronous Telegram delivery. **All P&L is simulated; production LIVE trading is disabled.** The implementation specification is [docs/prd.md](docs/prd.md), with the authoritative phase sequence in Section 23.
 
 ## Requirements and setup
 
@@ -125,3 +125,5 @@ See [Phase 3 setup and research rules](docs/phase-3.md) for `npm run strategies:
 Historical replay, funding, A/B and holdout validation, and outage recovery are implemented in Phase 6. See [Phase 6 workflow and data assumptions](docs/phase-6.md) for dataset requirements, `npm run backtest`, the replay worker, authenticated report endpoints and offline recovery. Incomplete trade histories produce explicit uncertainty rather than simulated candle-touch profits.
 
 See [Phase 7](docs/phase-7.md) for the operator dashboard, incident workflow, notification preferences, durable outbox and `npm run dev:notifier`. Configure a server-side Telegram token and a destination before expecting delivery. Trading never awaits Telegram.
+
+Phase 8 adds production Protect & Freeze defaults, audited private token administration, native backup/restore and ledger verification, migration integrity checks, restricted service roles and release gates. See [Phase 8 evidence](docs/phase-8.md), [native deployment and rollback](deploy/README.md), [incident playbooks](deploy/INCIDENTS.md) and [security review](docs/security-review.md). These assets do not imply that a remote deployment or multi-day paper soak has occurred.

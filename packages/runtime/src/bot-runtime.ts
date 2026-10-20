@@ -42,6 +42,7 @@ export class BotRuntime {
     private codeHash: string,
     evaluations: EvaluationRepository,
     private clock: Clock = systemClock,
+    private entryPermission: () => boolean = () => true,
   ) {
     this.engine = new StrategyEngine(evaluations);
   }
@@ -91,6 +92,44 @@ export class BotRuntime {
       );
       await this.pump();
       return this.store.load(v.botId);
+    });
+  }
+  async protectAndFreeze() {
+    this.freeze();
+    return this.serial(async () => {
+      await this.store.transact(
+        this.lease,
+        `safety:freeze:${crypto.randomUUID()}`,
+        this.now(),
+        (v) => {
+          if (v.desired !== 'RUNNING')
+            return {
+              view: v,
+              actions: [],
+              kind: 'safety.already_frozen',
+              details: {},
+            };
+          const c = this.manager.command(
+            v,
+            { id: crypto.randomUUID(), kind: 'PAUSE', requestedAt: this.now() },
+            this.now(),
+          );
+          delete c.commandId;
+          if (v.fault === 'RECONCILIATION_UNCERTAIN') {
+            c.actions = [];
+            c.view.actions = v.actions;
+            c.view.trade = v.trade;
+            c.view.trading = v.trading;
+          }
+          c.kind = 'safety.protect_and_freeze';
+          c.details = {
+            policy: 'PROTECT_AND_FREEZE',
+            reason: 'NEW_PAPER_ENTRIES_DISABLED',
+          };
+          return c;
+        },
+      );
+      await this.pump();
     });
   }
   ready(healthy: boolean) {
@@ -258,6 +297,7 @@ export class BotRuntime {
         }
       } else if (
         this.acceptingEntries &&
+        this.entryPermission() &&
         view.operational === 'RUNNING' &&
         view.trading === 'IDLE'
       ) {
@@ -272,6 +312,16 @@ export class BotRuntime {
             `evaluation:${evaluation.id}`,
             trigger.observedAt,
             (v) => {
+              if (!this.acceptingEntries || !this.entryPermission())
+                return {
+                  view: v,
+                  actions: [],
+                  kind: 'safety.entry_frozen',
+                  details: {
+                    evaluationId: evaluation.id,
+                    reason: 'PROTECT_AND_FREEZE',
+                  },
+                };
               const change = this.manager.entry(
                 v,
                 evaluation.snapshot.decision as Extract<
@@ -352,7 +402,12 @@ export class BotRuntime {
   private async pump() {
     for (let cycle = 0; cycle < 100; cycle++) {
       const view = await this.store.load(this.lease.botId),
-        next = view.actions.find((a) => a.state === 'CREATED');
+        next = view.actions.find(
+          (a) =>
+            a.state === 'CREATED' &&
+            (a.kind !== 'ENTRY' ||
+              (this.acceptingEntries && this.entryPermission())),
+        );
       if (!next) return;
       const action = await this.store.markSubmitting(
         this.lease,
@@ -360,6 +415,20 @@ export class BotRuntime {
         this.now(),
       );
       if (!action) continue;
+      if (
+        action.kind === 'ENTRY' &&
+        (!this.acceptingEntries || !this.entryPermission())
+      ) {
+        await this.apply({
+          eventId: `freeze-before-submit:${action.id}`,
+          actionId: action.id,
+          tradeId: action.tradeId,
+          botId: action.botId,
+          kind: 'UNKNOWN',
+          eventTime: this.now(),
+        });
+        return;
+      }
       // The committed intent and fencing authorization precede this adapter boundary. No SQL lock spans it.
       let reports: Report[];
       try {

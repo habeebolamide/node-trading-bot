@@ -13,6 +13,9 @@ const server = createApp(db, pool, log).listen(
   () =>
     log.info({ port: config.API_PORT, node: process.version }, 'API listening'),
 );
+server.requestTimeout = 15000;
+server.headersTimeout = 10000;
+server.keepAliveTimeout = 5000;
 let stopping = false;
 for (const signal of ['SIGTERM', 'SIGINT'])
   process.on(signal, () => {
